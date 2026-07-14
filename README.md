@@ -18,22 +18,34 @@ pip install -e ".[test]"
 export MODEL_RESPONSES_API_URL="http://192.168.18.94:30377/v1/responses"
 export MODEL_API_KEY="replace-with-your-model-api-key"
 export MODEL_NAME="qwen3.6-35b"
+export ENABLE_SYSTEM_MOCK_FALLBACK="false"
 uvicorn app.main:app --reload
 ```
 
-By default, agents are stored in `app/data/agents.json` and tasks are kept in
-memory. To persist both agents and tasks in MySQL, create the database first and
-set `DATABASE_URL` before starting the service:
+By default, the app connects to the local MySQL demo database:
+
+```text
+mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4
+```
+
+To override it, set `DATABASE_URL` before starting the service:
 
 ```bash
-mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS multi_agent_pyserver DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-export DATABASE_URL="mysql+pymysql://root:password@127.0.0.1:3306/multi_agent_pyserver?charset=utf8mb4"
+export DATABASE_URL="mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"
 uvicorn app.main:app --reload
 ```
 
-When `DATABASE_URL` is set, the service creates the required `agents` and
-`tasks` tables automatically. The current MVP stores each agent/task as a JSON
-payload, which keeps the schema stable while the task model is still changing.
+When database mode is enabled, the service creates the required agent, task,
+round, subtask, event, snapshot, tool execution, and workflow template tables
+automatically.
+
+`ENABLE_SYSTEM_MOCK_FALLBACK` controls only system-level fallback behavior for
+intent recognition, round dispatch, agent execution, and human-node fallback.
+The default is `false`: model failures surface as errors instead of silently
+using local mock planning/execution. Agent tools with `type=mock` are still
+available and are the recommended way to demo external tool results locally.
+Set `ENABLE_SYSTEM_MOCK_FALLBACK=true` only when you want the older fully local
+fallback demo behavior.
 
 ## Test
 
@@ -261,14 +273,14 @@ Intent recognition uses the currently registered agents when preparing the main
 task draft. After confirmation, the dispatcher plans subtasks round by round
 from the latest `context`, so later subtasks can use previous subtask results.
 
-Confirm task details. After this call, the service automatically runs the
-multi-round dispatch and execution loop until no subtasks remain, execution
-fails, or the loop limit is reached.
+Confirm task details. `execution_mode` defaults to `sync`, which keeps the old
+blocking behavior. Set `execution_mode` to `async` to return immediately after
+confirmation and run the multi-round dispatch loop in the background.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/tasks/{task_id}/confirm \
   -H "Content-Type: application/json" \
-  -d '{"title":"Create a quote for customer A","description":"Prepare and send quote for customer A"}'
+  -d '{"title":"Create a quote for customer A","description":"Prepare and send quote for customer A","execution_mode":"async"}'
 ```
 
 Poll tasks assigned to an agent:

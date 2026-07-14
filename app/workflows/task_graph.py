@@ -4,6 +4,7 @@ from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from app.core.config import require_system_mock_fallback_enabled
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
 from app.core.model_client import execute_subtask_with_tools_model, plan_next_round_with_model
@@ -103,7 +104,10 @@ class TaskGraphRunner:
             return {"task": task, "round_plan": RoundPlan(should_continue=False), "round_outputs": [], "paused": False}
 
         agents = self.agent_registry.list_agents()
-        plan = plan_next_round_with_model(task, agents) or mock_round_plan(task, agents)
+        plan = plan_next_round_with_model(task, agents)
+        if plan is None:
+            require_system_mock_fallback_enabled("round_dispatch")
+            plan = mock_round_plan(task, agents)
         if plan.should_continue and plan.subtasks:
             task.loop_count += 1
             task.events.append(
@@ -235,12 +239,14 @@ class TaskGraphRunner:
             if matched:
                 return matched
         probe_task = task.model_copy(update={"title": subtask.title, "description": subtask.description})
+        require_system_mock_fallback_enabled("agent_resolution")
         return mock_dispatch(probe_task, agents)
 
     def _execute_subtask(self, task: Task, subtask: SubTask, agent) -> SubTaskExecutionOutcome:
         if agent:
             execution_result = execute_subtask_with_tools_model(task, subtask, agent, [])
             if execution_result is None:
+                require_system_mock_fallback_enabled("agent_execution")
                 return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
             tool_calls, output = execution_result
             if tool_calls:
@@ -248,6 +254,7 @@ class TaskGraphRunner:
                 subtask.tool_results = [self.tool_executor.execute(agent, tool_call) for tool_call in tool_calls]
                 followup_result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
                 if followup_result is None:
+                    require_system_mock_fallback_enabled("agent_execution_followup")
                     return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
                 tool_calls, output = followup_result
                 if tool_calls:
@@ -259,6 +266,7 @@ class TaskGraphRunner:
             if not output:
                 return SubTaskExecutionOutcome(completed=False, error="Agent returned no output")
             return SubTaskExecutionOutcome(completed=True, output=output)
+        require_system_mock_fallback_enabled("human_node_processing")
         return SubTaskExecutionOutcome(completed=True, output=mock_human_node_processing(task))
 
     @staticmethod

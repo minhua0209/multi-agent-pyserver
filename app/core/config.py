@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+import os
+
+
+DEFAULT_DATABASE_URL = "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"
+
+
+def is_default_database_enabled() -> bool:
+    return os.getenv("DISABLE_DEFAULT_DATABASE_URL", "false").lower() not in {"1", "true", "yes", "on"}
+
+
+def is_system_mock_fallback_enabled() -> bool:
+    return os.getenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
+
+
+def require_system_mock_fallback_enabled(stage: str) -> None:
+    if not is_system_mock_fallback_enabled():
+        raise RuntimeError(f"System mock fallback is disabled at {stage}")

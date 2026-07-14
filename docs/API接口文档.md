@@ -322,14 +322,22 @@
 
 `POST /api/v1/tasks/{task_id}/confirm`
 
-前端展示 draft 后，由人工确认或修改任务标题和描述。提交后，系统会自动运行后续流程，不需要前端再次请求触发 agent 执行。
+前端展示 draft 后，由人工确认或修改任务标题和描述。
+
+`execution_mode` 支持：
+
+| 值 | 说明 |
+| --- | --- |
+| `sync` | 默认值。接口会同步运行后续自动流转，直到任务完成、失败、挂起到人工节点或达到循环上限后返回。 |
+| `async` | 接口只完成确认并调度后台执行，然后立即返回当前任务状态。前端通过 `GET /api/v1/tasks/{task_id}` 查询后续轨迹。 |
 
 请求示例：
 
 ```json
 {
   "title": "发送测试邮件",
-  "description": "向 minh@getui.com 发送测试邮件，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。"
+  "description": "向 minh@getui.com 发送测试邮件，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。",
+  "execution_mode": "async"
 }
 ```
 
@@ -337,6 +345,7 @@
 
 返回完整 `Task`。常见结果：
 
+- `task_status=running,current_node=dispatch_decision`：异步模式下已确认并已调度后台执行。
 - `task_status=succeeded`：任务已自动执行完成。
 - `task_status=running,current_node=human_execution`：任务中存在人工子任务，等待人工提交。
 - `task_status=running,current_node=waiting_dependencies`：任务等待前置任务完成。

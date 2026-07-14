@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.core.enums import CurrentNode
 from app.core.models import ExecutionResultCreate, Task, TaskConfirm, TaskRequestCreate, TaskRequestResponse
 from app.services.task_service import TaskNotFoundError, WorkflowNotFoundError
 
@@ -14,6 +15,14 @@ def create_task_request(payload: TaskRequestCreate, request: Request) -> TaskReq
 @router.post("/{task_id}/confirm", response_model=Task)
 def confirm_task(task_id: str, payload: TaskConfirm, request: Request) -> Task:
     try:
+        if payload.execution_mode == "async":
+            task = request.app.state.task_service.confirm_task_details(task_id, payload)
+            if task.current_node != CurrentNode.WAITING_DEPENDENCIES:
+                task = request.app.state.task_service.schedule_confirmed_task(task.id)
+                response_task = task.model_copy(deep=True)
+                request.app.state.task_service.start_background_task(task.id)
+                return response_task
+            return task
         return request.app.state.task_service.confirm_task(task_id, payload)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc

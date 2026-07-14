@@ -105,6 +105,7 @@ class TaskRequestResponse(BaseModel):
 class TaskConfirm(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    execution_mode: str = "sync"
 
 
 class ExecutionResultCreate(BaseModel):

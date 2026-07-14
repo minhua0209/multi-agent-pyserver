@@ -1,6 +1,8 @@
 from pathlib import Path
 import time
 
+import pytest
+
 from app.core.enums import CurrentNode, SourceType, TaskStatus
 from app.core.models import AgentCreate, AgentTool, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
 from app.services.storage import AgentRegistry
@@ -42,6 +44,35 @@ def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -
         "completion_judged",
         "completion_judged",
     ]
+
+
+def test_task_graph_does_not_use_round_plan_mock_when_system_fallback_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry = AgentRegistry(tmp_path / "agents.json")
+    registry.create_agent(
+        AgentCreate(
+            name="Quote Agent",
+            description="Handles quote tasks",
+            capabilities=["quote"],
+        )
+    )
+    task = Task(
+        id=new_id("task"),
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Create quote for customer D",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.HUMAN_CONFIRMATION,
+        title="Create quote for customer D",
+        description="Prepare quote for customer D",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    with pytest.raises(RuntimeError, match="System mock fallback is disabled"):
+        TaskGraphRunner(registry).run(task)
 
 
 def test_task_graph_executes_agent_tool_calls(tmp_path: Path, monkeypatch) -> None:

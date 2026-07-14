@@ -26,6 +26,24 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
     assert task["draft"]["title"] == "Create a quote for customer A"
 
 
+def test_task_request_does_not_use_intent_mock_when_system_fallback_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Create a quote for customer A",
+        },
+    )
+
+    assert response.status_code == 500
+
+
 def test_task_request_intent_recognition_uses_registered_agents(tmp_path: Path, monkeypatch) -> None:
     captured_agents = []
 
@@ -147,6 +165,48 @@ def test_confirm_task_runs_automatic_flow_until_success(tmp_path: Path) -> None:
     assert "context_updated" in event_types
     assert event_types[-1] == "completion_judged"
     assert task["context"]["summary"]
+
+
+def test_confirm_task_can_return_before_automatic_flow_when_async_requested(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Create a quote for customer A",
+        },
+    ).json()["tasks"][0]
+
+    scheduled_task_ids = []
+
+    def _capture_background_start(self, task_id):
+        scheduled_task_ids.append(task_id)
+
+    monkeypatch.setattr("app.services.task_service.TaskService.start_background_task", _capture_background_start)
+
+    response = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "Create a quote for customer A",
+            "description": "Prepare and send quote for customer A",
+            "execution_mode": "async",
+        },
+    )
+
+    assert response.status_code == 200
+    task = response.json()
+    assert task["task_status"] == "running"
+    assert task["current_node"] == "dispatch_decision"
+    assert task["title"] == "Create a quote for customer A"
+    assert task["description"] == "Prepare and send quote for customer A"
+    assert scheduled_task_ids == [created["id"]]
+    assert [event["type"] for event in task["events"]][-2:] == [
+        "human_confirmed",
+        "async_execution_scheduled",
+    ]
 
 
 def test_agent_can_poll_tasks_assigned_to_it(tmp_path: Path) -> None:

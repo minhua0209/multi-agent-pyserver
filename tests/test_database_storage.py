@@ -70,6 +70,36 @@ def test_create_app_can_use_database_storage(tmp_path: Path) -> None:
     assert list_response.json()[0]["name"] == "CRM Agent"
 
 
+def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
+    captured_urls = []
+
+    class FakeDatabaseAgentRegistry:
+        def __init__(self, database_url):
+            captured_urls.append(("agent", database_url))
+
+    class FakeDatabaseTaskStore:
+        def __init__(self, database_url):
+            captured_urls.append(("task", database_url))
+
+    class FakeDatabaseWorkflowRegistry:
+        def __init__(self, database_url):
+            captured_urls.append(("workflow", database_url))
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DISABLE_DEFAULT_DATABASE_URL", raising=False)
+    monkeypatch.setattr("app.main.DatabaseAgentRegistry", FakeDatabaseAgentRegistry)
+    monkeypatch.setattr("app.main.DatabaseTaskStore", FakeDatabaseTaskStore)
+    monkeypatch.setattr("app.main.DatabaseWorkflowRegistry", FakeDatabaseWorkflowRegistry)
+
+    create_app()
+
+    assert captured_urls == [
+        ("agent", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
+        ("task", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
+        ("workflow", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
+    ]
+
+
 def test_create_app_database_storage_persists_workflow_templates(tmp_path: Path) -> None:
     database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
     first_client = TestClient(create_app(database_url=database_url))

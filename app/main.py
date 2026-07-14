@@ -7,6 +7,7 @@ from app.api.routes_agents import router as agents_router
 from app.api.routes_subtasks import router as subtasks_router
 from app.api.routes_tasks import router as tasks_router
 from app.api.routes_workflows import router as workflows_router
+from app.core.config import DEFAULT_DATABASE_URL, is_default_database_enabled
 from app.services.storage import (
     AgentRegistry,
     DatabaseAgentRegistry,
@@ -24,7 +25,10 @@ def create_app(
     database_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TaskHub MVP", version="0.1.0")
-    configured_database_url = database_url or os.getenv("DATABASE_URL")
+    default_database_url = None
+    if not agent_file and not workflow_file and is_default_database_enabled():
+        default_database_url = DEFAULT_DATABASE_URL
+    configured_database_url = database_url or os.getenv("DATABASE_URL") or default_database_url
     if configured_database_url:
         app.state.agent_registry = DatabaseAgentRegistry(configured_database_url)
         app.state.task_store = DatabaseTaskStore(configured_database_url)

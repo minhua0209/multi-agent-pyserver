@@ -1,4 +1,7 @@
+from threading import Thread
+
 from app.core.enums import CurrentNode, ResultStatus, TaskStatus
+from app.core.config import require_system_mock_fallback_enabled
 from app.core.model_client import recognize_tasks_with_model
 from app.core.mock_llm import (
     mock_intent_recognitions,
@@ -48,10 +51,10 @@ class TaskService:
     def create_request(self, payload: TaskRequestCreate) -> TaskRequestResponse:
         request_id = new_id("req")
         agents = self.agent_registry.list_agents()
-        raw_drafts = recognize_tasks_with_model(payload.content, agents) or mock_intent_recognitions(
-            payload.content,
-            agents,
-        )
+        raw_drafts = recognize_tasks_with_model(payload.content, agents)
+        if not raw_drafts:
+            require_system_mock_fallback_enabled("intent_recognition")
+            raw_drafts = mock_intent_recognitions(payload.content, agents)
         draft = self._merge_drafts(payload.content, raw_drafts)
         task = Task(
             id=new_id("task"),
@@ -71,10 +74,31 @@ class TaskService:
         return TaskRequestResponse(request_id=request_id, tasks=[self.store.save(task)])
 
     def confirm_task(self, task_id: str, payload: TaskConfirm) -> Task:
+        task = self.confirm_task_details(task_id, payload)
+        return self.run_confirmed_task(task.id)
+
+    def confirm_task_details(self, task_id: str, payload: TaskConfirm) -> Task:
         task = self._get_existing(task_id)
         task.title = payload.title
         task.description = payload.description
         task.events.append(self._event("human_confirmed", "Human confirmed task details"))
+        if not self._dependencies_satisfied(task):
+            task.current_node = CurrentNode.WAITING_DEPENDENCIES
+            task.events.append(self._event("dependency_waiting", "Task is waiting for prerequisite tasks"))
+            return self.store.save(task)
+        task.current_node = CurrentNode.DISPATCH_DECISION
+        return self.store.save(task)
+
+    def schedule_confirmed_task(self, task_id: str) -> Task:
+        task = self._get_existing(task_id)
+        task.events.append(self._event("async_execution_scheduled", "Automatic task flow scheduled"))
+        return self.store.save(task)
+
+    def start_background_task(self, task_id: str) -> None:
+        Thread(target=self.run_confirmed_task, args=(task_id,), daemon=True).start()
+
+    def run_confirmed_task(self, task_id: str) -> Task:
+        task = self._get_existing(task_id)
         if not self._dependencies_satisfied(task):
             task.current_node = CurrentNode.WAITING_DEPENDENCIES
             task.events.append(self._event("dependency_waiting", "Task is waiting for prerequisite tasks"))
