@@ -38,8 +38,10 @@ class TaskService:
         draft = self._merge_drafts(payload.content, raw_drafts)
         task = Task(
             id=new_id("task"),
+            request_id=request_id,
             source_type=payload.source_type,
             content=payload.content,
+            request_metadata=payload.metadata,
             task_status=TaskStatus.RUNNING,
             current_node=CurrentNode.HUMAN_CONFIRMATION,
             draft=draft,

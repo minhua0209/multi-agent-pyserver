@@ -102,3 +102,112 @@ def test_task_graph_executes_agent_tool_calls(tmp_path: Path, monkeypatch) -> No
     assert subtask.tool_results[0].success is True
     assert subtask.tool_results[0].result == '{"customer_name": "Customer A", "level": "vip"}'
     assert "Prepared quote" in subtask.output
+
+
+def test_failed_tool_call_marks_subtask_failed_and_feeds_next_round(tmp_path: Path, monkeypatch) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="CRM Agent",
+            description="Handles CRM tasks",
+            capabilities=["crm"],
+        )
+    )
+    task = Task(
+        id="task_tool_failure",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Query CRM and prepare quote",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.HUMAN_CONFIRMATION,
+        title="Query CRM",
+        description="Query customer_a from CRM",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    seen_contexts = []
+
+    def _plan(task, agents):
+        seen_contexts.append(task.context.summary)
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need CRM data",
+                subtasks=[
+                    SubTask(
+                        id="subtask_tool_failure",
+                        title="Query CRM",
+                        description="Query customer_a from CRM",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        assert "FAILED: Query CRM" in task.context.summary
+        assert "Tool crm_query is not registered" in task.context.summary
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    def _execute(task, subtask, agent, tool_results):
+        if not tool_results:
+            return [ToolCall(tool_name="crm_query", arguments={"customer_id": "customer_a"})], ""
+        return [], ""
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    result = TaskGraphRunner(registry).run(task)
+
+    failed_subtask = result.context.rounds[0].subtasks[0]
+    assert failed_subtask.status == TaskStatus.FAILED
+    assert "Tool crm_query is not registered" in failed_subtask.output
+    assert result.task_status == TaskStatus.SUCCEEDED
+    assert result.loop_count == 1
+    assert seen_contexts == ["", result.context.summary]
+
+
+def test_empty_agent_output_marks_subtask_failed_and_feeds_next_round(tmp_path: Path, monkeypatch) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Quote Agent",
+            description="Handles quote tasks",
+            capabilities=["quote"],
+        )
+    )
+    task = Task(
+        id="task_empty_output",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Create quote for customer D",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.HUMAN_CONFIRMATION,
+        title="Create quote for customer D",
+        description="Prepare quote for customer D",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    def _plan(task, agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need quote",
+                subtasks=[
+                    SubTask(
+                        id="subtask_empty_output",
+                        title="Create quote",
+                        description="Create quote for customer D",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        assert "FAILED: Create quote" in task.context.summary
+        assert "Agent returned no output" in task.context.summary
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", lambda *args: ([], ""))
+
+    result = TaskGraphRunner(registry).run(task)
+
+    failed_subtask = result.context.rounds[0].subtasks[0]
+    assert failed_subtask.status == TaskStatus.FAILED
+    assert failed_subtask.output == "Agent returned no output"
+    assert result.task_status == TaskStatus.SUCCEEDED

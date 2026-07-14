@@ -1,9 +1,10 @@
+from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from app.core.enums import CurrentNode, TaskStatus
-from app.core.mock_llm import mock_dispatch, mock_human_node_processing, mock_round_plan
+from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
 from app.core.model_client import execute_subtask_with_tools_model, plan_next_round_with_model
 from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, utc_now
 from app.services.storage import AgentRegistry
@@ -18,6 +19,20 @@ class TaskGraphState(TypedDict):
 
 RouteAfterPlan = Literal["subtask_execution", "completion_judge", "human_intervention"]
 RouteAfterJudge = Literal["round_dispatch", "human_intervention", "end"]
+
+
+@dataclass(frozen=True)
+class SubTaskExecutionOutcome:
+    completed: bool
+    output: str = ""
+    error: str = ""
+
+    @property
+    def context_text(self) -> str:
+        if self.completed:
+            return self.output
+        reason = self.error or self.output or "Subtask did not complete"
+        return reason
 
 
 class TaskGraphRunner:
@@ -103,12 +118,15 @@ class TaskGraphRunner:
             if agent:
                 subtask.assigned_agent_id = agent.id
                 task.assigned_agent_id = agent.id
-            output = self._execute_subtask(task, subtask, agent)
-            subtask.output = output
-            subtask.status = TaskStatus.SUCCEEDED
-            outputs.append(output)
-            event_type = "agent_executed" if agent else "human_node_processed"
-            task.events.append(self._event(event_type, f"{subtask.title}: {output}"))
+            outcome = self._execute_subtask(task, subtask, agent)
+            subtask.output = outcome.output or outcome.error
+            subtask.status = TaskStatus.SUCCEEDED if outcome.completed else TaskStatus.FAILED
+            outputs.append(self._format_subtask_context(subtask, outcome))
+            if outcome.completed:
+                event_type = "agent_executed" if agent else "human_node_processed"
+                task.events.append(self._event(event_type, f"{subtask.title}: {subtask.output}"))
+            else:
+                task.events.append(self._event("subtask_failed", f"{subtask.title}: {subtask.output}"))
         task.updated_at = utc_now()
         return {"task": task, "round_plan": state["round_plan"], "round_outputs": outputs}
 
@@ -168,17 +186,35 @@ class TaskGraphRunner:
         probe_task = task.model_copy(update={"title": subtask.title, "description": subtask.description})
         return mock_dispatch(probe_task, agents)
 
-    def _execute_subtask(self, task: Task, subtask: SubTask, agent) -> str:
+    def _execute_subtask(self, task: Task, subtask: SubTask, agent) -> SubTaskExecutionOutcome:
         if agent:
-            tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, [])
+            execution_result = execute_subtask_with_tools_model(task, subtask, agent, [])
+            if execution_result is None:
+                return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
+            tool_calls, output = execution_result
             if tool_calls:
                 subtask.tool_calls = tool_calls
                 subtask.tool_results = [self.tool_executor.execute(agent, tool_call) for tool_call in tool_calls]
-                tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+                followup_result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+                if followup_result is None:
+                    return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
+                tool_calls, output = followup_result
                 if tool_calls:
                     subtask.tool_calls.extend(tool_calls)
-            return output or f"{agent.name} completed subtask {subtask.id}: {subtask.title}"
-        return mock_human_node_processing(task)
+            failed_tools = [result for result in subtask.tool_results if not result.success]
+            if failed_tools:
+                error = "; ".join(result.error or f"Tool {result.tool_name} failed" for result in failed_tools)
+                return SubTaskExecutionOutcome(completed=False, error=error)
+            if not output:
+                return SubTaskExecutionOutcome(completed=False, error="Agent returned no output")
+            return SubTaskExecutionOutcome(completed=True, output=output)
+        return SubTaskExecutionOutcome(completed=True, output=mock_human_node_processing(task))
+
+    @staticmethod
+    def _format_subtask_context(subtask: SubTask, outcome: SubTaskExecutionOutcome) -> str:
+        if outcome.completed:
+            return outcome.context_text
+        return f"FAILED: {subtask.title}\nReason: {outcome.context_text}"
 
     @staticmethod
     def _build_context_summary(previous_summary: str, output_text: str) -> str:

@@ -234,7 +234,10 @@ def execute_agent_with_model(task: Task, agent: Agent) -> str | None:
 
 
 def execute_subtask_with_model(task: Task, subtask: SubTask, agent: Agent | None) -> str | None:
-    tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+    result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+    if result is None:
+        return None
+    tool_calls, output = result
     if tool_calls:
         return ""
     return output
@@ -245,7 +248,7 @@ def execute_subtask_with_tools_model(
     subtask: SubTask,
     agent: Agent | None,
     tool_results: list[ToolExecutionResult],
-) -> tuple[list[ToolCall], str]:
+) -> tuple[list[ToolCall], str] | None:
     system_prompt = (
         "你是被分配到子任务的执行 agent。必须基于主任务当前上下文和子任务描述完成任务。"
         "如果需要使用 agent 提供的 tools，返回 tool_calls 数组；系统会真实执行工具并把 tool_results 再传给你。"
@@ -272,7 +275,7 @@ def execute_subtask_with_tools_model(
     try:
         data = _loads_json(default_client.create(system_prompt, user_prompt))
     except Exception:
-        return [], ""
+        return None
 
     tool_calls = []
     for item in data.get("tool_calls", []):

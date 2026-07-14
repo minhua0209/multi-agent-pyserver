@@ -21,6 +21,20 @@ export MODEL_NAME="qwen3.6-35b"
 uvicorn app.main:app --reload
 ```
 
+By default, agents are stored in `app/data/agents.json` and tasks are kept in
+memory. To persist both agents and tasks in MySQL, create the database first and
+set `DATABASE_URL` before starting the service:
+
+```bash
+mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS multi_agent_pyserver DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+export DATABASE_URL="mysql+pymysql://root:password@127.0.0.1:3306/multi_agent_pyserver?charset=utf8mb4"
+uvicorn app.main:app --reload
+```
+
+When `DATABASE_URL` is set, the service creates the required `agents` and
+`tasks` tables automatically. The current MVP stores each agent/task as a JSON
+payload, which keeps the schema stable while the task model is still changing.
+
 ## Test
 
 ```bash

@@ -123,8 +123,10 @@ class RoundPlan(BaseModel):
 
 class Task(BaseModel):
     id: str
+    request_id: str | None = None
     source_type: SourceType
     content: str
+    request_metadata: dict[str, str] = Field(default_factory=dict)
     task_status: TaskStatus
     current_node: CurrentNode
     draft: TaskDraft | None = None
