@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskHub 改动前基线</title>
+  <style>
+    :root {
+      --surface: oklch(0.985 0.006 245);
+      --surface-panel: oklch(1 0 0);
+      --surface-muted: oklch(0.95 0.009 245);
+      --border: oklch(0.86 0.012 245);
+      --text-primary: oklch(0.23 0.022 245);
+      --text-secondary: oklch(0.45 0.018 245);
+      --accent: oklch(0.54 0.13 218);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--surface);
+      color: var(--text-primary);
+    }
+
+    .frame {
+      display: grid;
+      grid-template-columns: 248px 1fr;
+      min-height: 100vh;
+    }
+
+    .side {
+      background: var(--surface-panel);
+      border-right: 1px solid var(--border);
+      padding: 24px;
+    }
+
+    .brand {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .nav-placeholder {
+      margin-top: 32px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .bar {
+      height: 38px;
+      border-radius: 8px;
+      background: var(--surface-muted);
+      border: 1px solid var(--border);
+    }
+
+    .main {
+      padding: 32px;
+    }
+
+    .panel {
+      background: var(--surface-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+      max-width: 960px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 24px;
+    }
+
+    p {
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    .list {
+      margin-top: 24px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 16px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      color: var(--text-secondary);
+    }
+
+    .label {
+      color: var(--text-primary);
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">TaskHub</div>
+      <div class="nav-placeholder">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+      </div>
+    </aside>
+    <main class="main">
+      <section class="panel">
+        <h1>改动前：无前端页面</h1>
+        <p>本轮前，项目只有 FastAPI 后端、产品文档和迭代文档；没有可打开的前端信息架构、页面原型、角色切换、任务详情、Agent 管理或审计页面。</p>
+        <div class="list">
+          <div class="row"><div class="label">入口</div><div>README 中的 API 示例和 curl 调用。</div></div>
+          <div class="row"><div class="label">页面</div><div>无可交互页面。</div></div>
+          <div class="row"><div class="label">视觉状态</div><div>无页面级状态、空态、权限态和禁用态。</div></div>
+          <div class="row"><div class="label">截图依据</div><div>此图是基线表达，用于和本轮生成的前端原型截图对比。</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

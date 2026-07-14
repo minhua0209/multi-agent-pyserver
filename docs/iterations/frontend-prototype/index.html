@@ -1,0 +1,2596 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskHub 前端页面原型</title>
+  <script src="data.js"></script>
+  <script src="annotations.js"></script>
+  <style>
+    :root {
+      --surface: oklch(0.965 0.018 225);
+      --surface-muted: oklch(0.94 0.02 222);
+      --surface-panel: oklch(0.996 0.005 232 / 0.94);
+      --surface-strong: oklch(0.88 0.02 226);
+      --border: oklch(0.82 0.022 228);
+      --border-strong: oklch(0.68 0.03 226);
+      --text-primary: oklch(0.23 0.022 245);
+      --text-secondary: oklch(0.43 0.018 245);
+      --text-muted: oklch(0.56 0.016 245);
+      --accent: oklch(0.54 0.13 218);
+      --accent-soft: oklch(0.925 0.045 218);
+      --success: oklch(0.55 0.12 155);
+      --success-soft: oklch(0.94 0.04 155);
+      --warning: oklch(0.68 0.13 72);
+      --warning-soft: oklch(0.95 0.055 82);
+      --danger: oklch(0.58 0.16 28);
+      --danger-soft: oklch(0.94 0.045 28);
+      --info: oklch(0.56 0.11 250);
+      --info-soft: oklch(0.94 0.035 250);
+      --radius: 8px;
+      --radius-sm: 6px;
+      --shadow: 0 16px 40px oklch(0.23 0.02 245 / 0.14);
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --nav-width: 248px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(135deg, oklch(0.985 0.014 205) 0%, oklch(0.955 0.022 226) 46%, oklch(0.972 0.018 165) 100%);
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button,
+    a,
+    input,
+    select,
+    textarea {
+      outline: none;
+    }
+
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible {
+      box-shadow: 0 0 0 3px oklch(0.74 0.1 218 / 0.35);
+      border-color: var(--accent);
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--nav-width) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .side-nav {
+      background: oklch(0.992 0.006 235 / 0.9);
+      border-right: 1px solid var(--border);
+      box-shadow: 1px 0 0 oklch(0.99 0.004 232 / 0.55) inset;
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .brand {
+      padding: var(--space-5);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .brand-subtitle {
+      margin-top: 2px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .nav-section {
+      padding: var(--space-3);
+    }
+
+    .nav-label {
+      color: var(--text-muted);
+      font-size: 12px;
+      margin: var(--space-3) var(--space-2) var(--space-2);
+    }
+
+    .nav-button {
+      width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      padding: 9px 10px;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 38px;
+    }
+
+    .nav-button:hover {
+      background: var(--surface-muted);
+      color: var(--text-primary);
+    }
+
+    .nav-button:active {
+      transform: translateY(1px);
+    }
+
+    .nav-button[aria-current="page"] {
+      color: var(--text-primary);
+      background: var(--accent-soft);
+      border-color: oklch(0.82 0.06 218);
+      font-weight: 650;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .top-toolbar {
+      background: oklch(0.992 0.006 235 / 0.86);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(14px);
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      padding: 0 var(--space-5);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      min-width: 0;
+    }
+
+    .global-search {
+      width: min(440px, 42vw);
+      min-width: 220px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      color: var(--text-primary);
+      background: oklch(0.995 0.004 230 / 0.92);
+    }
+
+    .role-select,
+    .select,
+    .input,
+    .textarea {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      background: var(--surface-panel);
+      color: var(--text-primary);
+      min-height: 36px;
+    }
+
+    .textarea {
+      resize: vertical;
+      min-height: 120px;
+      width: 100%;
+    }
+
+    .content {
+      overflow: auto;
+      padding: var(--space-5);
+      background:
+        linear-gradient(180deg, oklch(0.99 0.012 205 / 0.74) 0%, oklch(0.955 0.02 224 / 0.82) 44%, oklch(0.97 0.016 165 / 0.76) 100%);
+    }
+
+    .page {
+      display: none;
+      max-width: 1480px;
+      margin: 0 auto;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    .page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-4);
+      margin-bottom: var(--space-4);
+    }
+
+    .page-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    .page-description {
+      margin: 4px 0 0;
+      color: var(--text-secondary);
+    }
+
+    .page-header-actions {
+      display: flex;
+      gap: var(--space-2);
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .panel {
+      background:
+        linear-gradient(180deg, oklch(1 0 0 / 0.94), oklch(0.985 0.008 230 / 0.94));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 26px oklch(0.28 0.03 230 / 0.07);
+      min-width: 0;
+    }
+
+    .panel-header {
+      padding: var(--space-4);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: var(--space-3);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .panel-body {
+      padding: var(--space-4);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: var(--space-4);
+      align-items: start;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-4);
+      align-items: start;
+    }
+
+    .task-detail-body {
+      display: grid;
+      gap: var(--space-4);
+    }
+
+    .detail-block {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: oklch(0.995 0.006 230 / 0.82);
+      padding: var(--space-3);
+      min-width: 0;
+    }
+
+    .detail-block-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-3);
+    }
+
+    .detail-block-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 750;
+    }
+
+    .detail-header-meta {
+      display: flex;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .confirm-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.85fr) minmax(360px, 1.1fr) minmax(280px, 0.9fr);
+      gap: var(--space-4);
+      align-items: start;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+
+    .metric-tile {
+      background:
+        linear-gradient(180deg, oklch(1 0 0 / 0.92), oklch(0.982 0.01 225 / 0.94));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 8px 18px oklch(0.3 0.03 230 / 0.055);
+      padding: var(--space-4);
+      min-height: 92px;
+    }
+
+    .metric-label {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .metric-value {
+      font-size: 24px;
+      font-weight: 750;
+      margin-top: 6px;
+    }
+
+    .metric-note {
+      color: var(--text-secondary);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .cockpit-health {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+
+    .health-item {
+      border: 1px solid oklch(0.82 0.04 218);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(135deg, oklch(0.98 0.012 218), var(--surface-panel) 62%),
+        var(--surface-panel);
+      min-height: 74px;
+      padding: var(--space-3);
+    }
+
+    .health-label,
+    .node-label,
+    .automation-label {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .health-value {
+      margin-top: 6px;
+      font-size: 16px;
+      font-weight: 750;
+    }
+
+    .cockpit-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.82fr) minmax(420px, 1.36fr) minmax(280px, 0.92fr);
+      gap: var(--space-4);
+      align-items: stretch;
+    }
+
+    .cockpit-grid .panel,
+    .overview-lower-grid .panel {
+      min-height: 100%;
+    }
+
+    .node-matrix {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-3);
+      margin-top: var(--space-4);
+    }
+
+    .node-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      padding: var(--space-3);
+      min-height: 104px;
+    }
+
+    .node-card[data-state="running"],
+    .node-card[data-state="active"] {
+      border-color: oklch(0.78 0.07 218);
+      background: var(--info-soft);
+    }
+
+    .node-card[data-state="warning"] {
+      border-color: oklch(0.84 0.09 82);
+      background: var(--warning-soft);
+    }
+
+    .node-card[data-state="succeeded"],
+    .node-card[data-state="online"] {
+      border-color: oklch(0.82 0.08 155);
+      background: var(--success-soft);
+    }
+
+    .node-value {
+      margin-top: 6px;
+      font-size: 22px;
+      line-height: 1.1;
+      font-weight: 800;
+    }
+
+    .node-note {
+      margin-top: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .coverage-list,
+    .automation-grid,
+    .side-stack {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .coverage-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: start;
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .coverage-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .bar-track {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: var(--bar-width);
+      background: var(--accent);
+      border-radius: inherit;
+    }
+
+    .bar-fill[data-state="warning"] {
+      background: var(--warning);
+    }
+
+    .bar-fill[data-state="offline"] {
+      background: var(--danger);
+    }
+
+    .automation-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      padding: var(--space-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+    }
+
+    .automation-value {
+      font-weight: 800;
+    }
+
+    .overview-lower-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+      gap: var(--space-4);
+      align-items: start;
+      margin-top: var(--space-4);
+    }
+
+    .filter-bar {
+      background: var(--surface-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-3);
+      margin-bottom: var(--space-4);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      align-items: center;
+    }
+
+    .filter-bar .input {
+      min-width: 220px;
+    }
+
+    .btn {
+      border: 1px solid var(--border);
+      background: var(--surface-panel);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      min-height: 36px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--surface-muted);
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    .btn-primary:hover {
+      background: oklch(0.48 0.13 218);
+    }
+
+    .btn-danger {
+      color: var(--danger);
+      border-color: oklch(0.82 0.07 28);
+      background: var(--danger-soft);
+    }
+
+    .btn[disabled],
+    .btn[aria-disabled="true"] {
+      cursor: not-allowed;
+      color: var(--text-muted);
+      background: var(--surface-muted);
+      border-color: var(--border);
+      transform: none;
+      opacity: 0.72;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .status-badge[data-status="succeeded"],
+    .status-badge[data-status="online"] {
+      color: oklch(0.38 0.12 155);
+      background: var(--success-soft);
+      border-color: oklch(0.82 0.08 155);
+    }
+
+    .status-badge[data-status="running"],
+    .status-badge[data-status="active"] {
+      color: oklch(0.38 0.11 218);
+      background: var(--info-soft);
+      border-color: oklch(0.82 0.07 250);
+    }
+
+    .status-badge[data-status="warning"],
+    .status-badge[data-status="human_confirmation"],
+    .status-badge[data-status="human_intervention"] {
+      color: oklch(0.44 0.11 72);
+      background: var(--warning-soft);
+      border-color: oklch(0.84 0.09 82);
+    }
+
+    .status-badge[data-status="failed"],
+    .status-badge[data-status="offline"],
+    .status-badge[data-status="inactive"] {
+      color: oklch(0.43 0.14 28);
+      background: var(--danger-soft);
+      border-color: oklch(0.84 0.08 28);
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .data-table th,
+    .data-table td {
+      border-bottom: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+
+    .data-table th {
+      color: var(--text-secondary);
+      background: var(--surface-muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .data-table tr:hover td {
+      background: oklch(0.975 0.008 245);
+    }
+
+    .data-table tr[data-selected="true"] td {
+      background: var(--accent-soft);
+    }
+
+    [data-annotation-id="tasks-table"] .data-table {
+      table-layout: auto;
+    }
+
+    [data-annotation-id="tasks-table"] .data-table th,
+    [data-annotation-id="tasks-table"] .data-table td {
+      padding: 10px;
+    }
+
+    [data-annotation-id="tasks-table"] .data-table th:nth-child(1),
+    [data-annotation-id="tasks-table"] .data-table td:nth-child(1) {
+      width: 26%;
+    }
+
+    [data-annotation-id="tasks-table"] .data-table th:nth-child(5),
+    [data-annotation-id="tasks-table"] .data-table td:nth-child(5),
+    [data-annotation-id="tasks-table"] .data-table th:nth-child(6),
+    [data-annotation-id="tasks-table"] .data-table td:nth-child(6) {
+      white-space: nowrap;
+    }
+
+    .row-action {
+      color: var(--accent);
+      background: transparent;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      text-align: left;
+      font-weight: 650;
+    }
+
+    .muted {
+      color: var(--text-muted);
+    }
+
+    .meta-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .meta-row {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: var(--space-3);
+    }
+
+    .meta-key {
+      color: var(--text-muted);
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .form-stack {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .form-field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .form-field label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 650;
+    }
+
+    .inline-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-3);
+    }
+
+    .notice {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-3);
+      background: var(--surface-muted);
+      color: var(--text-secondary);
+    }
+
+    .notice.warning {
+      background: var(--warning-soft);
+      border-color: oklch(0.84 0.09 82);
+      color: oklch(0.38 0.09 72);
+    }
+
+    .notice.error {
+      background: var(--danger-soft);
+      border-color: oklch(0.84 0.08 28);
+      color: oklch(0.38 0.12 28);
+    }
+
+    .flow-steps {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .flow-step {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      padding: var(--space-3);
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: center;
+    }
+
+    .step-index {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 var(--space-4);
+    }
+
+    .tab-button {
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 12px 4px 10px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+
+    .tab-button[aria-selected="true"] {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-pane {
+      display: none;
+      padding: var(--space-4);
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .timeline {
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr);
+      gap: var(--space-3);
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .queue-list {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .queue-item {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      padding: var(--space-3);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .queue-item[aria-selected="true"] {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .drawer-backdrop,
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: oklch(0.2 0.02 245 / 0.38);
+      z-index: 50;
+    }
+
+    .drawer-backdrop.open,
+    .modal-backdrop.open {
+      display: block;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(560px, 92vw);
+      height: 100vh;
+      background: var(--surface-panel);
+      border-left: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      transform: translateX(100%);
+      transition: transform 160ms ease;
+      z-index: 60;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer-header,
+    .modal-header {
+      padding: var(--space-4);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      gap: var(--space-3);
+      align-items: flex-start;
+    }
+
+    .drawer-body {
+      overflow: auto;
+      padding: var(--space-4);
+    }
+
+    .modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: min(560px, calc(100vw - 32px));
+      max-height: calc(100vh - 48px);
+      background: var(--surface-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      transform: translate(-50%, -48%) scale(0.98);
+      opacity: 0;
+      pointer-events: none;
+      transition: 160ms ease;
+      z-index: 70;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .modal.open {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-body {
+      overflow: auto;
+      padding: var(--space-4);
+    }
+
+    .modal-footer {
+      padding: var(--space-4);
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-3);
+    }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 80;
+      background: var(--text-primary);
+      color: white;
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+      display: none;
+      max-width: min(420px, calc(100vw - 40px));
+    }
+
+    .toast.show {
+      display: block;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      background: var(--surface-muted);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    @media (max-width: 1100px) {
+      .app-shell {
+        grid-template-columns: 72px minmax(0, 1fr);
+      }
+
+      .brand-subtitle,
+      .nav-label,
+      .nav-button .nav-text {
+        display: none;
+      }
+
+      .nav-button {
+        justify-content: center;
+      }
+
+      .grid-2,
+      .cockpit-grid,
+      .overview-lower-grid,
+      .confirm-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metric-strip,
+      .cockpit-health,
+      .node-matrix {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      .app-shell {
+        display: block;
+      }
+
+      .side-nav {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: block;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .brand {
+        padding: var(--space-3);
+      }
+
+      .nav-section {
+        display: flex;
+        overflow-x: auto;
+        gap: var(--space-2);
+      }
+
+      .nav-button {
+        width: auto;
+        min-width: 92px;
+      }
+
+      .nav-button .nav-text {
+        display: inline;
+      }
+
+      .top-toolbar {
+        position: static;
+        align-items: stretch;
+        flex-direction: column;
+        padding: var(--space-3);
+      }
+
+      .toolbar-left,
+      .toolbar-right,
+      .global-search {
+        width: 100%;
+      }
+
+      .content {
+        padding: var(--space-3);
+      }
+
+      .metric-strip,
+      .cockpit-health,
+      .node-matrix,
+      .grid-3,
+      .inline-fields {
+        grid-template-columns: 1fr;
+      }
+
+      .data-table {
+        min-width: 760px;
+      }
+
+      .panel {
+        overflow-x: auto;
+      }
+
+      .page-header {
+        display: block;
+      }
+
+      .page-header-actions {
+        justify-content: flex-start;
+        margin-top: var(--space-3);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell" data-annotation-id="app-shell">
+    <aside class="side-nav" data-annotation-id="side-navigation">
+      <div class="brand">
+        <h1 class="brand-title">TaskHub</h1>
+        <div class="brand-subtitle">多任务 Agent 协同中心</div>
+      </div>
+      <div class="nav-section" aria-label="主导航">
+        <div class="nav-label">工作总览</div>
+        <button class="nav-button" data-page-target="overview" aria-current="page">
+          <span class="nav-text">协同总览</span><span>01</span>
+        </button>
+        <div class="nav-label">发布与确认</div>
+        <button class="nav-button" data-page-target="publish"><span class="nav-text">任务发布</span><span>02</span></button>
+        <button class="nav-button" data-page-target="confirmation"><span class="nav-text">人工确认</span><span>03</span></button>
+        <div class="nav-label">任务中心</div>
+        <button class="nav-button" data-page-target="tasks"><span class="nav-text">任务列表</span><span>04</span></button>
+        <div class="nav-label">管理治理</div>
+        <button class="nav-button" data-page-target="agents"><span class="nav-text">Agent 管理</span><span>05</span></button>
+        <button class="nav-button" data-page-target="audit"><span class="nav-text">审计记录</span><span>06</span></button>
+        <button class="nav-button" data-page-target="governance"><span class="nav-text">平台治理</span><span>07</span></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="top-toolbar" data-annotation-id="top-toolbar">
+        <div class="toolbar-left">
+          <input class="global-search" data-annotation-id="global-search" id="globalSearch" placeholder="搜索 Task ID、Request ID、标题或 Agent" aria-label="全局搜索">
+          <span class="status-badge" data-status="warning" id="apiStatus">API 未连接</span>
+        </div>
+        <div class="toolbar-right">
+          <span class="status-badge" data-status="active" id="roleScope">管理员视角</span>
+          <label class="muted" for="roleSelect">当前角色</label>
+          <select class="role-select" data-annotation-id="role-switcher" id="roleSelect" aria-label="角色切换"></select>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="page active" id="page-overview" data-page-id="overview" data-page-family="overview" data-annotation-id="overview-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">协同运营驾驶舱</h2>
+              <p class="page-description">聚合任务运行信号、节点负载、Agent 覆盖和异常收敛状态。</p>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn" data-action="toggle-overview-fullscreen" id="overviewFullscreenBtn">驾驶舱全屏</button>
+              <button class="btn btn-primary" data-action="go-publish">发布新请求</button>
+            </div>
+          </div>
+
+          <div class="filter-bar" data-annotation-id="overview-filter-bar">
+            <select class="select" aria-label="时间范围">
+              <option>今日</option>
+              <option>近 7 天</option>
+              <option>近 30 天</option>
+            </select>
+            <select class="select" aria-label="来源筛选">
+              <option>全部来源</option>
+              <option>人工发布</option>
+              <option>业务系统</option>
+              <option>Agent</option>
+            </select>
+            <button class="btn" data-action="refresh-overview">刷新</button>
+          </div>
+
+          <div class="metric-strip" data-annotation-id="overview-metric-strip" id="overviewMetrics"></div>
+
+          <section class="cockpit-health" data-annotation-id="overview-cockpit-health" id="overviewHealth"></section>
+
+          <div class="cockpit-grid" data-annotation-id="overview-command-layout">
+            <section class="panel" data-annotation-id="overview-risk-panel">
+              <div class="panel-header">
+                <h3 class="panel-title">需要关注</h3>
+                <span class="status-badge" data-status="warning">人工介入</span>
+              </div>
+              <div class="panel-body" id="overviewRisks"></div>
+            </section>
+
+            <section class="panel" data-annotation-id="overview-flow-panel">
+              <div class="panel-header">
+                <h3 class="panel-title">任务节点态势</h3>
+                <span class="muted">运行态矩阵</span>
+              </div>
+              <div class="panel-body">
+                <div class="flow-steps">
+                  <div class="flow-step"><span class="step-index">1</span><div><strong>创建 Request</strong><div class="muted">发布者、业务系统或 Agent 提交请求</div></div><span class="status-badge" data-status="active">入口</span></div>
+                  <div class="flow-step"><span class="step-index">2</span><div><strong>人工确认 Draft</strong><div class="muted">确认标题、描述和建议处理方</div></div><span class="status-badge" data-status="human_confirmation">门槛</span></div>
+                  <div class="flow-step"><span class="step-index">3</span><div><strong>多轮分发执行</strong><div class="muted">生成子任务、调用工具、更新上下文</div></div><span class="status-badge" data-status="running">自动</span></div>
+                  <div class="flow-step"><span class="step-index">4</span><div><strong>闭环或人工介入</strong><div class="muted">无剩余子任务则完成，超限转人工</div></div><span class="status-badge" data-status="succeeded">闭环</span></div>
+                </div>
+                <div class="node-matrix" data-annotation-id="overview-node-matrix" id="overviewNodeMatrix"></div>
+              </div>
+            </section>
+
+            <section class="panel" data-annotation-id="overview-agent-coverage">
+              <div class="panel-header">
+                <h3 class="panel-title">Agent 覆盖</h3>
+                <span class="muted">能力与健康</span>
+              </div>
+              <div class="panel-body" id="overviewAgentCoverage"></div>
+            </section>
+          </div>
+
+          <div class="overview-lower-grid">
+            <section class="panel" data-annotation-id="overview-recent-task-table">
+              <div class="panel-header">
+                <h3 class="panel-title">最近任务</h3>
+                <button class="btn" data-page-target="tasks">查看全部</button>
+              </div>
+              <div class="panel-body" id="overviewTasks"></div>
+              <div class="panel-body" data-annotation-id="overview-empty-state" id="overviewEmpty" hidden>暂无任务数据。</div>
+            </section>
+            <div class="side-stack">
+              <section class="panel" data-annotation-id="overview-automation-panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">自动化收敛</h3>
+                  <span class="muted">循环与工具</span>
+                </div>
+                <div class="panel-body" id="overviewAutomation"></div>
+              </section>
+              <section class="panel" data-annotation-id="overview-recent-event-list">
+                <div class="panel-header">
+                  <h3 class="panel-title">最近事件</h3>
+                  <button class="btn" data-page-target="audit">进入审计</button>
+                </div>
+                <div class="panel-body" id="overviewEvents"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-publish" data-page-id="publish" data-page-family="manage" data-annotation-id="publish-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">任务发布页</h2>
+              <p class="page-description">将自然语言请求提交为可追踪的 Request。</p>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <section class="panel">
+              <div class="panel-header">
+                <h3 class="panel-title">发布请求</h3>
+                <span class="status-badge" data-status="active">可接入</span>
+              </div>
+              <div class="panel-body">
+                <form class="form-stack" data-annotation-id="publish-request-form" id="publishForm">
+                  <div class="inline-fields">
+                    <div class="form-field" data-annotation-id="publish-source-select">
+                      <label for="sourceType">来源类型</label>
+                      <select class="select" id="sourceType" name="sourceType">
+                        <option value="human">human</option>
+                        <option value="business_system">business_system</option>
+                        <option value="agent">agent</option>
+                      </select>
+                    </div>
+                    <div class="form-field">
+                      <label for="externalId">外部单号</label>
+                      <input class="input" id="externalId" name="externalId" value="crm_case_20260714">
+                    </div>
+                    <div class="form-field">
+                      <label for="sourceSystem">来源系统</label>
+                      <input class="input" id="sourceSystem" name="sourceSystem" value="CRM">
+                    </div>
+                  </div>
+                  <div class="form-field" data-annotation-id="publish-content-field">
+                    <label for="requestContent">请求正文</label>
+                    <textarea class="textarea" id="requestContent" name="requestContent">为客户 A 生成报价方案，先查询客户等级和历史偏好，再生成报价建议。</textarea>
+                  </div>
+                  <div class="inline-fields" data-annotation-id="publish-metadata-fields">
+                    <div class="form-field">
+                      <label for="businessObject">业务对象</label>
+                      <input class="input" id="businessObject" value="Customer A">
+                    </div>
+                    <div class="form-field">
+                      <label for="deadline">期限</label>
+                      <input class="input" id="deadline" value="未设置">
+                    </div>
+                    <div class="form-field">
+                      <label for="priority">优先级</label>
+                      <select class="select" id="priority"><option>P1</option><option>P0</option><option>P2</option></select>
+                    </div>
+                  </div>
+                  <div class="notice" data-annotation-id="publish-form-loading" hidden id="publishLoading">正在提交请求...</div>
+                  <div class="notice error" data-annotation-id="publish-form-error" hidden id="publishError">请求正文不能为空。</div>
+                  <div>
+                    <button class="btn btn-primary" type="submit">提交请求</button>
+                    <button class="btn" type="button" data-action="clear-publish">清空</button>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section class="panel" data-annotation-id="publish-submit-result">
+              <div class="panel-header">
+                <h3 class="panel-title">提交结果</h3>
+                <span class="muted">成功后进入确认</span>
+              </div>
+              <div class="panel-body" id="publishResult">
+                <div class="notice">提交后会展示 request_id、主任务草稿和建议处理方。</div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="page-confirmation" data-page-id="confirmation" data-page-family="manage" data-annotation-id="confirmation-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">人工确认工作台</h2>
+              <p class="page-description">对照原始请求和识别草稿，确认后进入自动执行。</p>
+            </div>
+          </div>
+
+          <div class="confirm-grid">
+            <section class="panel" data-annotation-id="confirmation-queue-list">
+              <div class="panel-header">
+                <h3 class="panel-title">待确认队列</h3>
+                <span class="status-badge" data-status="human_confirmation" id="confirmCount">0 条</span>
+              </div>
+              <div class="panel-body">
+                <div class="queue-list" id="confirmationQueue"></div>
+                <div class="notice" data-annotation-id="confirmation-empty-state" id="confirmationEmpty" hidden>当前没有待确认任务。</div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h3 class="panel-title">原始请求与草稿</h3>
+                <span class="status-badge" data-status="active">确认门槛</span>
+              </div>
+              <div class="panel-body form-stack">
+                <div data-annotation-id="confirmation-original-request" id="confirmationOriginal"></div>
+                <div data-annotation-id="confirmation-draft-editor" class="form-stack">
+                  <div class="form-field">
+                    <label for="confirmTitle">草稿标题</label>
+                    <input class="input" id="confirmTitle">
+                  </div>
+                  <div class="form-field">
+                    <label for="confirmDescription">草稿描述</label>
+                    <textarea class="textarea" id="confirmDescription"></textarea>
+                  </div>
+                  <div class="notice error" data-annotation-id="confirmation-validation-error" hidden id="confirmationValidation">标题和描述均不能为空。</div>
+                </div>
+                <div data-annotation-id="confirmation-confirm-bar">
+                  <button class="btn btn-primary" data-action="open-confirm-task">确认并执行</button>
+                  <button class="btn btn-danger" data-action="reserved-action">驳回请求</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel" data-annotation-id="confirmation-evidence-panel">
+              <div class="panel-header">
+                <h3 class="panel-title">识别依据</h3>
+                <span class="muted">辅助判断</span>
+              </div>
+              <div class="panel-body form-stack">
+                <div id="confirmationEvidence"></div>
+                <div class="notice warning" data-annotation-id="confirmation-disabled-actions">
+                  新增、删除、合并多个草稿是产品 1.0 能力；当前后端确认接口只支持确认一个主任务标题和描述。
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="page-tasks" data-page-id="tasks" data-page-family="manage" data-annotation-id="tasks-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">任务列表</h2>
+              <p class="page-description">按状态、节点、来源和执行者定位任务，点击详情进入对应任务详情页。</p>
+            </div>
+          </div>
+          <div class="filter-bar" data-annotation-id="tasks-filter-bar">
+            <input class="input" id="taskKeyword" placeholder="搜索标题、Task ID、Request ID">
+            <select class="select" id="taskStatusFilter">
+              <option value="all">全部状态</option>
+              <option value="running">running</option>
+              <option value="succeeded">succeeded</option>
+              <option value="failed">failed</option>
+            </select>
+            <select class="select" id="taskNodeFilter">
+              <option value="all">全部节点</option>
+              <option value="human_confirmation">human_confirmation</option>
+              <option value="subtask_execution">subtask_execution</option>
+              <option value="completion_judge">completion_judge</option>
+              <option value="human_intervention">human_intervention</option>
+            </select>
+            <button class="btn" data-action="apply-task-filter">筛选</button>
+            <button class="btn" data-action="reset-task-filter">重置</button>
+          </div>
+          <section class="panel" data-annotation-id="tasks-table">
+            <div class="panel-body" id="taskTable"></div>
+            <div class="panel-body notice" data-annotation-id="tasks-search-result" id="tasksSearchResult" hidden></div>
+            <div class="panel-body notice" data-annotation-id="tasks-empty-state" id="tasksEmpty" hidden>暂无任务，先发布一个请求。</div>
+            <div class="panel-body notice" data-annotation-id="tasks-filter-empty" id="tasksFilterEmpty" hidden>没有符合筛选条件的任务。</div>
+            <div class="panel-body notice" data-annotation-id="tasks-loading-state" id="tasksLoading" hidden>任务列表加载中...</div>
+            <div class="panel-body notice error" data-annotation-id="tasks-error-state" id="tasksError" hidden>任务列表加载失败，可重试。</div>
+          </section>
+        </section>
+
+        <section class="page" id="page-task-detail" data-page-id="task-detail" data-page-family="detail" data-annotation-id="task-detail-page">
+          <div class="page-header" data-annotation-id="task-detail-header">
+            <div>
+              <h2 class="page-title" id="detailTitle">任务详情</h2>
+              <p class="page-description" id="detailSubtitle"></p>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn" data-page-target="tasks">返回任务列表</button>
+              <button class="btn" data-action="open-task-drawer">打开详情抽屉</button>
+              <button class="btn btn-primary" data-action="open-submit-result">提交结果</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <section class="panel">
+              <div class="panel-header">
+                <h3 class="panel-title">任务目标</h3>
+                <span id="detailStatus"></span>
+              </div>
+              <div class="panel-body" data-annotation-id="task-detail-objective" id="detailObjective"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h3 class="panel-title">当前上下文</h3>
+                <span class="muted" id="detailLoop"></span>
+              </div>
+              <div class="panel-body" data-annotation-id="task-detail-current-context" id="detailContext"></div>
+            </section>
+          </div>
+
+          <section class="panel" style="margin-top:16px;" data-annotation-id="task-detail-tabs">
+            <div class="tabs" role="tablist">
+              <button class="tab-button" role="tab" aria-selected="true" data-tab-target="rounds">执行轮次</button>
+              <button class="tab-button" role="tab" aria-selected="false" data-tab-target="subtasks">子任务</button>
+              <button class="tab-button" role="tab" aria-selected="false" data-tab-target="events">事件时间线</button>
+            </div>
+            <div class="tab-pane active" id="tab-rounds" data-annotation-id="task-tab-rounds">
+              <div data-annotation-id="task-rounds-table" id="roundsTable"></div>
+            </div>
+            <div class="tab-pane" id="tab-subtasks" data-annotation-id="task-tab-subtasks">
+              <div data-annotation-id="task-subtask-table" id="subtaskTable"></div>
+            </div>
+            <div class="tab-pane" id="tab-events" data-annotation-id="task-tab-events">
+              <div data-annotation-id="task-event-timeline" id="eventTimeline"></div>
+            </div>
+          </section>
+
+          <div class="grid-2" style="margin-top:16px;">
+            <section class="panel" data-annotation-id="task-result-form">
+              <div class="panel-header">
+                <h3 class="panel-title">人工结果提交</h3>
+                <span class="status-badge" data-status="active">可接入</span>
+              </div>
+              <div class="panel-body">
+                <div class="notice">适用于人工补充结果、失败标记或继续自动流程。</div>
+              </div>
+            </section>
+            <section class="panel" data-annotation-id="task-reserved-actions">
+              <div class="panel-header">
+                <h3 class="panel-title">治理操作</h3>
+                <span class="status-badge" data-status="warning">预留</span>
+              </div>
+              <div class="panel-body form-stack">
+                <div class="notice" data-annotation-id="task-permission-note">改派、重试、终止、创建子任务需要后端补 Assignment 和权限接口。</div>
+                <div>
+                  <button class="btn" data-action="reserved-action">改派</button>
+                  <button class="btn" data-action="reserved-action">重试</button>
+                  <button class="btn btn-danger" data-action="reserved-action">终止</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="page-agents" data-page-id="agents" data-page-family="config" data-annotation-id="agents-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">Agent 管理</h2>
+              <p class="page-description">注册 Agent，查看能力标签和工具定义。</p>
+            </div>
+            <button class="btn btn-primary" data-annotation-id="agent-register-entry" data-action="open-register-agent">注册 Agent</button>
+          </div>
+          <div class="filter-bar" data-annotation-id="agents-filter-bar">
+            <input class="input" id="agentKeyword" placeholder="搜索 Agent 或能力标签">
+            <select class="select" id="agentStatusFilter">
+              <option value="all">全部状态</option>
+              <option value="active">active</option>
+              <option value="inactive">inactive</option>
+            </select>
+            <button class="btn" data-action="apply-agent-filter">筛选</button>
+          </div>
+          <section class="panel" data-annotation-id="agents-table">
+            <div class="panel-body" id="agentTable"></div>
+            <div class="panel-body notice" data-annotation-id="agent-tool-summary" id="agentToolSummary"></div>
+            <div class="panel-body notice" data-annotation-id="agents-empty-state" id="agentsEmpty" hidden>暂无 Agent，请先注册。</div>
+            <div class="panel-body notice" data-annotation-id="agents-filter-empty" id="agentsFilterEmpty" hidden>没有符合条件的 Agent。</div>
+          </section>
+        </section>
+
+        <section class="page" id="page-audit" data-page-id="audit" data-page-family="record" data-annotation-id="audit-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">审计记录</h2>
+              <p class="page-description">从任务事件中回放确认、分发、执行和闭环过程。</p>
+            </div>
+            <button class="btn" data-annotation-id="audit-export-reserved" data-action="reserved-action">导出摘要</button>
+          </div>
+          <div class="filter-bar" data-annotation-id="audit-filter-bar">
+            <input class="input" id="auditKeyword" placeholder="搜索事件、任务或消息">
+            <select class="select" id="auditTypeFilter">
+              <option value="all">全部事件</option>
+              <option value="task_created">task_created</option>
+              <option value="dispatch_decided">dispatch_decided</option>
+              <option value="subtask_failed">subtask_failed</option>
+              <option value="completion_judged">completion_judged</option>
+            </select>
+            <button class="btn" data-action="apply-audit-filter">筛选</button>
+          </div>
+          <div class="grid-2">
+            <section class="panel" data-annotation-id="audit-event-table">
+              <div class="panel-body" id="auditTable"></div>
+              <div class="panel-body notice" data-annotation-id="audit-empty-state" id="auditEmpty" hidden>当前查询范围没有事件。</div>
+              <div class="panel-body notice" data-annotation-id="audit-permission-state">普通发布者只能看到授权范围内事件；完整审计查询需要后续权限接口支撑。</div>
+            </section>
+            <section class="panel" data-annotation-id="audit-event-detail-panel">
+              <div class="panel-header">
+                <h3 class="panel-title">事件详情</h3>
+                <span class="muted">选择左侧事件</span>
+              </div>
+              <div class="panel-body" id="auditDetail"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="page-governance" data-page-id="governance" data-page-family="config" data-annotation-id="governance-page">
+          <div class="page-header">
+            <div>
+              <h2 class="page-title">平台治理</h2>
+              <p class="page-description">规则、来源权限和紧急开关的产品 1.0 预留页面。</p>
+            </div>
+          </div>
+          <div class="grid-3">
+            <section class="panel" data-annotation-id="governance-runtime-mode">
+              <div class="panel-header">
+                <h3 class="panel-title">运行模式</h3>
+                <span class="status-badge" data-status="active">自动</span>
+              </div>
+              <div class="panel-body" id="runtimeMode"></div>
+            </section>
+            <section class="panel" data-annotation-id="governance-kill-switch-reserved">
+              <div class="panel-header">
+                <h3 class="panel-title">Kill Switch</h3>
+                <span class="status-badge" data-status="warning">预留</span>
+              </div>
+              <div class="panel-body form-stack">
+                <div class="notice warning">开启后新待分发任务应进入人工复核。当前后端尚无开关接口。</div>
+                <button class="btn btn-danger" data-action="reserved-action">开启人工分发模式</button>
+              </div>
+            </section>
+            <section class="panel" data-annotation-id="governance-audit-link">
+              <div class="panel-header">
+                <h3 class="panel-title">治理审计</h3>
+                <span class="status-badge" data-status="active">查看</span>
+              </div>
+              <div class="panel-body">
+                <button class="btn" data-page-target="audit">查看审计记录</button>
+              </div>
+            </section>
+          </div>
+          <div class="grid-2" style="margin-top:16px;">
+            <section class="panel" data-annotation-id="governance-rule-list">
+              <div class="panel-header">
+                <h3 class="panel-title">规则与模板</h3>
+                <span class="status-badge" data-status="warning">预留</span>
+              </div>
+              <div class="panel-body" id="ruleList"></div>
+            </section>
+            <section class="panel" data-annotation-id="governance-source-permission-reserved">
+              <div class="panel-header">
+                <h3 class="panel-title">来源与权限</h3>
+                <span class="status-badge" data-status="warning">预留</span>
+              </div>
+              <div class="panel-body">
+                <div class="notice">来源鉴权、数据范围、回调地址和权限矩阵需要后端来源管理接口后接入。</div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" tabindex="-1"></div>
+  <aside class="drawer" id="detailDrawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <h3 class="panel-title" id="drawerTitle">详情</h3>
+        <div class="muted" id="drawerSubtitle"></div>
+      </div>
+      <button class="btn" data-action="close-drawer">关闭</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <div class="modal-backdrop" id="modalBackdrop"></div>
+  <section class="modal" id="appModal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal-header">
+      <div>
+        <h3 class="panel-title" id="modalTitle">确认</h3>
+        <div class="muted" id="modalSubtitle"></div>
+      </div>
+      <button class="btn" data-action="close-modal">关闭</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </section>
+
+  <div class="toast" data-annotation-id="toast-region" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const taskhub = window.TASKHUB_API
+
+    const state = {
+      role: "admin",
+      page: "overview",
+      selectedTaskId: null,
+      selectedConfirmTaskId: null,
+      selectedEvent: null,
+      taskFilters: { keyword: "", status: "all", node: "all" },
+      agentFilters: { keyword: "", status: "all" },
+      auditFilters: { keyword: "", type: "all" },
+    }
+
+    const labels = {
+      taskStatus: {
+        running: "执行中",
+        succeeded: "已完成",
+        failed: "失败",
+        blocked: "阻塞",
+        partial: "部分完成",
+      },
+      currentNode: {
+        intent_recognition: "意图识别",
+        human_confirmation: "人工确认",
+        waiting_dependencies: "等待依赖",
+        dispatch_decision: "分发决策",
+        subtask_execution: "子任务执行",
+        context_update: "上下文更新",
+        agent_execution: "Agent 执行",
+        human_execution: "人工执行",
+        completion_judge: "闭环判断",
+        human_intervention: "人工介入",
+      },
+      sourceType: {
+        human: "人工",
+        business_system: "业务系统",
+        agent: "Agent",
+      },
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;")
+    }
+
+    function badge(value, text) {
+      return `<span class="status-badge" data-status="${escapeHtml(value)}">${escapeHtml(text || value)}</span>`
+    }
+
+    function taskTitle(task) {
+      return task.title || task.draft?.title || task.content
+    }
+
+    function agentName(agentId) {
+      return taskhub.findAgent(agentId)?.name || "未分配"
+    }
+
+    function setApiStatus(status, text) {
+      const apiStatus = document.getElementById("apiStatus")
+      if (!apiStatus) return
+      apiStatus.dataset.status = status
+      apiStatus.textContent = text
+    }
+
+    function syncDefaultSelections() {
+      const confirmQueue = taskhub.tasks.filter((task) => task.current_node === "human_confirmation")
+      if (!taskhub.tasks.some((task) => task.id === state.selectedTaskId)) {
+        state.selectedTaskId = taskhub.tasks[0]?.id || null
+      }
+      if (!confirmQueue.some((task) => task.id === state.selectedConfirmTaskId)) {
+        state.selectedConfirmTaskId = confirmQueue[0]?.id || taskhub.tasks[0]?.id || null
+      }
+      const events = taskhub.flattenEvents()
+      if (!events.some((event) => event === state.selectedEvent)) {
+        state.selectedEvent = events[0] || null
+      }
+    }
+
+    function renderAll() {
+      syncDefaultSelections()
+      renderOverview()
+      renderConfirmation()
+      renderTasks()
+      renderTaskDetail()
+      renderAgents()
+      renderAudit()
+      renderGovernance()
+      applyRolePermissions()
+    }
+
+    async function refreshApiData(successMessage) {
+      setApiStatus("running", "API 请求中")
+      try {
+        await taskhub.refreshAll()
+        renderAll()
+        setApiStatus("active", "API 已连接")
+        if (successMessage) showToast(successMessage)
+      } catch (error) {
+        setApiStatus("failed", "API 请求失败")
+        renderAll()
+        showToast(error.message)
+      }
+    }
+
+    function percentage(value, total) {
+      return total ? Math.round((value / total) * 100) : 0
+    }
+
+    function taskRounds(task) {
+      return task.context?.rounds || []
+    }
+
+    function taskSubtasks(task) {
+      return taskRounds(task).flatMap((round) => round.subtasks || [])
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById("toast")
+      toast.textContent = message
+      toast.classList.add("show")
+      window.clearTimeout(showToast.timer)
+      showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2600)
+    }
+
+    function syncOverviewFullscreenButton() {
+      const button = document.getElementById("overviewFullscreenBtn")
+      if (!button) return
+      button.textContent = document.fullscreenElement ? "退出全屏" : "驾驶舱全屏"
+    }
+
+    function toggleOverviewFullscreen() {
+      const overviewPage = document.getElementById("page-overview")
+      if (!document.fullscreenElement) {
+        if (!overviewPage.requestFullscreen) {
+          showToast("当前浏览器不支持全屏")
+          return
+        }
+        overviewPage.requestFullscreen()
+          .then(syncOverviewFullscreenButton)
+          .catch(() => showToast("全屏切换被浏览器拦截"))
+        return
+      }
+      if (document.exitFullscreen) {
+        document.exitFullscreen().then(syncOverviewFullscreenButton)
+      }
+    }
+
+    function table(headers, rows) {
+      return `
+        <table class="data-table">
+          <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
+          <tbody>${rows.join("")}</tbody>
+        </table>
+      `
+    }
+
+    function renderRoleSwitcher() {
+      const select = document.getElementById("roleSelect")
+      select.innerHTML = taskhub.roles.map((role) => `<option value="${role.id}">${role.label}</option>`).join("")
+      select.value = state.role
+    }
+
+    function showPage(page) {
+      state.page = page
+      document.querySelectorAll(".page").forEach((item) => item.classList.toggle("active", item.id === `page-${page}`))
+      const navPage = page === "task-detail" ? "tasks" : page
+      document.querySelectorAll(".nav-button").forEach((button) => {
+        const active = button.dataset.pageTarget === navPage
+        button.setAttribute("aria-current", active ? "page" : "false")
+      })
+      if (page === "overview") renderOverview()
+      if (page === "confirmation") renderConfirmation()
+      if (page === "tasks") renderTasks()
+      if (page === "task-detail") renderTaskDetail()
+      if (page === "agents") renderAgents()
+      if (page === "audit") renderAudit()
+      if (page === "governance") renderGovernance()
+      applyRolePermissions()
+    }
+
+    function setButtonEnabled(selector, enabled) {
+      document.querySelectorAll(selector).forEach((button) => {
+        button.disabled = !enabled
+        button.setAttribute("aria-disabled", enabled ? "false" : "true")
+      })
+    }
+
+    function applyRolePermissions() {
+      const role = taskhub.roles.find((item) => item.id === state.role)
+      document.getElementById("roleScope").textContent = role ? role.label : "角色视角"
+      setButtonEnabled('[data-action="open-confirm-task"]', ["confirmer", "admin"].includes(state.role))
+      setButtonEnabled('[data-action="open-submit-result"]', ["executor", "admin"].includes(state.role))
+      setButtonEnabled('[data-action="open-register-agent"]', state.role === "admin")
+      setButtonEnabled('[data-annotation-id="audit-export-reserved"]', ["auditor", "admin"].includes(state.role))
+      setButtonEnabled('[data-annotation-id="governance-kill-switch-reserved"] .btn-danger', state.role === "admin")
+    }
+
+    function renderOverview() {
+      const tasks = taskhub.tasks
+      const events = taskhub.flattenEvents()
+      const runningCount = tasks.filter((task) => task.task_status === "running").length
+      const succeededCount = tasks.filter((task) => task.task_status === "succeeded").length
+      const confirmCount = tasks.filter((task) => task.current_node === "human_confirmation").length
+      const interventionCount = tasks.filter((task) => task.current_node === "human_intervention" || task.task_status === "failed").length
+      const completionRate = percentage(succeededCount, tasks.length)
+      const subtasks = tasks.flatMap(taskSubtasks)
+      const toolCalls = subtasks.flatMap((subtask) => subtask.tool_calls || [])
+      const toolResults = subtasks.flatMap((subtask) => subtask.tool_results || [])
+      const successfulToolResults = toolResults.filter((result) => result.success).length
+      const toolSuccessRate = toolResults.length ? percentage(successfulToolResults, toolResults.length) : 100
+      const averageLoop = tasks.length ? (tasks.reduce((sum, task) => sum + task.loop_count, 0) / tasks.length).toFixed(1) : "0.0"
+      const maxedTasks = tasks.filter((task) => task.loop_count >= task.max_loop_count)
+
+      const metrics = [
+        ["任务总数", tasks.length, "当前查询范围"],
+        ["执行中", runningCount, "未结束任务"],
+        ["待确认", confirmCount, "需要人工确认"],
+        ["完成率", `${completionRate}%`, "闭环任务占比"],
+        ["介入数", interventionCount, "异常兜底任务"],
+        ["Agent", taskhub.agents.length, "已注册能力档案"],
+      ]
+      document.getElementById("overviewMetrics").innerHTML = metrics.map(([label, value, note]) => `
+        <div class="metric-tile">
+          <div class="metric-label">${label}</div>
+          <div class="metric-value">${value}</div>
+          <div class="metric-note">${note}</div>
+        </div>
+      `).join("")
+
+      const healthItems = [
+        ["数据模式", "接口实时数据", taskhub.error ? `连接异常：${taskhub.error}` : taskhub.apiBaseUrl],
+        ["运行模式", taskhub.governance.runtimeMode, taskhub.governance.killSwitch ? "已暂停" : "自动分发可评审"],
+        ["人工子任务", taskhub.humanSubtasks.length, "GET /api/v1/subtasks/human"],
+        ["Workflow", taskhub.workflows.length, "GET /api/v1/workflows"],
+        ["工具成功率", `${toolSuccessRate}%`, toolResults.length ? `${successfulToolResults}/${toolResults.length} 条结果成功` : "当前接口数据暂无失败工具"],
+        ["审计事件", events.length, "任务事件已聚合"],
+      ]
+      document.getElementById("overviewHealth").innerHTML = healthItems.map(([label, value, note]) => `
+        <div class="health-item">
+          <div class="health-label">${escapeHtml(label)}</div>
+          <div class="health-value">${escapeHtml(value)}</div>
+          <div class="metric-note">${escapeHtml(note)}</div>
+        </div>
+      `).join("")
+
+      const riskTasks = tasks.filter((task) => task.current_node === "human_intervention" || task.task_status === "failed")
+      document.getElementById("overviewRisks").innerHTML = riskTasks.length
+        ? riskTasks.map((task) => `
+          <div class="flow-step">
+            <span class="step-index">!</span>
+            <div><strong>${escapeHtml(taskTitle(task))}</strong><div class="muted">${escapeHtml(task.context.summary || task.content)}</div></div>
+            <button class="btn" data-open-task="${task.id}">查看</button>
+          </div>
+        `).join("")
+        : `<div class="notice">当前没有人工介入或失败任务。</div>`
+
+      const contextUpdateCount = events.filter((event) => event.type === "context_updated").length
+      const runningNodeCount = tasks.filter((task) => ["dispatch_decision", "subtask_execution", "context_update"].includes(task.current_node)).length
+      const nodeCards = [
+        ["请求接入", tasks.length, "人工、业务系统、Agent 三类入口", "active"],
+        ["人工确认", confirmCount, "Task Draft 确认门槛", confirmCount ? "warning" : "succeeded"],
+        ["分发执行", runningNodeCount, `${subtasks.length} 个子任务`, runningNodeCount ? "running" : "online"],
+        ["上下文沉淀", contextUpdateCount, "轮次结果汇总到 context", "active"],
+        ["闭环判断", succeededCount, "已产出 final_output", "succeeded"],
+        ["人工介入", interventionCount, "循环超限或失败兜底", interventionCount ? "warning" : "online"],
+      ]
+      document.getElementById("overviewNodeMatrix").innerHTML = nodeCards.map(([label, value, note, state]) => `
+        <div class="node-card" data-state="${escapeHtml(state)}">
+          <div class="node-label">${escapeHtml(label)}</div>
+          <div class="node-value">${escapeHtml(value)}</div>
+          <div class="node-note">${escapeHtml(note)}</div>
+        </div>
+      `).join("")
+
+      const healthScore = { online: 100, warning: 64, offline: 24 }
+      const healthLabel = { online: "在线", warning: "告警", offline: "离线" }
+      document.getElementById("overviewAgentCoverage").innerHTML = taskhub.agents.length
+        ? `<div class="coverage-list">${taskhub.agents.map((agent) => {
+            const assignedTasks = tasks.filter((task) => task.assigned_agent_id === agent.id).length
+            const score = healthScore[agent.health] || 50
+            return `
+              <div class="coverage-row">
+                <div>
+                  <button class="row-action" data-open-agent="${agent.id}">${escapeHtml(agent.name)}</button>
+                  <div class="muted">${escapeHtml(agent.capabilities.join(" / "))}</div>
+                  <div class="bar-track"><div class="bar-fill" data-state="${escapeHtml(agent.health)}" style="--bar-width:${score}%"></div></div>
+                </div>
+                <div style="text-align:right;">
+                  ${badge(agent.health, healthLabel[agent.health] || agent.health)}
+                  <div class="metric-note">${assignedTasks} 个任务 / ${agent.tools.length} 个工具</div>
+                </div>
+              </div>
+            `
+          }).join("")}</div>`
+        : `<div class="notice">暂无 Agent 能力档案。</div>`
+
+      document.getElementById("overviewTasks").innerHTML = renderTaskTable(tasks.slice(0, 5), false)
+      document.getElementById("overviewEmpty").hidden = tasks.length !== 0
+
+      const automationItems = [
+        ["平均循环", averageLoop, "控制多轮分发成本"],
+        ["最大轮次触顶", maxedTasks.length, "触发人工介入条件"],
+        ["工具调用", toolCalls.length, `${toolResults.length} 条工具结果`],
+        ["工具成功率", `${toolSuccessRate}%`, toolResults.length ? `${successfulToolResults}/${toolResults.length} 成功` : "暂无失败工具结果"],
+      ]
+      document.getElementById("overviewAutomation").innerHTML = `
+        <div class="automation-grid">
+          ${automationItems.map(([label, value, note]) => `
+            <div class="automation-item">
+              <div>
+                <div class="automation-label">${escapeHtml(label)}</div>
+                <div class="metric-note">${escapeHtml(note)}</div>
+              </div>
+              <div class="automation-value">${escapeHtml(value)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `
+
+      const recentEvents = events.slice(0, 6)
+      document.getElementById("overviewEvents").innerHTML = recentEvents.length
+        ? `<div class="timeline">${recentEvents.map((event) => `
+          <div class="timeline-item">
+            <div class="muted">${escapeHtml(event.created_at)}</div>
+            <div><strong>${escapeHtml(event.type)}</strong><div>${escapeHtml(event.message)}</div></div>
+          </div>
+        `).join("")}</div>`
+        : `<div class="notice">暂无事件。</div>`
+    }
+
+    function renderPublishResult(task) {
+      document.getElementById("publishResult").innerHTML = `
+        <div class="meta-list">
+          <div class="meta-row"><div class="meta-key">Request ID</div><div class="mono">${escapeHtml(task.request_id)}</div></div>
+          <div class="meta-row"><div class="meta-key">Task ID</div><div class="mono">${escapeHtml(task.id)}</div></div>
+          <div class="meta-row"><div class="meta-key">当前节点</div><div>${badge(task.current_node, labels.currentNode[task.current_node] || task.current_node)}</div></div>
+          <div class="meta-row"><div class="meta-key">草稿标题</div><div>${escapeHtml(task.draft?.title)}</div></div>
+          <div class="meta-row"><div class="meta-key">建议处理方</div><div>${escapeHtml(agentName(task.draft?.suggested_agent_id))}</div></div>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary" data-page-target="confirmation">去确认</button>
+        </div>
+      `
+    }
+
+    function renderConfirmation() {
+      const queue = taskhub.tasks.filter((task) => task.current_node === "human_confirmation")
+      if (queue.length && !queue.some((task) => task.id === state.selectedConfirmTaskId)) {
+        state.selectedConfirmTaskId = queue[0].id
+      }
+      document.getElementById("confirmCount").textContent = `${queue.length} 条`
+      document.getElementById("confirmationEmpty").hidden = queue.length !== 0
+      document.getElementById("confirmationQueue").innerHTML = queue.map((task) => `
+        <button class="queue-item" data-select-confirm="${task.id}" aria-selected="${task.id === state.selectedConfirmTaskId}">
+          <strong>${escapeHtml(task.draft?.title || taskTitle(task))}</strong>
+          <div class="muted mono">${escapeHtml(task.request_id)}</div>
+          <div style="margin-top:6px;">${badge(task.current_node, labels.currentNode[task.current_node])}</div>
+        </button>
+      `).join("")
+
+      const task = taskhub.findTask(state.selectedConfirmTaskId)
+      if (!task) {
+        document.getElementById("confirmationOriginal").innerHTML = `<div class="notice">暂无待确认任务。</div>`
+        document.getElementById("confirmTitle").value = ""
+        document.getElementById("confirmDescription").value = ""
+        document.getElementById("confirmationEvidence").innerHTML = `<div class="notice">提交任务请求后会展示识别草稿和建议处理方。</div>`
+        document.getElementById("confirmationValidation").hidden = true
+        return
+      }
+      document.getElementById("confirmationOriginal").innerHTML = `
+        <div class="meta-list">
+          <div class="meta-row"><div class="meta-key">Request ID</div><div class="mono">${escapeHtml(task.request_id)}</div></div>
+          <div class="meta-row"><div class="meta-key">来源</div><div>${escapeHtml(labels.sourceType[task.source_type] || task.source_type)}</div></div>
+          <div class="meta-row"><div class="meta-key">原文</div><div>${escapeHtml(task.content)}</div></div>
+          <div class="meta-row"><div class="meta-key">外部对象</div><div>${escapeHtml(task.request_metadata?.external_id || "未设置")}</div></div>
+        </div>
+      `
+      document.getElementById("confirmTitle").value = task.draft?.title || ""
+      document.getElementById("confirmDescription").value = task.draft?.description || ""
+      document.getElementById("confirmationEvidence").innerHTML = `
+        <div class="meta-list">
+          <div class="meta-row"><div class="meta-key">置信度</div><div>${Math.round((task.draft?.confidence || 0) * 100)}%</div></div>
+          <div class="meta-row"><div class="meta-key">建议类型</div><div>${escapeHtml(task.draft?.suggested_assignee_type || "human")}</div></div>
+          <div class="meta-row"><div class="meta-key">建议 Agent</div><div>${escapeHtml(agentName(task.draft?.suggested_agent_id))}</div></div>
+          <div class="meta-row"><div class="meta-key">校验</div><div>${badge("active", "字段完整")}</div></div>
+        </div>
+      `
+    }
+
+    function filterTasks() {
+      return taskhub.tasks.filter((task) => {
+        const keyword = state.taskFilters.keyword.toLowerCase()
+        const keywordMatched = !keyword || [task.id, task.request_id, taskTitle(task), task.content].join(" ").toLowerCase().includes(keyword)
+        const statusMatched = state.taskFilters.status === "all" || task.task_status === state.taskFilters.status
+        const nodeMatched = state.taskFilters.node === "all" || task.current_node === state.taskFilters.node
+        return keywordMatched && statusMatched && nodeMatched
+      })
+    }
+
+    function renderTaskTable(tasks, showSummary = true) {
+      if (!tasks.length) return `<div class="notice">暂无匹配任务。</div>`
+      const rows = tasks.map((task) => `
+        <tr data-selected="${task.id === state.selectedTaskId}">
+          <td><button class="row-action" data-open-task="${task.id}">${escapeHtml(taskTitle(task))}</button><div class="muted mono">${escapeHtml(task.id)}</div></td>
+          <td>${badge(task.task_status, labels.taskStatus[task.task_status])}</td>
+          <td>${badge(task.current_node, labels.currentNode[task.current_node] || task.current_node)}</td>
+          <td>${escapeHtml(agentName(task.assigned_agent_id))}</td>
+          <td>${escapeHtml(`${task.loop_count}/${task.max_loop_count}`)}</td>
+          <td><button class="btn" data-open-task="${task.id}">详情</button></td>
+        </tr>
+      `)
+      const summary = showSummary ? `<div class="notice" style="margin-bottom:12px;">当前显示 ${tasks.length} 条任务。</div>` : ""
+      return `${summary}${table(["任务", "状态", "当前节点", "执行者", "轮次", "详情"], rows)}`
+    }
+
+    function renderTasks() {
+      const tasks = filterTasks()
+      if (tasks.length && !tasks.some((task) => task.id === state.selectedTaskId)) {
+        state.selectedTaskId = tasks[0].id
+      } else if (!taskhub.tasks.length) {
+        state.selectedTaskId = null
+      }
+      document.getElementById("taskTable").innerHTML = renderTaskTable(tasks)
+      document.getElementById("tasksFilterEmpty").hidden = tasks.length !== 0
+      document.getElementById("tasksEmpty").hidden = taskhub.tasks.length !== 0
+      const keyword = state.taskFilters.keyword
+      const result = document.getElementById("tasksSearchResult")
+      result.hidden = !keyword
+      result.textContent = keyword ? `搜索“${keyword}”返回 ${tasks.length} 条结果。` : ""
+    }
+
+    function renderTaskDetail() {
+      const task = taskhub.findTask(state.selectedTaskId)
+      if (!task) {
+        document.getElementById("detailTitle").textContent = "任务详情"
+        document.getElementById("detailSubtitle").textContent = "暂无选中任务"
+        document.getElementById("detailStatus").innerHTML = badge("warning", "暂无数据")
+        document.getElementById("detailLoop").textContent = "轮次 -"
+        document.getElementById("detailObjective").innerHTML = `<div class="notice">任务列表为空，或当前任务尚未从接口返回。</div>`
+        document.getElementById("detailContext").innerHTML = `<div class="notice">暂无上下文。</div>`
+        document.getElementById("roundsTable").innerHTML = `<div class="notice">暂无执行轮次。</div>`
+        document.getElementById("subtaskTable").innerHTML = `<div class="notice">暂无子任务。</div>`
+        document.getElementById("eventTimeline").innerHTML = `<div class="notice">暂无事件。</div>`
+        return
+      }
+      document.getElementById("detailTitle").textContent = taskTitle(task)
+      document.getElementById("detailSubtitle").textContent = `${task.id} / ${task.request_id}`
+      document.getElementById("detailStatus").innerHTML = `${badge(task.task_status, labels.taskStatus[task.task_status])} ${badge(task.current_node, labels.currentNode[task.current_node] || task.current_node)}`
+      document.getElementById("detailLoop").textContent = `轮次 ${task.loop_count}/${task.max_loop_count}`
+      document.getElementById("detailObjective").innerHTML = `
+        <div class="meta-list">
+          <div class="meta-row"><div class="meta-key">确认标题</div><div>${escapeHtml(task.title || task.draft?.title || "待确认")}</div></div>
+          <div class="meta-row"><div class="meta-key">任务描述</div><div>${escapeHtml(task.description || task.draft?.description || "待确认")}</div></div>
+          <div class="meta-row"><div class="meta-key">原始请求</div><div>${escapeHtml(task.content)}</div></div>
+          <div class="meta-row"><div class="meta-key">来源</div><div>${escapeHtml(labels.sourceType[task.source_type] || task.source_type)}</div></div>
+          <div class="meta-row"><div class="meta-key">执行者</div><div>${escapeHtml(agentName(task.assigned_agent_id))}</div></div>
+          <div class="meta-row"><div class="meta-key">更新时间</div><div>${escapeHtml(task.updated_at)}</div></div>
+        </div>
+      `
+      document.getElementById("detailContext").innerHTML = task.context.summary
+        ? `<pre class="notice" style="white-space:pre-wrap;margin:0;">${escapeHtml(task.context.summary)}</pre>`
+        : `<div class="notice">暂无上下文，等待确认或第一轮执行。</div>`
+
+      renderRounds(task)
+      renderSubtasks(task)
+      renderEvents(task)
+    }
+
+    function renderRounds(task) {
+      const rounds = task.context.rounds || []
+      if (!rounds.length) {
+        document.getElementById("roundsTable").innerHTML = `<div class="notice">暂无执行轮次。</div>`
+        return
+      }
+      const rows = rounds.map((round) => `
+        <tr>
+          <td>第 ${round.round_index} 轮</td>
+          <td>${escapeHtml(round.execution_mode)}</td>
+          <td>${escapeHtml(round.reason || "未记录")}</td>
+          <td>${round.subtasks.length}</td>
+          <td>${escapeHtml(round.context_after || "无")}</td>
+        </tr>
+      `)
+      document.getElementById("roundsTable").innerHTML = table(["轮次", "模式", "分发原因", "子任务数", "上下文结果"], rows)
+    }
+
+    function renderSubtasks(task) {
+      const subtasks = (task.context.rounds || []).flatMap((round) => round.subtasks.map((subtask) => ({ ...subtask, round_index: round.round_index })))
+      if (!subtasks.length) {
+        document.getElementById("subtaskTable").innerHTML = `<div class="notice">暂无子任务。</div>`
+        return
+      }
+      const rows = subtasks.map((subtask) => `
+        <tr>
+          <td><strong>${escapeHtml(subtask.title)}</strong><div class="muted">第 ${subtask.round_index} 轮</div></td>
+          <td>${badge(subtask.status, labels.taskStatus[subtask.status] || subtask.status)}</td>
+          <td>${escapeHtml(agentName(subtask.assigned_agent_id))}</td>
+          <td>${subtask.tool_calls.length}</td>
+          <td>${subtask.tool_results.length}</td>
+          <td>${escapeHtml(subtask.output || "无输出")}</td>
+        </tr>
+      `)
+      document.getElementById("subtaskTable").innerHTML = table(["子任务", "状态", "执行者", "工具调用", "工具结果", "输出"], rows)
+    }
+
+    function renderEvents(task) {
+      const events = task.events || []
+      document.getElementById("eventTimeline").innerHTML = events.length
+        ? `<div class="timeline">${events.map((event) => `
+          <div class="timeline-item">
+            <div class="muted">${escapeHtml(event.created_at)}</div>
+            <div><strong>${escapeHtml(event.type)}</strong><div>${escapeHtml(event.message)}</div></div>
+          </div>
+        `).join("")}</div>`
+        : `<div class="notice">暂无事件。</div>`
+    }
+
+    function renderAgents() {
+      const keyword = state.agentFilters.keyword.toLowerCase()
+      const agents = taskhub.agents.filter((agent) => {
+        const keywordMatched = !keyword || [agent.name, agent.description, agent.capabilities.join(" ")].join(" ").toLowerCase().includes(keyword)
+        const statusMatched = state.agentFilters.status === "all" || agent.status === state.agentFilters.status
+        return keywordMatched && statusMatched
+      })
+      document.getElementById("agentsFilterEmpty").hidden = agents.length !== 0
+      document.getElementById("agentsEmpty").hidden = taskhub.agents.length !== 0
+      document.getElementById("agentToolSummary").textContent = `当前共 ${taskhub.agents.reduce((sum, agent) => sum + agent.tools.length, 0)} 个工具定义，来自后端 Agent 注册接口。`
+      if (!agents.length) {
+        document.getElementById("agentTable").innerHTML = `<div class="notice">暂无匹配 Agent。</div>`
+        return
+      }
+      const rows = agents.map((agent) => `
+        <tr>
+          <td><button class="row-action" data-open-agent="${agent.id}">${escapeHtml(agent.name)}</button><div class="muted mono">${escapeHtml(agent.id)}</div></td>
+          <td><div class="tag-list">${agent.capabilities.map((capability) => `<span class="tag">${escapeHtml(capability)}</span>`).join("")}</div></td>
+          <td>${agent.tools.length}</td>
+          <td>${badge(agent.status, agent.status)} ${badge(agent.health, agent.health)}</td>
+          <td>${escapeHtml(agent.created_at)}</td>
+        </tr>
+      `)
+      document.getElementById("agentTable").innerHTML = table(["Agent", "能力标签", "工具", "状态", "创建时间"], rows)
+    }
+
+    function filterAuditEvents() {
+      const keyword = state.auditFilters.keyword.toLowerCase()
+      return taskhub.flattenEvents().filter((event) => {
+        const keywordMatched = !keyword || [event.task_id, event.task_title, event.type, event.message].join(" ").toLowerCase().includes(keyword)
+        const typeMatched = state.auditFilters.type === "all" || event.type === state.auditFilters.type
+        return keywordMatched && typeMatched
+      })
+    }
+
+    function renderAudit() {
+      const events = filterAuditEvents()
+      document.getElementById("auditEmpty").hidden = events.length !== 0
+      const rows = events.map((event, index) => `
+        <tr>
+          <td>${escapeHtml(event.created_at)}</td>
+          <td><button class="row-action" data-open-event="${index}">${escapeHtml(event.type)}</button></td>
+          <td>${escapeHtml(event.task_title)}</td>
+          <td>${escapeHtml(event.message)}</td>
+        </tr>
+      `)
+      document.getElementById("auditTable").innerHTML = events.length ? table(["时间", "事件", "任务", "摘要"], rows) : `<div class="notice">暂无事件。</div>`
+      if (!events.length) state.selectedEvent = null
+      if (state.selectedEvent && !events.some((event) =>
+        event.task_id === state.selectedEvent.task_id &&
+        event.type === state.selectedEvent.type &&
+        event.created_at === state.selectedEvent.created_at
+      )) {
+        state.selectedEvent = null
+      }
+      if (!state.selectedEvent && events[0]) state.selectedEvent = events[0]
+      renderAuditDetail(state.selectedEvent)
+    }
+
+    function renderAuditDetail(event) {
+      document.getElementById("auditDetail").innerHTML = event
+        ? `<div class="meta-list">
+            <div class="meta-row"><div class="meta-key">事件类型</div><div>${escapeHtml(event.type)}</div></div>
+            <div class="meta-row"><div class="meta-key">任务</div><div>${escapeHtml(event.task_title)}</div></div>
+            <div class="meta-row"><div class="meta-key">Task ID</div><div class="mono">${escapeHtml(event.task_id)}</div></div>
+            <div class="meta-row"><div class="meta-key">时间</div><div>${escapeHtml(event.created_at)}</div></div>
+            <div class="meta-row"><div class="meta-key">摘要</div><div>${escapeHtml(event.message)}</div></div>
+          </div>`
+        : `<div class="notice">选择事件后查看详情。</div>`
+    }
+
+    function renderGovernance() {
+      document.getElementById("runtimeMode").innerHTML = `
+        <div class="meta-list">
+          <div class="meta-row"><div class="meta-key">当前模式</div><div>${escapeHtml(taskhub.governance.runtimeMode)}</div></div>
+          <div class="meta-row"><div class="meta-key">人工开关</div><div>${badge("warning", taskhub.governance.killSwitch ? "已开启" : "未开启")}</div></div>
+        </div>
+      `
+      document.getElementById("ruleList").innerHTML = table(["规则", "状态", "条件"], taskhub.governance.reservedRules.map((rule) => `
+        <tr>
+          <td>${escapeHtml(rule.name)}</td>
+          <td>${badge(rule.status.includes("支撑") ? "active" : "warning", rule.status)}</td>
+          <td class="mono">${escapeHtml(rule.threshold)}</td>
+        </tr>
+      `))
+    }
+
+    function openDrawer(type, id) {
+      const drawer = document.getElementById("detailDrawer")
+      const backdrop = document.getElementById("drawerBackdrop")
+      const title = document.getElementById("drawerTitle")
+      const subtitle = document.getElementById("drawerSubtitle")
+      const body = document.getElementById("drawerBody")
+
+      drawer.dataset.annotationId = type === "agent" ? "agent-detail-drawer" : type === "event" ? "event-detail-drawer" : "task-detail-drawer"
+      drawer.setAttribute("data-annotation-id", drawer.dataset.annotationId)
+
+      if (type === "agent") {
+        const agent = taskhub.findAgent(id)
+        if (!agent) {
+          showToast("未找到 Agent")
+          return
+        }
+        title.textContent = agent.name
+        subtitle.textContent = agent.id
+        body.innerHTML = `
+          <div class="meta-list">
+            <div class="meta-row"><div class="meta-key">描述</div><div>${escapeHtml(agent.description)}</div></div>
+            <div class="meta-row"><div class="meta-key">能力</div><div class="tag-list">${agent.capabilities.map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}</div></div>
+            <div class="meta-row"><div class="meta-key">状态</div><div>${badge(agent.status, agent.status)} ${badge(agent.health, agent.health)}</div></div>
+            <div class="meta-row"><div class="meta-key">工具</div><div>${agent.tools.length ? agent.tools.map((tool) => escapeHtml(`${tool.name} / ${tool.type}`)).join("<br>") : "无工具"}</div></div>
+          </div>
+          <div style="margin-top:16px;"><button class="btn" data-action="poll-agent" data-agent-id="${agent.id}">轮询已分配任务</button></div>
+        `
+      } else if (type === "event") {
+        const event = id
+        if (!event) {
+          showToast("未找到事件")
+          return
+        }
+        title.textContent = event.type
+        subtitle.textContent = event.task_id
+        body.innerHTML = `
+          <div class="meta-list">
+            <div class="meta-row"><div class="meta-key">任务</div><div>${escapeHtml(event.task_title)}</div></div>
+            <div class="meta-row"><div class="meta-key">时间</div><div>${escapeHtml(event.created_at)}</div></div>
+            <div class="meta-row"><div class="meta-key">消息</div><div>${escapeHtml(event.message)}</div></div>
+          </div>
+        `
+      } else {
+        const task = taskhub.findTask(id || state.selectedTaskId)
+        if (!task) {
+          showToast("未找到任务")
+          return
+        }
+        title.textContent = taskTitle(task)
+        subtitle.textContent = `${task.id} / ${task.request_id}`
+        body.innerHTML = `
+          <div class="meta-list">
+            <div class="meta-row"><div class="meta-key">状态</div><div>${badge(task.task_status, labels.taskStatus[task.task_status])}</div></div>
+            <div class="meta-row"><div class="meta-key">节点</div><div>${badge(task.current_node, labels.currentNode[task.current_node] || task.current_node)}</div></div>
+            <div class="meta-row"><div class="meta-key">执行者</div><div>${escapeHtml(agentName(task.assigned_agent_id))}</div></div>
+            <div class="meta-row"><div class="meta-key">最终输出</div><div>${escapeHtml(task.final_output || "未生成")}</div></div>
+            <div class="meta-row"><div class="meta-key">事件数</div><div>${task.events.length}</div></div>
+          </div>
+        `
+      }
+
+      backdrop.classList.add("open")
+      drawer.classList.add("open")
+      drawer.setAttribute("aria-hidden", "false")
+      drawer.querySelector("button").focus()
+    }
+
+    function closeDrawer() {
+      document.getElementById("drawerBackdrop").classList.remove("open")
+      document.getElementById("detailDrawer").classList.remove("open")
+      document.getElementById("detailDrawer").setAttribute("aria-hidden", "true")
+    }
+
+    function openModal(type) {
+      const modal = document.getElementById("appModal")
+      const backdrop = document.getElementById("modalBackdrop")
+      const title = document.getElementById("modalTitle")
+      const subtitle = document.getElementById("modalSubtitle")
+      const body = document.getElementById("modalBody")
+      const footer = document.getElementById("modalFooter")
+      modal.setAttribute("data-annotation-id", type)
+
+      if (type === "confirm-task-modal") {
+        title.textContent = "确认并执行"
+        subtitle.textContent = "确认后会进入自动分发和多轮执行"
+        body.innerHTML = `<div class="notice warning">请确认标题和描述准确。当前动作会触发任务自动执行。</div>`
+        footer.innerHTML = `<button class="btn" data-action="close-modal">取消</button><button class="btn btn-primary" data-action="confirm-task">确认执行</button>`
+      } else if (type === "submit-result-modal") {
+        title.textContent = "提交执行结果"
+        subtitle.textContent = "人工结果会进入闭环判断"
+        body.innerHTML = `
+          <div class="form-stack">
+            <div class="form-field"><label for="resultStatus">结果状态</label><select class="select" id="resultStatus"><option value="succeeded">succeeded</option><option value="failed">failed</option><option value="blocked">blocked</option><option value="partial">partial</option></select></div>
+            <div class="form-field"><label for="resultOutput">结果摘要</label><textarea class="textarea" id="resultOutput">人工补充结果：目标已满足，可关闭任务。</textarea></div>
+          </div>
+        `
+        footer.innerHTML = `<button class="btn" data-action="close-modal">取消</button><button class="btn btn-primary" data-action="submit-result">提交</button>`
+      } else if (type === "register-agent-modal") {
+        title.textContent = "注册 Agent"
+        subtitle.textContent = "填写能力标签和工具定义"
+        body.innerHTML = `
+          <div class="form-stack">
+            <div class="form-field"><label for="agentNameInput">名称</label><input class="input" id="agentNameInput" value="New Research Agent"></div>
+            <div class="form-field"><label for="agentDescInput">描述</label><input class="input" id="agentDescInput" value="处理资料检索和摘要生成"></div>
+            <div class="form-field"><label for="agentCapsInput">能力标签</label><input class="input" id="agentCapsInput" value="research,summary"></div>
+            <div class="form-field"><label for="agentToolInput">工具名称</label><input class="input" id="agentToolInput" value="knowledge_search"></div>
+          </div>
+        `
+        footer.innerHTML = `<button class="btn" data-action="close-modal">取消</button><button class="btn btn-primary" data-action="register-agent">注册</button>`
+      } else {
+        title.textContent = "预留能力"
+        subtitle.textContent = "需要后端接口补齐后启用"
+        body.innerHTML = `<div class="notice warning">该操作已在产品文档中定义，但当前后端公开 API 尚未提供。</div>`
+        footer.innerHTML = `<button class="btn btn-primary" data-action="close-modal">知道了</button>`
+      }
+
+      backdrop.classList.add("open")
+      modal.classList.add("open")
+      modal.setAttribute("aria-hidden", "false")
+      modal.querySelector("button").focus()
+    }
+
+    function closeModal() {
+      document.getElementById("modalBackdrop").classList.remove("open")
+      document.getElementById("appModal").classList.remove("open")
+      document.getElementById("appModal").setAttribute("aria-hidden", "true")
+    }
+
+    function bindEvents() {
+      document.addEventListener("click", async (event) => {
+        const target = event.target.closest("button")
+        if (!target) return
+
+        const pageTarget = target.dataset.pageTarget
+        if (pageTarget) showPage(pageTarget)
+
+        if (target.dataset.openTask) {
+          state.selectedTaskId = target.dataset.openTask
+          showPage("task-detail")
+        }
+        if (target.dataset.openAgent) openDrawer("agent", target.dataset.openAgent)
+        if (target.dataset.openEvent) {
+          const events = filterAuditEvents()
+          state.selectedEvent = events[Number(target.dataset.openEvent)]
+          renderAuditDetail(state.selectedEvent)
+          openDrawer("event", state.selectedEvent)
+        }
+        if (target.dataset.selectConfirm) {
+          state.selectedConfirmTaskId = target.dataset.selectConfirm
+          renderConfirmation()
+        }
+
+        const action = target.dataset.action
+        if (action === "go-publish") showPage("publish")
+        if (action === "refresh-overview") {
+          await refreshApiData("总览已刷新")
+        }
+        if (action === "toggle-overview-fullscreen") toggleOverviewFullscreen()
+        if (action === "clear-publish") {
+          document.getElementById("requestContent").value = ""
+          showToast("表单已清空")
+        }
+        if (action === "open-confirm-task") {
+          if (!taskhub.findTask(state.selectedConfirmTaskId)) {
+            showToast("暂无待确认任务")
+          } else {
+            openModal("confirm-task-modal")
+          }
+        }
+        if (action === "open-submit-result") {
+          if (!taskhub.findTask(state.selectedTaskId)) {
+            showToast("暂无可提交结果的任务")
+          } else {
+            openModal("submit-result-modal")
+          }
+        }
+        if (action === "open-register-agent") openModal("register-agent-modal")
+        if (action === "open-task-drawer") openDrawer("task", state.selectedTaskId)
+        if (action === "reserved-action") openModal("reserved-action-modal")
+        if (action === "close-drawer") closeDrawer()
+        if (action === "close-modal") closeModal()
+        if (action === "confirm-task") {
+          const title = document.getElementById("confirmTitle").value.trim()
+          const description = document.getElementById("confirmDescription").value.trim()
+          const validation = document.getElementById("confirmationValidation")
+          if (!title || !description) {
+            validation.hidden = false
+            return
+          }
+          validation.hidden = true
+          const task = taskhub.findTask(state.selectedConfirmTaskId)
+          if (!task) {
+            showToast("暂无待确认任务")
+            return
+          }
+          setApiStatus("running", "API 请求中")
+          try {
+            const updatedTask = await taskhub.confirmTask(task.id, { title, description, execution_mode: "async" })
+            await taskhub.refreshAll()
+            state.selectedTaskId = updatedTask.id
+            closeModal()
+            setApiStatus("active", "API 已连接")
+            showToast("任务已确认并调度执行")
+            showPage("task-detail")
+          } catch (error) {
+            setApiStatus("failed", "API 请求失败")
+            showToast(error.message)
+          }
+        }
+        if (action === "submit-result") {
+          const task = taskhub.findTask(state.selectedTaskId)
+          if (!task) {
+            showToast("暂无可提交结果的任务")
+            return
+          }
+          const status = document.getElementById("resultStatus").value
+          const output = document.getElementById("resultOutput").value.trim()
+          setApiStatus("running", "API 请求中")
+          try {
+            const updatedTask = await taskhub.submitTaskResult(task.id, {
+              result_status: status,
+              output,
+              should_complete: true,
+            })
+            await taskhub.refreshAll()
+            state.selectedTaskId = updatedTask.id
+            renderTaskDetail()
+            closeModal()
+            setApiStatus("active", "API 已连接")
+            showToast("执行结果已提交")
+          } catch (error) {
+            setApiStatus("failed", "API 请求失败")
+            showToast(error.message)
+          }
+        }
+        if (action === "register-agent") {
+          const name = document.getElementById("agentNameInput").value.trim()
+          const description = document.getElementById("agentDescInput").value.trim()
+          const capabilities = document.getElementById("agentCapsInput").value.split(",").map((item) => item.trim()).filter(Boolean)
+          const tool = document.getElementById("agentToolInput").value.trim()
+          if (!name) return
+          setApiStatus("running", "API 请求中")
+          try {
+            await taskhub.createAgent({
+              name,
+              description,
+              capabilities,
+              tools: tool ? [{ name: tool, description: "接口新增工具", type: "metadata", config: {}, input_schema: {} }] : [],
+            })
+            await taskhub.refreshAgents()
+            closeModal()
+            renderAgents()
+            renderOverview()
+            setApiStatus("active", "API 已连接")
+            showToast("Agent 已通过接口注册")
+          } catch (error) {
+            setApiStatus("failed", "API 请求失败")
+            showToast(error.message)
+          }
+        }
+        if (action === "poll-agent") {
+          const agentId = target.dataset.agentId
+          setApiStatus("running", "API 请求中")
+          try {
+            const tasks = await taskhub.pollAgentTasks(agentId)
+            renderAll()
+            setApiStatus("active", "API 已连接")
+            showToast(`轮询结果：该 Agent 当前拉取 ${tasks.length} 个任务`)
+          } catch (error) {
+            setApiStatus("failed", "API 请求失败")
+            showToast(error.message)
+          }
+        }
+        if (action === "apply-task-filter") {
+          state.taskFilters.keyword = document.getElementById("taskKeyword").value
+          state.taskFilters.status = document.getElementById("taskStatusFilter").value
+          state.taskFilters.node = document.getElementById("taskNodeFilter").value
+          renderTasks()
+        }
+        if (action === "reset-task-filter") {
+          state.taskFilters = { keyword: "", status: "all", node: "all" }
+          document.getElementById("taskKeyword").value = ""
+          document.getElementById("taskStatusFilter").value = "all"
+          document.getElementById("taskNodeFilter").value = "all"
+          renderTasks()
+        }
+        if (action === "apply-agent-filter") {
+          state.agentFilters.keyword = document.getElementById("agentKeyword").value
+          state.agentFilters.status = document.getElementById("agentStatusFilter").value
+          renderAgents()
+        }
+        if (action === "apply-audit-filter") {
+          state.auditFilters.keyword = document.getElementById("auditKeyword").value
+          state.auditFilters.type = document.getElementById("auditTypeFilter").value
+          renderAudit()
+        }
+      })
+
+      document.getElementById("publishForm").addEventListener("submit", async (event) => {
+        event.preventDefault()
+        const content = document.getElementById("requestContent").value.trim()
+        const error = document.getElementById("publishError")
+        const loading = document.getElementById("publishLoading")
+        if (!content) {
+          error.textContent = "请求正文不能为空。"
+          error.hidden = false
+          return
+        }
+        error.hidden = true
+        loading.hidden = false
+        setApiStatus("running", "API 请求中")
+        try {
+          const response = await taskhub.createTaskRequest({
+            source_type: document.getElementById("sourceType").value,
+            content,
+            metadata: {
+              external_id: document.getElementById("externalId").value,
+              source_system: document.getElementById("sourceSystem").value,
+              business_object: document.getElementById("businessObject").value,
+              deadline: document.getElementById("deadline").value,
+              priority: document.getElementById("priority").value,
+            },
+          })
+          await taskhub.refreshAll()
+          const newTask = response.tasks[0]
+          if (newTask) {
+            state.selectedConfirmTaskId = newTask.id
+            state.selectedTaskId = newTask.id
+            renderPublishResult(newTask)
+          } else {
+            document.getElementById("publishResult").innerHTML = `<div class="notice warning">接口已返回，但未生成主任务。</div>`
+          }
+          renderConfirmation()
+          renderTasks()
+          setApiStatus("active", "API 已连接")
+          showToast("请求已提交，生成待确认草稿")
+        } catch (apiError) {
+          error.textContent = apiError.message
+          error.hidden = false
+          setApiStatus("failed", "API 请求失败")
+          showToast(apiError.message)
+        } finally {
+          loading.hidden = true
+        }
+      })
+
+      document.getElementById("roleSelect").addEventListener("change", (event) => {
+        state.role = event.target.value
+        applyRolePermissions()
+        showToast(`已切换为 ${taskhub.roles.find((role) => role.id === state.role)?.name}`)
+      })
+
+      document.querySelectorAll(".tab-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".tab-button").forEach((item) => item.setAttribute("aria-selected", "false"))
+          document.querySelectorAll(".tab-pane").forEach((item) => item.classList.remove("active"))
+          button.setAttribute("aria-selected", "true")
+          document.getElementById(`tab-${button.dataset.tabTarget}`).classList.add("active")
+        })
+      })
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeDrawer()
+          closeModal()
+        }
+      })
+      document.addEventListener("fullscreenchange", syncOverviewFullscreenButton)
+      document.getElementById("drawerBackdrop").addEventListener("click", closeDrawer)
+      document.getElementById("modalBackdrop").addEventListener("click", closeModal)
+    }
+
+    async function init() {
+      renderRoleSwitcher()
+      bindEvents()
+      renderAll()
+      const pageParam = new URLSearchParams(window.location.search).get("page")
+      if (pageParam && document.getElementById(`page-${pageParam}`)) {
+        showPage(pageParam)
+      }
+      await refreshApiData()
+    }
+
+    init()
+  </script>
+</body>
+</html>
