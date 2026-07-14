@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -15,9 +16,11 @@ class TaskGraphState(TypedDict):
     task: Task
     round_plan: RoundPlan
     round_outputs: list[str]
+    paused: bool
 
 
 RouteAfterPlan = Literal["subtask_execution", "completion_judge", "human_intervention"]
+RouteAfterSubTask = Literal["context_update", "end"]
 RouteAfterJudge = Literal["round_dispatch", "human_intervention", "end"]
 
 
@@ -36,6 +39,8 @@ class SubTaskExecutionOutcome:
 
 
 class TaskGraphRunner:
+    max_parallel_agent_subtasks = 4
+
     def __init__(self, agent_registry: AgentRegistry) -> None:
         self.agent_registry = agent_registry
         self.tool_executor = ToolExecutor()
@@ -47,6 +52,7 @@ class TaskGraphRunner:
                 "task": task,
                 "round_plan": RoundPlan(should_continue=False),
                 "round_outputs": [],
+                "paused": False,
             }
         )
         return final_state["task"]
@@ -69,7 +75,14 @@ class TaskGraphRunner:
                 "human_intervention": "human_intervention",
             },
         )
-        graph.add_edge("subtask_execution", "context_update")
+        graph.add_conditional_edges(
+            "subtask_execution",
+            self._route_after_subtask,
+            {
+                "context_update": "context_update",
+                "end": END,
+            },
+        )
         graph.add_edge("context_update", "completion_judge")
         graph.add_conditional_edges(
             "completion_judge",
@@ -87,7 +100,7 @@ class TaskGraphRunner:
         task = state["task"]
         task.current_node = CurrentNode.DISPATCH_DECISION
         if task.loop_count >= task.max_loop_count:
-            return {"task": task, "round_plan": RoundPlan(should_continue=False), "round_outputs": []}
+            return {"task": task, "round_plan": RoundPlan(should_continue=False), "round_outputs": [], "paused": False}
 
         agents = self.agent_registry.list_agents()
         plan = plan_next_round_with_model(task, agents) or mock_round_plan(task, agents)
@@ -97,7 +110,7 @@ class TaskGraphRunner:
                 self._event("dispatch_decided", f"Round {task.loop_count}: {plan.reason or 'subtasks planned'}")
             )
         task.updated_at = utc_now()
-        return {"task": task, "round_plan": plan, "round_outputs": []}
+        return {"task": task, "round_plan": plan, "round_outputs": [], "paused": False}
 
     def _route_after_plan(self, state: TaskGraphState) -> RouteAfterPlan:
         task = state["task"]
@@ -111,24 +124,62 @@ class TaskGraphRunner:
     def _subtask_execution(self, state: TaskGraphState) -> TaskGraphState:
         task = state["task"]
         task.current_node = CurrentNode.SUBTASK_EXECUTION
-        outputs = []
+        paused = False
         agents = self.agent_registry.list_agents()
+        agent_subtasks = []
         for subtask in state["round_plan"].subtasks:
-            agent = self._resolve_agent(subtask, task, agents)
-            if agent:
-                subtask.assigned_agent_id = agent.id
-                task.assigned_agent_id = agent.id
-            outcome = self._execute_subtask(task, subtask, agent)
-            subtask.output = outcome.output or outcome.error
-            subtask.status = TaskStatus.SUCCEEDED if outcome.completed else TaskStatus.FAILED
-            outputs.append(self._format_subtask_context(subtask, outcome))
-            if outcome.completed:
-                event_type = "agent_executed" if agent else "human_node_processed"
-                task.events.append(self._event(event_type, f"{subtask.title}: {subtask.output}"))
-            else:
-                task.events.append(self._event("subtask_failed", f"{subtask.title}: {subtask.output}"))
+            if subtask.assignee_type == "human":
+                subtask.status = TaskStatus.RUNNING
+                subtask.current_node = CurrentNode.HUMAN_EXECUTION
+                paused = True
+                task.events.append(self._event("human_task_created", f"{subtask.title}: waiting for human input"))
+                continue
+            agent_subtasks.append(subtask)
+
+        if state["round_plan"].execution_mode == "parallel" and len(agent_subtasks) > 1:
+            with ThreadPoolExecutor(max_workers=self.max_parallel_agent_subtasks) as executor:
+                outcomes = list(executor.map(lambda item: self._run_agent_subtask(task, item, agents), agent_subtasks))
+        else:
+            outcomes = [self._run_agent_subtask(task, subtask, agents) for subtask in agent_subtasks]
+
+        for subtask, agent, outcome in outcomes:
+            self._apply_subtask_outcome(task, subtask, agent, outcome)
+        outputs = [
+            self._format_completed_subtask_context(subtask)
+            for subtask in state["round_plan"].subtasks
+            if subtask.status != TaskStatus.RUNNING and subtask.output
+        ]
+        if paused:
+            self._append_pending_round(task, state["round_plan"])
+            task.current_node = CurrentNode.HUMAN_EXECUTION
+            task.events.append(self._event("human_task_waiting", f"Round {task.loop_count} is waiting for human input"))
         task.updated_at = utc_now()
-        return {"task": task, "round_plan": state["round_plan"], "round_outputs": outputs}
+        return {"task": task, "round_plan": state["round_plan"], "round_outputs": outputs, "paused": paused}
+
+    def _run_agent_subtask(self, task: Task, subtask: SubTask, agents):
+        agent = self._resolve_agent(subtask, task, agents)
+        if agent:
+            subtask.assigned_agent_id = agent.id
+            subtask.assignee_type = "agent"
+            subtask.current_node = CurrentNode.AGENT_EXECUTION
+        outcome = self._execute_subtask(task, subtask, agent)
+        return subtask, agent, outcome
+
+    def _apply_subtask_outcome(self, task: Task, subtask: SubTask, agent, outcome: SubTaskExecutionOutcome) -> None:
+        if agent:
+            task.assigned_agent_id = agent.id
+        subtask.output = outcome.output or outcome.error
+        subtask.status = TaskStatus.SUCCEEDED if outcome.completed else TaskStatus.FAILED
+        if outcome.completed:
+            event_type = "agent_executed" if agent else "human_node_processed"
+            task.events.append(self._event(event_type, f"{subtask.title}: {subtask.output}"))
+        else:
+            task.events.append(self._event("subtask_failed", f"{subtask.title}: {subtask.output}"))
+
+    def _route_after_subtask(self, state: TaskGraphState) -> RouteAfterSubTask:
+        if state["paused"]:
+            return "end"
+        return "context_update"
 
     def _context_update(self, state: TaskGraphState) -> TaskGraphState:
         task = state["task"]
@@ -148,7 +199,7 @@ class TaskGraphRunner:
         task.context.summary = round_item.context_after
         task.events.append(self._event("context_updated", f"Round {task.loop_count} results merged into context"))
         task.updated_at = utc_now()
-        return {"task": task, "round_plan": plan, "round_outputs": state["round_outputs"]}
+        return {"task": task, "round_plan": plan, "round_outputs": state["round_outputs"], "paused": False}
 
     def _completion_judge(self, state: TaskGraphState) -> TaskGraphState:
         task = state["task"]
@@ -161,7 +212,7 @@ class TaskGraphRunner:
         else:
             task.events.append(self._event("completion_judged", "Dispatcher requested another round check"))
         task.updated_at = utc_now()
-        return {"task": task, "round_plan": plan, "round_outputs": state["round_outputs"]}
+        return {"task": task, "round_plan": plan, "round_outputs": state["round_outputs"], "paused": False}
 
     def _route_after_judge(self, state: TaskGraphState) -> RouteAfterJudge:
         task = state["task"]
@@ -176,7 +227,7 @@ class TaskGraphRunner:
         task.current_node = CurrentNode.HUMAN_INTERVENTION
         task.events.append(self._event("human_intervention_required", "Loop limit exceeded"))
         task.updated_at = utc_now()
-        return {"task": task, "round_plan": state["round_plan"], "round_outputs": state["round_outputs"]}
+        return {"task": task, "round_plan": state["round_plan"], "round_outputs": state["round_outputs"], "paused": False}
 
     def _resolve_agent(self, subtask: SubTask, task: Task, agents):
         if subtask.assigned_agent_id:
@@ -215,6 +266,27 @@ class TaskGraphRunner:
         if outcome.completed:
             return outcome.context_text
         return f"FAILED: {subtask.title}\nReason: {outcome.context_text}"
+
+    @staticmethod
+    def _format_completed_subtask_context(subtask: SubTask) -> str:
+        if subtask.status == TaskStatus.FAILED:
+            return f"FAILED: {subtask.title}\nReason: {subtask.output}"
+        return subtask.output
+
+    @staticmethod
+    def _append_pending_round(task: Task, plan: RoundPlan) -> None:
+        if any(round_item.round_index == task.loop_count for round_item in task.context.rounds):
+            return
+        task.context.rounds.append(
+            TaskRound(
+                round_index=task.loop_count,
+                execution_mode=plan.execution_mode,
+                reason=plan.reason,
+                context_before=task.context.summary,
+                subtasks=plan.subtasks,
+                context_after=task.context.summary,
+            )
+        )
 
     @staticmethod
     def _build_context_summary(previous_summary: str, output_text: str) -> str:

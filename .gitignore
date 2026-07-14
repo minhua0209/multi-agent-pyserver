@@ -9,3 +9,4 @@ __pycache__/
 .idea/
 *.egg-info/
 app/data/agents.json
+app/data/workflows.json

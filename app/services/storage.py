@@ -7,7 +7,18 @@ from typing import Any
 from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, delete, select
 from sqlalchemy.engine import Engine
 
-from app.core.models import Agent, AgentCreate, Event, SubTask, Task, TaskRound, new_id, utc_now
+from app.core.models import (
+    Agent,
+    AgentCreate,
+    Event,
+    SubTask,
+    Task,
+    TaskRound,
+    WorkflowCreate,
+    WorkflowTemplate,
+    new_id,
+    utc_now,
+)
 
 
 class AgentRegistry:
@@ -33,6 +44,60 @@ class AgentRegistry:
             )
         )
         return agent
+
+
+class WorkflowRegistry:
+    def __init__(self, file_path: Path) -> None:
+        self.file_path = file_path
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.file_path.exists():
+            self.file_path.write_text("[]")
+
+    def list_workflows(self) -> list[WorkflowTemplate]:
+        raw_workflows = json.loads(self.file_path.read_text())
+        return [WorkflowTemplate.model_validate(raw_workflow) for raw_workflow in raw_workflows]
+
+    def get_workflow(self, workflow_id: str) -> WorkflowTemplate | None:
+        return next((workflow for workflow in self.list_workflows() if workflow.id == workflow_id), None)
+
+    def create_workflow(self, payload: WorkflowCreate) -> WorkflowTemplate:
+        workflows = self.list_workflows()
+        now = utc_now()
+        workflow = WorkflowTemplate(
+            id=new_id("workflow"),
+            status="active",
+            created_at=now,
+            updated_at=now,
+            **payload.model_dump(by_alias=True),
+        )
+        workflows.append(workflow)
+        self._write(workflows)
+        return workflow
+
+    def update_workflow(self, workflow_id: str, payload: WorkflowCreate) -> WorkflowTemplate | None:
+        workflows = self.list_workflows()
+        for index, workflow in enumerate(workflows):
+            if workflow.id == workflow_id:
+                updated = WorkflowTemplate(
+                    id=workflow.id,
+                    status=workflow.status,
+                    created_at=workflow.created_at,
+                    updated_at=utc_now(),
+                    **payload.model_dump(by_alias=True),
+                )
+                workflows[index] = updated
+                self._write(workflows)
+                return updated
+        return None
+
+    def _write(self, workflows: list[WorkflowTemplate]) -> None:
+        self.file_path.write_text(
+            json.dumps(
+                [item.model_dump(mode="json", by_alias=True) for item in workflows],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
 
 
 class InMemoryTaskStore:
@@ -61,6 +126,9 @@ agents_table = Table(
     Column("name", String(255), nullable=True),
     Column("description", Text, nullable=True),
     Column("capabilities_json", Text, nullable=True),
+    Column("input_schema_json", Text, nullable=True),
+    Column("output_schema_json", Text, nullable=True),
+    Column("execution_config_json", Text, nullable=True),
     Column("tools_json", Text, nullable=True),
     Column("status", String(32), nullable=False, default="active"),
     Column("created_at", DateTime(timezone=True), nullable=True),
@@ -182,6 +250,18 @@ tool_executions_table = Table(
     Column("finished_at", DateTime(timezone=True), nullable=True),
 )
 
+workflow_templates_table = Table(
+    "workflow_templates",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("description", Text, nullable=True),
+    Column("definition_json", Text, nullable=False),
+    Column("status", String(32), nullable=False, default="active"),
+    Column("created_at", DateTime(timezone=True), nullable=True),
+    Column("updated_at", DateTime(timezone=True), nullable=True),
+)
+
 
 def _create_engine(database_url: str) -> Engine:
     return create_engine(database_url, future=True)
@@ -215,6 +295,9 @@ class DatabaseAgentRegistry:
                     name=agent.name,
                     description=agent.description,
                     capabilities_json=_json_dump(agent.capabilities),
+                    input_schema_json=_json_dump(agent.input_schema),
+                    output_schema_json=_json_dump(agent.output_schema),
+                    execution_config_json=agent.execution_config.model_dump_json(),
                     tools_json=_json_dump([tool.model_dump(mode="json") for tool in agent.tools]),
                     status="active",
                     created_at=agent.created_at,
@@ -411,9 +494,9 @@ class DatabaseTaskStore:
             "title": subtask.title,
             "description": subtask.description,
             "status": subtask.status.value,
-            "current_node": "subtask_execution",
+            "current_node": subtask.current_node.value if subtask.current_node else "subtask_execution",
             "assigned_agent_id": subtask.assigned_agent_id,
-            "assignee_type": "agent" if subtask.assigned_agent_id else "human",
+            "assignee_type": subtask.assignee_type,
             "retry_count": 0,
             "max_retry_count": 3,
             "output": subtask.output,
@@ -427,3 +510,79 @@ class DatabaseTaskStore:
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
+
+
+class DatabaseWorkflowRegistry:
+    def __init__(self, database_url: str) -> None:
+        self.engine = _create_engine(database_url)
+        metadata.create_all(self.engine)
+
+    def list_workflows(self) -> list[WorkflowTemplate]:
+        with self.engine.begin() as connection:
+            rows = connection.execute(select(workflow_templates_table)).mappings().all()
+        return [self._row_to_workflow(row) for row in rows]
+
+    def get_workflow(self, workflow_id: str) -> WorkflowTemplate | None:
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(workflow_templates_table).where(workflow_templates_table.c.id == workflow_id)
+            ).mappings().first()
+        return self._row_to_workflow(row) if row else None
+
+    def create_workflow(self, payload: WorkflowCreate) -> WorkflowTemplate:
+        now = utc_now()
+        workflow = WorkflowTemplate(
+            id=new_id("workflow"),
+            status="active",
+            created_at=now,
+            updated_at=now,
+            **payload.model_dump(by_alias=True),
+        )
+        with self.engine.begin() as connection:
+            connection.execute(workflow_templates_table.insert().values(**self._workflow_values(workflow)))
+        return workflow
+
+    def update_workflow(self, workflow_id: str, payload: WorkflowCreate) -> WorkflowTemplate | None:
+        existing = self.get_workflow(workflow_id)
+        if existing is None:
+            return None
+        workflow = WorkflowTemplate(
+            id=workflow_id,
+            status=existing.status,
+            created_at=existing.created_at,
+            updated_at=utc_now(),
+            **payload.model_dump(by_alias=True),
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                workflow_templates_table.update()
+                .where(workflow_templates_table.c.id == workflow_id)
+                .values(**self._workflow_values(workflow))
+            )
+        return workflow
+
+    @staticmethod
+    def _workflow_values(workflow: WorkflowTemplate) -> dict:
+        return {
+            "id": workflow.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "definition_json": workflow.definition.model_dump_json(by_alias=True),
+            "status": workflow.status,
+            "created_at": workflow.created_at,
+            "updated_at": workflow.updated_at,
+        }
+
+    @staticmethod
+    def _row_to_workflow(row) -> WorkflowTemplate:
+        return WorkflowTemplate.model_validate(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "description": row["description"] or "",
+                "definition": json.loads(row["definition_json"]),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )

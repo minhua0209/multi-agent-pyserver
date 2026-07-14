@@ -298,7 +298,8 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"should_continue": true|false, "execution_mode": "parallel|sequential", '
         '"reason": "...", "final_output": "...", '
-        '"subtasks": [{"title": "...", "description": "...", "assigned_agent_id": "agent_id 或 null"}]}'
+        '"subtasks": [{"title": "...", "description": "...", '
+        '"assignee_type": "agent|human", "assigned_agent_id": "agent_id 或 null"}]}'
     )
     agents_payload = [
         {
@@ -343,6 +344,7 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
                 id=new_id("subtask"),
                 title=title,
                 description=description,
+                assignee_type="human" if item.get("assignee_type") == "human" else "agent",
                 assigned_agent_id=_valid_agent_id(item.get("assigned_agent_id"), agents),
             )
         )

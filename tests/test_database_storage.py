@@ -70,6 +70,28 @@ def test_create_app_can_use_database_storage(tmp_path: Path) -> None:
     assert list_response.json()[0]["name"] == "CRM Agent"
 
 
+def test_create_app_database_storage_persists_workflow_templates(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    first_client = TestClient(create_app(database_url=database_url))
+    created = first_client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Quote Workflow",
+            "description": "Persisted workflow",
+            "definition": {
+                "nodes": [{"id": "start", "type": "start"}, {"id": "end", "type": "end"}],
+                "edges": [{"from": "start", "to": "end"}],
+            },
+        },
+    ).json()
+
+    second_client = TestClient(create_app(database_url=database_url))
+    reloaded = second_client.get(f"/api/v1/workflows/{created['id']}").json()
+
+    assert reloaded["name"] == "Quote Workflow"
+    assert reloaded["definition"]["edges"][0]["from"] == "start"
+
+
 def test_database_storage_persists_structured_task_flow_tables(tmp_path: Path, monkeypatch) -> None:
     database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
     client = TestClient(create_app(database_url=database_url))

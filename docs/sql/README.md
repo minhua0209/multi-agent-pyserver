@@ -12,6 +12,7 @@
 
 - `schema_migrations`
 - `agents`
+- `workflow_templates`
 - `task_requests`
 - `tasks`
 - `task_rounds`

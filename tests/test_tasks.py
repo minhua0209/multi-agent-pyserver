@@ -306,3 +306,112 @@ def test_multi_round_task_updates_context_before_next_subtask_runs(tmp_path: Pat
     assert len(result["context"]["rounds"]) == 2
     assert seen_contexts == ["", "requirements ready"]
     assert "quote created using context: requirements ready" in result["context"]["summary"]
+
+
+def test_human_subtask_pauses_round_until_result_is_submitted(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    agent = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Quote Agent",
+            "description": "Handles quote tasks",
+            "capabilities": ["quote"],
+        },
+    ).json()
+
+    def _plan(task, agents):
+        from app.core.models import RoundPlan, SubTask
+
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need agent work and human approval",
+                subtasks=[
+                    SubTask(
+                        id="subtask_agent_parallel",
+                        title="Prepare quote",
+                        description="Prepare quote draft",
+                        assigned_agent_id=agent["id"],
+                    ),
+                    SubTask(
+                        id="subtask_human_parallel",
+                        title="Approve discount",
+                        description="Human must approve the discount",
+                        assignee_type="human",
+                    ),
+                ],
+            )
+        return RoundPlan(should_continue=False, reason="No remaining subtasks", final_output=task.context.summary)
+
+    def _execute(task, subtask, agent, tool_results):
+        return [], "agent quote draft ready"
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Prepare quote and approve discount"},
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "Prepare quote", "description": "Prepare quote and approve discount"},
+    ).json()
+
+    assert paused["task_status"] == "running"
+    assert paused["current_node"] == "human_execution"
+    subtasks = paused["context"]["rounds"][0]["subtasks"]
+    assert subtasks[0]["status"] == "succeeded"
+    assert subtasks[0]["output"] == "agent quote draft ready"
+    assert subtasks[1]["status"] == "running"
+    assert subtasks[1]["assignee_type"] == "human"
+
+    human_tasks = client.get("/api/v1/subtasks/human").json()
+    assert len(human_tasks) == 1
+    assert human_tasks[0]["id"] == "subtask_human_parallel"
+
+
+def test_human_subtask_result_resumes_task_flow(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    def _plan(task, agents):
+        from app.core.models import RoundPlan, SubTask
+
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need human approval",
+                subtasks=[
+                    SubTask(
+                        id="subtask_human_resume",
+                        title="Approve discount",
+                        description="Human must approve the discount",
+                        assignee_type="human",
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, reason="No remaining subtasks", final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Approve discount"},
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "Approve discount", "description": "Human must approve the discount"},
+    ).json()
+    assert paused["current_node"] == "human_execution"
+
+    resumed = client.post(
+        "/api/v1/subtasks/subtask_human_resume/result",
+        json={"result_status": "succeeded", "output": "discount approved", "should_complete": True},
+    ).json()
+
+    assert resumed["task_status"] == "succeeded"
+    assert resumed["current_node"] == "completion_judge"
+    assert "discount approved" in resumed["context"]["summary"]
+    human_subtask = resumed["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["status"] == "succeeded"
+    assert human_subtask["output"] == "discount approved"

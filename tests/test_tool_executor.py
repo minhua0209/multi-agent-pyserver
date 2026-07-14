@@ -45,3 +45,161 @@ def test_tool_executor_rejects_unregistered_tool() -> None:
 
     assert result.success is False
     assert "not registered" in result.error
+
+
+def test_tool_executor_runs_mysql_tool(monkeypatch) -> None:
+    class FakeCursor:
+        description = [("customer_name",), ("level",)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query):
+            assert query == "select customer_name, level from customers where id = 'customer_a'"
+
+        def fetchmany(self, size):
+            assert size == 50
+            return [("Customer A", "vip")]
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            pass
+
+    def _connect(**kwargs):
+        assert kwargs["host"] == "127.0.0.1"
+        assert kwargs["user"] == "demo_user"
+        assert kwargs["database"] == "demo_db"
+        return FakeConnection()
+
+    monkeypatch.setattr("app.services.tool_executor.pymysql.connect", _connect)
+    agent = Agent(
+        id="agent_mysql",
+        name="MySQL Agent",
+        description="Uses MySQL tools",
+        capabilities=["mysql"],
+        tools=[
+            AgentTool(
+                name="customer_query",
+                description="Query customer from MySQL",
+                type="mysql",
+                config={
+                    "host": "127.0.0.1",
+                    "port": "3306",
+                    "user": "demo_user",
+                    "password": "demo_pass_123",
+                    "database": "demo_db",
+                    "query": "select customer_name, level from customers where id = '{customer_id}'",
+                },
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(tool_name="customer_query", arguments={"customer_id": "customer_a"}),
+    )
+
+    assert result.success is True
+    assert result.result == '[{"customer_name": "Customer A", "level": "vip"}]'
+
+
+def test_tool_executor_runs_smtp_email_tool(monkeypatch) -> None:
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            assert host == "smtp.example.com"
+            assert port == 587
+            assert timeout == 30
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, username, password):
+            assert username == "sender@example.com"
+            assert password == "secret"
+
+        def send_message(self, message):
+            sent_messages.append(message)
+
+    monkeypatch.setattr("app.services.tool_executor.smtplib.SMTP", FakeSMTP)
+    agent = Agent(
+        id="agent_email",
+        name="Email Agent",
+        description="Sends email",
+        capabilities=["email"],
+        tools=[
+            AgentTool(
+                name="send_email",
+                description="Send an email",
+                type="smtp_email",
+                config={
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": "587",
+                    "username": "sender@example.com",
+                    "password": "secret",
+                    "from": "sender@example.com",
+                    "use_tls": "true",
+                    "timeout_seconds": "30",
+                },
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(
+            tool_name="send_email",
+            arguments={
+                "to": "minh@getui.com",
+                "subject": "Agent test email",
+                "body": "This is a test email from the task agent.",
+            },
+        ),
+    )
+
+    assert result.success is True
+    assert result.result == "Email sent to minh@getui.com"
+    assert sent_messages[0]["From"] == "sender@example.com"
+    assert sent_messages[0]["To"] == "minh@getui.com"
+    assert sent_messages[0]["Subject"] == "Agent test email"
+    assert sent_messages[0].get_content().strip() == "This is a test email from the task agent."
+
+
+def test_tool_executor_rejects_smtp_email_tool_without_required_fields() -> None:
+    agent = Agent(
+        id="agent_email",
+        name="Email Agent",
+        description="Sends email",
+        capabilities=["email"],
+        tools=[
+            AgentTool(
+                name="send_email",
+                type="smtp_email",
+                config={"smtp_host": "smtp.example.com", "from": "sender@example.com"},
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(tool_name="send_email", arguments={"to": "minh@getui.com"}),
+    )
+
+    assert result.success is False
+    assert "subject" in result.error

@@ -72,9 +72,141 @@ curl -X POST http://127.0.0.1:8000/api/v1/agents \
   }'
 ```
 
-`tools` can be executed by the tool executor. The MVP currently supports `mock`
-tools and basic `http` tools. Tool calls and tool results are written back to
-`context.rounds[].subtasks[]`.
+Agents can also declare execution preferences and structured input/output
+schemas:
+
+```json
+{
+  "execution_config": {
+    "system_prompt": "你是报价 agent",
+    "model_name": "qwen3.6-35b",
+    "temperature": 0.2,
+    "timeout_seconds": 60,
+    "max_retries": 2,
+    "max_tool_calls": 5
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "customer_id": {"type": "string"}
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "quote_amount": {"type": "number"}
+    }
+  }
+}
+```
+
+`tools` can be executed by the tool executor. The MVP currently supports `mock`,
+basic `http`, read-only `mysql`, and `smtp_email` tools. Tool calls and tool
+results are written back to `context.rounds[].subtasks[]`.
+
+Example MySQL tool declaration:
+
+```json
+{
+  "name": "customer_query",
+  "description": "Query customer information from MySQL",
+  "type": "mysql",
+  "config": {
+    "host": "127.0.0.1",
+    "port": "3306",
+    "user": "demo_user",
+    "password": "demo_pass_123",
+    "database": "demo_db",
+    "query": "select customer_name, level from customers where id = '{customer_id}'",
+    "max_rows": "50"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "customer_id": {"type": "string"}
+    }
+  }
+}
+```
+
+Example SMTP email agent declaration:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/agents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Email Agent",
+    "description": "Handles sending emails to target recipients",
+    "capabilities": ["email", "notification", "send_email"],
+    "tools": [
+      {
+        "name": "send_email",
+        "description": "Send email through SMTP",
+        "type": "smtp_email",
+        "config": {
+          "smtp_host": "smtp.example.com",
+          "smtp_port": "587",
+          "username": "sender@example.com",
+          "password": "replace-with-smtp-password",
+          "from": "sender@example.com",
+          "use_tls": "true",
+          "timeout_seconds": "30"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "to": {"type": "string"},
+            "subject": {"type": "string"},
+            "body": {"type": "string"}
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    ]
+  }'
+```
+
+The email tool requires `to`, `subject`, and `body` in the generated tool call.
+For a real send test, replace the SMTP config with a valid sender account. A
+task description such as `请发送一封测试邮件给 minh@getui.com，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。`
+can be routed to an agent with email capabilities.
+
+Create a workflow template. Templates are stored in `workflow_templates` when
+`DATABASE_URL` is set; otherwise they are stored in `app/data/workflows.json`.
+Updating a template overwrites the current template in place.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/workflows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Quote Approval",
+    "description": "Create a quote and approve it manually",
+    "definition": {
+      "nodes": [
+        {"id": "start", "type": "start"},
+        {
+          "id": "make_quote",
+          "type": "agent",
+          "agent_id": "agent_xxx",
+          "title": "Make quote",
+          "description": "Create a quote draft"
+        },
+        {
+          "id": "approve_quote",
+          "type": "human",
+          "title": "Approve quote",
+          "description": "Approve the quote draft"
+        },
+        {"id": "end", "type": "end"}
+      ],
+      "edges": [
+        {"from": "start", "to": "make_quote"},
+        {"from": "make_quote", "to": "approve_quote"},
+        {"from": "approve_quote", "to": "end"}
+      ]
+    }
+  }'
+```
 
 Create a task request:
 
@@ -82,6 +214,21 @@ Create a task request:
 curl -X POST http://127.0.0.1:8000/api/v1/tasks/requests \
   -H "Content-Type: application/json" \
   -d '{"source_type":"business_system","content":"Create a quote for customer A; review customer B contract risk"}'
+```
+
+Run a task with a workflow template instead of dynamic dispatch:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/tasks/requests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "business_system",
+    "content": "Create quote through workflow",
+    "metadata": {
+      "execution_mode": "workflow_template",
+      "workflow_id": "workflow_xxx"
+    }
+  }'
 ```
 
 The response contains one request id and one main task:
@@ -128,4 +275,19 @@ Poll tasks assigned to an agent:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/agents/{agent_id}/poll
+```
+
+List human subtasks waiting for manual handling:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/subtasks/human
+```
+
+Submit a human subtask result. If all subtasks in the current round have
+finished, the service merges the round context and resumes automatic dispatch.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/subtasks/{subtask_id}/result \
+  -H "Content-Type: application/json" \
+  -d '{"result_status":"succeeded","output":"discount approved","should_complete":true}'
 ```

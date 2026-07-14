@@ -64,3 +64,41 @@ def test_create_agent_accepts_tool_definitions(tmp_path: Path) -> None:
     assert body["tools"][0]["name"] == "crm_query"
     assert body["tools"][0]["type"] == "http"
     assert body["tools"][0]["input_schema"]["properties"]["customer_id"]["type"] == "string"
+
+
+def test_create_agent_accepts_execution_config_and_io_schema(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Quote Agent",
+            "description": "Uses a custom model and structured IO",
+            "capabilities": ["quote"],
+            "input_schema": {
+                "type": "object",
+                "properties": {"customer_id": {"type": "string"}},
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {"quote_amount": {"type": "number"}},
+            },
+            "execution_config": {
+                "system_prompt": "你是报价 agent",
+                "model_name": "qwen3.6-35b",
+                "temperature": 0.2,
+                "timeout_seconds": 30,
+                "max_retries": 2,
+                "max_tool_calls": 3,
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["input_schema"]["properties"]["customer_id"]["type"] == "string"
+    assert body["output_schema"]["properties"]["quote_amount"]["type"] == "number"
+    assert body["execution_config"]["system_prompt"] == "你是报价 agent"
+    assert body["execution_config"]["model_name"] == "qwen3.6-35b"
+    assert body["execution_config"]["max_tool_calls"] == 3

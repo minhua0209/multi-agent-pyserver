@@ -64,11 +64,26 @@ CALL add_column_if_missing('agents', 'payload', 'json NULL');
 CALL add_column_if_missing('agents', 'name', 'varchar(255) NULL');
 CALL add_column_if_missing('agents', 'description', 'text NULL');
 CALL add_column_if_missing('agents', 'capabilities_json', 'json NULL');
+CALL add_column_if_missing('agents', 'input_schema_json', 'json NULL');
+CALL add_column_if_missing('agents', 'output_schema_json', 'json NULL');
+CALL add_column_if_missing('agents', 'execution_config_json', 'json NULL');
 CALL add_column_if_missing('agents', 'tools_json', 'json NULL');
 CALL add_column_if_missing('agents', 'status', 'varchar(32) NOT NULL DEFAULT ''active''');
 CALL add_column_if_missing('agents', 'created_at', 'datetime(6) NULL');
 CALL add_column_if_missing('agents', 'updated_at', 'datetime(6) NULL');
 CALL add_index_if_missing('agents', 'idx_agents_status', 'INDEX idx_agents_status (status)');
+
+CREATE TABLE IF NOT EXISTS workflow_templates (
+  id varchar(64) PRIMARY KEY
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CALL add_column_if_missing('workflow_templates', 'name', 'varchar(255) NOT NULL');
+CALL add_column_if_missing('workflow_templates', 'description', 'text NULL');
+CALL add_column_if_missing('workflow_templates', 'definition_json', 'json NOT NULL');
+CALL add_column_if_missing('workflow_templates', 'status', 'varchar(32) NOT NULL DEFAULT ''active''');
+CALL add_column_if_missing('workflow_templates', 'created_at', 'datetime(6) NULL');
+CALL add_column_if_missing('workflow_templates', 'updated_at', 'datetime(6) NULL');
+CALL add_index_if_missing('workflow_templates', 'idx_workflow_templates_status', 'INDEX idx_workflow_templates_status (status)');
 
 CREATE TABLE IF NOT EXISTS task_requests (
   id varchar(64) PRIMARY KEY

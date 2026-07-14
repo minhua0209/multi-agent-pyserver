@@ -20,6 +20,9 @@ class AgentCreate(BaseModel):
     name: str = Field(min_length=1)
     description: str = ""
     capabilities: list[str] = Field(default_factory=list)
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+    execution_config: "AgentExecutionConfig" = Field(default_factory=lambda: AgentExecutionConfig())
     tools: list["AgentTool"] = Field(default_factory=list)
 
 
@@ -28,12 +31,54 @@ class Agent(AgentCreate):
     created_at: datetime
 
 
+class AgentExecutionConfig(BaseModel):
+    system_prompt: str = ""
+    model_name: str = ""
+    temperature: float | None = None
+    timeout_seconds: int = 60
+    max_retries: int = 0
+    max_tool_calls: int = 5
+
+
 class AgentTool(BaseModel):
     name: str = Field(min_length=1)
     description: str = ""
     type: str = "metadata"
     config: dict[str, str] = Field(default_factory=dict)
     input_schema: dict = Field(default_factory=dict)
+
+
+class WorkflowNode(BaseModel):
+    id: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    title: str = ""
+    description: str = ""
+    agent_id: str | None = None
+    config: dict = Field(default_factory=dict)
+
+
+class WorkflowEdge(BaseModel):
+    from_node: str = Field(alias="from")
+    to_node: str = Field(alias="to")
+    condition: dict = Field(default_factory=dict)
+
+
+class WorkflowDefinition(BaseModel):
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    edges: list[WorkflowEdge] = Field(default_factory=list)
+
+
+class WorkflowCreate(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    definition: WorkflowDefinition
+
+
+class WorkflowTemplate(WorkflowCreate):
+    id: str
+    status: str = "active"
+    created_at: datetime
+    updated_at: datetime
 
 
 class TaskRequestCreate(BaseModel):
@@ -92,6 +137,8 @@ class SubTask(BaseModel):
     title: str
     description: str
     assigned_agent_id: str | None = None
+    assignee_type: str = "agent"
+    current_node: CurrentNode | None = None
     status: TaskStatus = TaskStatus.RUNNING
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolExecutionResult] = Field(default_factory=list)
