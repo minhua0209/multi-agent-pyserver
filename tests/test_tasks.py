@@ -12,6 +12,7 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
         "/api/v1/tasks/requests",
         json={
             "source_type": "business_system",
+            "title": "客户A报价任务",
             "content": "Create a quote for customer A",
         },
     )
@@ -23,7 +24,25 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
     task = result["tasks"][0]
     assert task["task_status"] == "running"
     assert task["current_node"] == "human_confirmation"
+    assert task["title"] == "客户A报价任务"
+    assert task["description"] == "Create a quote for customer A"
+    assert task["content"] == "Create a quote for customer A"
     assert task["draft"]["title"] == "Create a quote for customer A"
+
+
+def test_task_request_title_must_not_exceed_50_chars(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    response = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "超" * 51,
+            "content": "Create a quote for customer A",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_unconfirmed_task_can_be_cancelled_and_removed_from_task_list(tmp_path: Path) -> None:
@@ -227,7 +246,7 @@ def test_confirm_task_can_return_before_automatic_flow_when_async_requested(
     assert task["task_status"] == "running"
     assert task["current_node"] == "dispatch_decision"
     assert task["title"] == "Create a quote for customer A"
-    assert task["description"] == "Prepare and send quote for customer A"
+    assert task["description"] == "Create a quote for customer A"
     assert scheduled_task_ids == [created["id"]]
     assert [event["type"] for event in task["events"]][-2:] == [
         "human_confirmed",

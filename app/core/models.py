@@ -104,6 +104,7 @@ class WorkflowTemplate(WorkflowCreate):
 
 class TaskRequestCreate(BaseModel):
     source_type: SourceType
+    title: str = Field(default="", max_length=50)
     content: str = Field(min_length=1)
     metadata: dict[str, str] = Field(default_factory=dict)
 

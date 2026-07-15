@@ -70,6 +70,37 @@ def test_create_app_can_use_database_storage(tmp_path: Path) -> None:
     assert list_response.json()[0]["name"] == "CRM Agent"
 
 
+def test_database_storage_cancels_unconfirmed_task_and_removes_rows(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    client = TestClient(create_app(database_url=database_url))
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "待取消任务",
+            "content": "Create a quote for customer A",
+        },
+    ).json()
+    task_id = created["tasks"][0]["id"]
+    request_id = created["request_id"]
+
+    response = client.delete(f"/api/v1/tasks/{task_id}")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/tasks").json() == []
+
+    engine = create_engine(database_url, future=True)
+    with engine.begin() as connection:
+        task_count = connection.execute(text("select count(*) from tasks where id = :id"), {"id": task_id}).scalar_one()
+        request_count = connection.execute(text("select count(*) from task_requests where id = :id"), {"id": request_id}).scalar_one()
+        event_count = connection.execute(text("select count(*) from task_events where task_id = :id"), {"id": task_id}).scalar_one()
+
+    assert task_count == 0
+    assert request_count == 0
+    assert event_count == 0
+
+
 def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
     captured_urls = []
 

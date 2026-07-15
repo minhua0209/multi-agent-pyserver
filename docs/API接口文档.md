@@ -346,6 +346,7 @@
 ```json
 {
   "source_type": "business_system",
+  "title": "发送测试邮件任务",
   "content": "请发送一封测试邮件给 minh@getui.com，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。",
   "metadata": {}
 }
@@ -356,6 +357,7 @@
 ```json
 {
   "source_type": "business_system",
+  "title": "客户A报价流程",
   "content": "按报价审批流程处理客户 A 报价",
   "metadata": {
     "execution_mode": "workflow_template",
@@ -374,6 +376,8 @@
       "id": "task_xxx",
       "request_id": "req_xxx",
       "source_type": "business_system",
+      "title": "发送测试邮件任务",
+      "description": "请发送一封测试邮件给 minh@getui.com，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。",
       "content": "请发送一封测试邮件给 minh@getui.com...",
       "request_metadata": {},
       "task_status": "running",
@@ -387,8 +391,6 @@
         "suggested_agent_id": "agent_xxx",
         "depends_on": []
       },
-      "title": null,
-      "description": null,
       "assigned_agent_id": "agent_xxx",
       "dependency_task_ids": [],
       "context": {
@@ -413,6 +415,9 @@
 | --- | --- | --- |
 | `request_id` | string | 本次上游请求 ID |
 | `tasks` | Task[] | 生成的主任务列表；当前服务会把识别出的 draft 合并成一个主任务返回 |
+| `tasks[].title` | string | 任务名称，最多 50 个字 |
+| `tasks[].description` | string | 任务诉求，默认与 `content` 一致 |
+| `tasks[].content` | string | 原始任务诉求 |
 | `tasks[].draft` | TaskDraft | 待人工确认的任务草稿 |
 | `tasks[].current_node` | string | 当前节点；创建后固定进入 `human_confirmation` |
 | `tasks[].assigned_agent_id` | string/null | 意图识别阶段建议的 agent |

@@ -128,11 +128,12 @@ export function getTask(taskId: string) {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export function createTaskRequest(content: string, sourceType = "business_system") {
+export function createTaskRequest(title: string, content: string, sourceType = "business_system") {
   return request<TaskRequestResponse>("/api/v1/tasks/requests", {
     method: "POST",
     body: JSON.stringify({
       source_type: sourceType,
+      title,
       content,
       metadata: {},
     }),

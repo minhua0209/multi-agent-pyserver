@@ -64,6 +64,8 @@ class TaskService:
             id=new_id("task"),
             request_id=request_id,
             source_type=payload.source_type,
+            title=payload.title or draft.title,
+            description=payload.content,
             content=payload.content,
             request_metadata=payload.metadata,
             task_status=TaskStatus.RUNNING,
@@ -83,8 +85,8 @@ class TaskService:
 
     def confirm_task_details(self, task_id: str, payload: TaskConfirm) -> Task:
         task = self._get_existing(task_id)
-        task.title = payload.title
-        task.description = payload.description
+        task.title = task.title or payload.title
+        task.description = task.description or payload.description
         task.events.append(self._event("human_confirmed", "Human confirmed task details"))
         if not self._dependencies_satisfied(task):
             task.current_node = CurrentNode.WAITING_DEPENDENCIES

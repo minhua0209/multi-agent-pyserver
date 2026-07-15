@@ -1,4 +1,26 @@
 import {
+  Alert as AntAlert,
+  Button,
+  Card,
+  ConfigProvider,
+  Descriptions,
+  Empty as AntEmpty,
+  Flex,
+  Input,
+  Layout,
+  List,
+  Menu,
+  Modal,
+  Pagination,
+  Spin,
+  Statistic,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd"
+import type { ColumnsType } from "antd/es/table"
+import {
   Activity,
   Bot,
   CheckCircle2,
@@ -11,7 +33,6 @@ import {
   Search,
   Send,
   ShieldCheck,
-  UserCheck,
   XCircle,
 } from "lucide-react"
 import { FormEvent, useEffect, useMemo, useState } from "react"
@@ -31,6 +52,7 @@ import {
   listTasks,
   submitHumanSubtaskResult,
 } from "./api/taskhub"
+import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 
 type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "audit" | "governance"
 
@@ -59,12 +81,28 @@ function statusText(status?: string) {
   return { running: "正在执行", succeeded: "执行完成", failed: "执行失败" }[value] || value
 }
 
+function statusColor(status?: string) {
+  const value = status || "running"
+  return { running: "processing", succeeded: "success", failed: "error" }[value] || "default"
+}
+
+function toneColor(tone: string) {
+  return { info: "#2563eb", success: "#16a34a", warning: "#d97706", danger: "#dc2626" }[tone] || "#2563eb"
+}
+
 function taskTitle(task: Task) {
   return task.title || task.draft?.title || task.content || task.id
 }
 
 function taskDescription(task: Task) {
   return task.description || task.draft?.description || task.content || "-"
+}
+
+function draftTaskListText(task: Task) {
+  if (!task.draft) return "暂无识别任务清单"
+  const title = task.draft.title || "未命名任务"
+  const description = task.draft.description || ""
+  return description ? `${title}\n${description}` : title
 }
 
 function taskStatus(task: Task) {
@@ -140,59 +178,71 @@ export default function App() {
     void refreshAll()
   }, [])
 
+  const menuItems = navGroups.flatMap((group) => [
+    {
+      type: "group" as const,
+      label: group.label,
+      children: group.items.map((item) => {
+        const Icon = item.icon
+        return { key: item.id, label: item.text, icon: <Icon size={16} /> }
+      }),
+    },
+  ])
+
   return (
-    <div className="app-shell">
-      <aside className="side-nav">
-        <div className="brand">
-          <h1 className="brand-title">TaskHub</h1>
-          <div className="brand-subtitle">Agent 任务协同中心</div>
-        </div>
-        <div className="nav-section">
-          {navGroups.map((group) => (
-            <div key={group.label}>
-              <div className="nav-label">{group.label}</div>
-              {group.items.map((item, index) => {
-                const Icon = item.icon
-                return (
-                  <button
-                    key={item.id}
-                    className="nav-button"
-                    aria-current={page === item.id ? "page" : undefined}
-                    onClick={() => void navigateTo(item.id as PageId)}
-                  >
-                    <span className="nav-text">
-                      <Icon size={16} />
-                      {item.text}
-                    </span>
-                    <span>{String(index + 1).padStart(2, "0")}</span>
-                  </button>
-                )
-              })}
-            </div>
-          ))}
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="top-toolbar">
-          <div className="toolbar-left">
-            <div className="global-search">
-              <Search size={16} />
-              <span>搜索任务、Agent、执行节点</span>
-            </div>
+    <ConfigProvider
+      theme={{
+        token: {
+          colorPrimary: "#4f46e5",
+          colorInfo: "#0891b2",
+          colorSuccess: "#16a34a",
+          colorWarning: "#f59e0b",
+          colorError: "#e11d48",
+          borderRadius: 8,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+        },
+        components: {
+          Layout: { bodyBg: "#eef2ff", siderBg: "#111827", headerBg: "rgba(255,255,255,0.9)" },
+          Card: { borderRadiusLG: 8 },
+          Menu: { darkItemBg: "#111827", darkSubMenuItemBg: "#111827", darkItemSelectedBg: "#4338ca" },
+        },
+      }}
+    >
+      <Layout className="app-shell antd-shell">
+        <Layout.Sider width={252} className="side-nav antd-sider">
+          <div className="brand">
+            <h1 className="brand-title">TaskHub</h1>
+            <div className="brand-subtitle">Agent 任务协同中心</div>
           </div>
-          <div className="toolbar-right">
-            <span className={error ? "status-pill danger" : "status-pill success"}>{error ? "接口异常" : "接口联调模式"}</span>
-            <button className="btn" onClick={refreshAll} disabled={loading}>
-              {loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-              刷新
-            </button>
-          </div>
-        </header>
+          <Menu
+            theme="dark"
+            mode="inline"
+            selectedKeys={[page]}
+            items={menuItems}
+            className="app-menu"
+            onClick={(item) => void navigateTo(item.key as PageId)}
+          />
+        </Layout.Sider>
 
-        <section className="content">
+        <Layout>
+          <Layout.Header className="top-toolbar">
+            <Input
+              className="global-search"
+              prefix={<Search size={16} />}
+              placeholder="搜索任务、Agent、执行节点"
+              readOnly
+            />
+            <Flex align="center" gap={12}>
+              <Tag color={error ? "error" : "success"}>{error ? "接口异常" : "接口联调模式"}</Tag>
+              <Button icon={loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} onClick={refreshAll} loading={loading}>
+                刷新
+              </Button>
+            </Flex>
+          </Layout.Header>
+
+          <Layout.Content className="content">
           {toast && <div className="toast">{toast}</div>}
-          {error && <div className="alert danger">{error}</div>}
+          {error && <AntAlert type="error" showIcon message={error} className="page-alert" />}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
           {page === "publish" && <PublishPage onCreated={(created) => {
             setTasks((current) => mergeTasks(current, created))
@@ -215,9 +265,10 @@ export default function App() {
           {page === "agents" && <AgentsPage agents={agents} setAgents={setAgents} setToast={setToast} />}
           {page === "audit" && <AuditPage events={events} />}
           {page === "governance" && <GovernancePage />}
-        </section>
-      </main>
-    </div>
+          </Layout.Content>
+        </Layout>
+      </Layout>
+    </ConfigProvider>
   )
 }
 
@@ -245,10 +296,9 @@ function Overview({
   return (
     <div className="page active">
       <PageHeader title="协同运营驾驶舱" description="聚合任务运行信号、节点负载、Agent 覆盖和异常收敛状态。">
-        <button className="btn btn-primary" onClick={() => setPage("publish")}>
-          <Plus size={16} />
+        <Button type="primary" icon={<Plus size={16} />} onClick={() => setPage("publish")}>
           发布任务
-        </button>
+        </Button>
       </PageHeader>
       <div className="metric-grid">
         <Metric label="运行中任务" value={running} tone="info" />
@@ -287,6 +337,7 @@ function PublishPage({
   onConfirmed: (tasks: Task[]) => void
   onCancelled: (taskIds: string[]) => void
 }) {
+  const [title, setTitle] = useState("客户需求协同处理")
   const [content, setContent] = useState("请分析客户需求，生成一份报告并保存到本地目录")
   const [draftTasks, setDraftTasks] = useState<Task[]>([])
   const [intentModalOpen, setIntentModalOpen] = useState(false)
@@ -303,7 +354,7 @@ function PublishPage({
     setDraftTasks([])
     setIntentModalOpen(true)
     try {
-      const response = await createTaskRequest(content)
+      const response = await createTaskRequest(title.trim(), content)
       onCreated(response.tasks || [])
       setDraftTasks(response.tasks || [])
     } catch (err) {
@@ -323,8 +374,8 @@ function PublishPage({
       for (const task of draftTasks) {
         confirmed.push(
           await confirmTask(task.id, {
-            title: taskTitle(task),
-            description: taskDescription(task),
+            title: task.title || task.draft?.title || taskTitle(task),
+            description: draftTaskListText(task),
             execution_mode: "async",
           }),
         )
@@ -340,8 +391,20 @@ function PublishPage({
     }
   }
 
-  function updateDraftTask(taskId: string, patch: Partial<Pick<Task, "title" | "description">>) {
-    setDraftTasks((current) => current.map((task) => (task.id === taskId ? { ...task, ...patch } : task)))
+  function updateDraftTask(taskId: string, patch: Partial<{ title: string; description: string }>) {
+    setDraftTasks((current) =>
+      current.map((task) => {
+        if (task.id !== taskId) return task
+        return {
+          ...task,
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          draft: {
+            ...(task.draft || { title: taskTitle(task), description: taskDescription(task) }),
+            ...patch,
+          },
+        }
+      }),
+    )
   }
 
   async function closeIntentModal() {
@@ -350,17 +413,18 @@ function PublishPage({
     if (taskIds.length > 0) {
       setConfirming(true)
       setMessage("")
+      setIntentError("")
       try {
         await Promise.all(taskIds.map((taskId) => cancelTask(taskId)))
         onCancelled(taskIds)
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : "取消任务失败"
         setIntentError(errorMessage)
-        setMessage(errorMessage)
-        return
-      } finally {
+        setMessage(`取消失败：${errorMessage}`)
         setConfirming(false)
+        return
       }
+      setConfirming(false)
     }
     setDraftTasks([])
     setIntentError("")
@@ -369,33 +433,49 @@ function PublishPage({
 
   return (
     <div className="page active">
-      <PageHeader title="任务发布页" description="将自然语言请求提交为可追踪的 Request。" />
-      <form className="form-panel" onSubmit={submit}>
+      <PageHeader title="任务发布页" description="填写任务名称和任务诉求，系统会识别并整理待确认的任务清单。" />
+      <Card className="form-panel">
+      <form onSubmit={submit}>
+        <label className="field">
+          <span>任务名称（50字以内）</span>
+          <Input
+            showCount
+            maxLength={50}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="请输入任务名称"
+          />
+        </label>
         <label className="field">
           <span>任务诉求</span>
-          <textarea className="textarea" value={content} onChange={(event) => setContent(event.target.value)} />
+          <Input.TextArea rows={7} value={content} onChange={(event) => setContent(event.target.value)} />
         </label>
         <div className="form-actions">
-          <button className="btn btn-primary" disabled={submitting || !content.trim()}>
-            {submitting ? <Loader2 size={16} className="spin" /> : <Send size={16} />}
+          <Button type="primary" htmlType="submit" icon={<Send size={16} />} loading={submitting} disabled={!title.trim() || title.trim().length > 50 || !content.trim()}>
             提交请求
-          </button>
-          {message && <span className="form-message danger-text">{message}</span>}
+          </Button>
+          {message && <Typography.Text type="danger">{message}</Typography.Text>}
         </div>
       </form>
-      {intentModalOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal-panel intent-modal" role="dialog" aria-modal="true" aria-label="意图识别任务清单">
-            <header className="modal-header">
-              <div>
-                <h3>意图识别任务清单</h3>
-                <p>{submitting ? "正在拆分整理任务清单，请稍后" : "请确认识别出的任务名称和描述，确认后系统会异步执行。"}</p>
-              </div>
-              <button className="btn" onClick={() => void closeIntentModal()} disabled={submitting || confirming}>关闭</button>
-            </header>
+      </Card>
+      <Modal
+        title="意图识别任务清单"
+        open={intentModalOpen}
+        width={860}
+        onCancel={() => void closeIntentModal()}
+        footer={submitting || intentError ? null : [
+          <Button key="cancel" onClick={() => void closeIntentModal()} disabled={confirming}>取消</Button>,
+          <Button key="confirm" type="primary" onClick={confirmDrafts} loading={confirming} disabled={draftTasks.length === 0}>确认并执行</Button>,
+        ]}
+        maskClosable={false}
+        closable={!submitting && !confirming}
+      >
+        <Typography.Paragraph type="secondary">
+          {submitting ? "正在拆分整理任务清单，请稍后" : "请确认识别出的任务名称和描述，确认后系统会异步执行。"}
+        </Typography.Paragraph>
             {submitting ? (
               <div className="intent-loading">
-                <Loader2 size={34} className="spin" />
+                <Spin size="large" />
                 <strong>正在拆分整理任务清单，请稍后</strong>
                 <span>系统正在调用意图识别能力，返回后会在这里展示待确认任务。</span>
               </div>
@@ -408,32 +488,26 @@ function PublishPage({
             ) : (
               <>
                 <div className="intent-task-list">
-                  {draftTasks.map((task, index) => (
-                    <div className="intent-task-card" key={task.id}>
-                      <div className="intent-task-index">任务 {index + 1}</div>
+                  {draftTasks.map((task) => (
+                    <Card className="intent-task-card" key={task.id} size="small">
+                      <div className="intent-task-index">
+                        <Tag color="blue">{taskLabel()}</Tag>
+                        <Typography.Text type="secondary">可编辑任务名称和描述</Typography.Text>
+                      </div>
                       <label className="field">
                         <span>任务名称</span>
-                        <input className="input" value={taskTitle(task)} onChange={(event) => updateDraftTask(task.id, { title: event.target.value })} />
+                        <Input value={draftTitleValue(task)} onChange={(event) => updateDraftTask(task.id, { title: event.target.value })} />
                       </label>
                       <label className="field">
                         <span>任务描述</span>
-                        <textarea className="textarea" value={taskDescription(task)} onChange={(event) => updateDraftTask(task.id, { description: event.target.value })} />
+                        <Input.TextArea rows={5} value={draftDescriptionValue(task)} onChange={(event) => updateDraftTask(task.id, { description: event.target.value })} />
                       </label>
-                    </div>
+                    </Card>
                   ))}
-                </div>
-                <div className="modal-actions">
-                  <button className="btn" onClick={() => void closeIntentModal()} disabled={confirming}>取消</button>
-                  <button className="btn btn-primary" onClick={confirmDrafts} disabled={confirming || draftTasks.length === 0}>
-                    {confirming ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
-                    确认并执行
-                  </button>
                 </div>
               </>
             )}
-          </section>
-        </div>
-      )}
+      </Modal>
     </div>
   )
 }
@@ -483,42 +557,41 @@ function ConfirmationPage({
       ) : (
         <div className="grid two">
           <Panel title="人工节点队列">
-            {humanSubtasks.map((subtask) => (
-              <button key={subtask.id} className={subtask.id === active.id ? "list-item active" : "list-item"} onClick={() => setActiveId(subtask.id)}>
-                <span>{subtask.title || subtask.description || subtask.id}</span>
-                <small>{subtask.current_node || subtask.assignee_type || "human"}</small>
-              </button>
-            ))}
+            <List
+              dataSource={humanSubtasks}
+              renderItem={(subtask) => (
+                <List.Item
+                  className={subtask.id === active.id ? "list-item active" : "list-item"}
+                  onClick={() => setActiveId(subtask.id)}
+                >
+                  <List.Item.Meta
+                    title={subtask.title || subtask.description || subtask.id}
+                    description={subtask.current_node || subtask.assignee_type || "human"}
+                  />
+                  <Tag color={statusColor(subtask.status)}>{statusText(subtask.status)}</Tag>
+                </List.Item>
+              )}
+            />
           </Panel>
           <Panel title="人工处理">
-            <div className="human-subtask-detail">
-              <div>
-                <span className="muted">子任务名称</span>
-                <strong>{active.title || active.id}</strong>
-              </div>
-              <div>
-                <span className="muted">子任务描述</span>
-                <p>{active.description || "-"}</p>
-              </div>
-              <div className="detail-grid">
-                <span className={`status-pill ${active.status || "running"}`}>{statusText(active.status)}</span>
-                <span className="muted">任务 ID：{active.task_id || "-"}</span>
-                <span className="muted">处理节点：{active.current_node || "human"}</span>
-              </div>
-            </div>
+            <Descriptions bordered size="small" column={1} className="human-subtask-detail">
+              <Descriptions.Item label="子任务名称">{active.title || active.id}</Descriptions.Item>
+              <Descriptions.Item label="子任务描述">{active.description || "-"}</Descriptions.Item>
+              <Descriptions.Item label="任务 ID">{active.task_id || "-"}</Descriptions.Item>
+              <Descriptions.Item label="处理节点">{active.current_node || "human"}</Descriptions.Item>
+              <Descriptions.Item label="状态"><Tag color={statusColor(active.status)}>{statusText(active.status)}</Tag></Descriptions.Item>
+            </Descriptions>
             <label className="field">
               <span>处理意见</span>
-              <textarea className="textarea" value={opinion} onChange={(event) => setOpinion(event.target.value)} placeholder="填写人工判断、补充信息或驳回原因" />
+              <Input.TextArea rows={5} value={opinion} onChange={(event) => setOpinion(event.target.value)} placeholder="填写人工判断、补充信息或驳回原因" />
             </label>
             <div className="form-actions">
-              <button className="btn btn-primary" onClick={() => void submit("approved")} disabled={submitting}>
-                {submitting ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+              <Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => void submit("approved")} loading={submitting}>
                 确认通过
-              </button>
-              <button className="btn btn-danger" onClick={() => void submit("rejected")} disabled={submitting}>
-                <XCircle size={16} />
+              </Button>
+              <Button danger icon={<XCircle size={16} />} onClick={() => void submit("rejected")} disabled={submitting}>
                 驳回
-              </button>
+              </Button>
             </div>
           </Panel>
         </div>
@@ -585,7 +658,6 @@ function TasksPage({
           task={detailTask}
           loading={detailLoading}
           error={detailError}
-          polling={taskStatus(detailTask) === "running"}
           onOpenHumanWorkbench={() => {
             setDetailTask(null)
             setDetailError("")
@@ -605,38 +677,52 @@ function TaskDetailModal({
   task,
   loading,
   error,
-  polling,
   onOpenHumanWorkbench,
   onClose,
 }: {
   task: Task
   loading: boolean
   error: string
-  polling: boolean
   onOpenHumanWorkbench: () => void
   onClose: () => void
 }) {
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal-panel task-detail-modal" role="dialog" aria-modal="true" aria-label="任务详情" onMouseDown={(event) => event.stopPropagation()}>
-        <header className="modal-header">
-          <div>
-            <h3>{taskTitle(task)}</h3>
-            <p>{task.description || task.content || task.id}</p>
-          </div>
-          <button className="btn" onClick={onClose}>关闭</button>
-        </header>
+    <Modal
+      title={
+        <div className="task-detail-title">
+          <Tooltip title={taskTitle(task)}>
+            <Typography.Text strong ellipsis>{taskTitle(task)}</Typography.Text>
+          </Tooltip>
+        </div>
+      }
+      open
+      onCancel={onClose}
+      footer={null}
+      width="min(1240px, calc(100vw - 56px))"
+      style={{ top: 16, height: "calc(100vh - 32px)", maxHeight: 920, minHeight: 760 }}
+      styles={{
+        body: {
+          flex: "1 1 auto",
+          minHeight: 0,
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+        },
+      }}
+      className="task-detail-modal"
+    >
         <div className="task-detail-body">
           <div className="task-detail-summary">
-            {loading && <div className="alert"><Loader2 size={16} className="spin" /> 正在加载最新详情</div>}
-            {polling && !loading && <div className="alert info"><Loader2 size={16} className="spin" /> 任务执行中，详情每 3 秒自动刷新</div>}
-            {error && <div className="alert danger">{error}</div>}
-            <div className="detail-grid">
-              <span className={`status-pill ${taskStatus(task)}`}>{statusText(taskStatus(task))}</span>
-              <span className="muted">当前节点：{task.current_node || "-"}</span>
-              <span className="muted">循环轮次：{task.loop_count ?? 0}/{task.max_loop_count ?? 10}</span>
-            </div>
-            <div className="context-box">{task.context?.summary || task.final_output || "暂无上下文摘要"}</div>
+            {loading && <AntAlert type="info" showIcon message="正在加载最新详情" />}
+            {error && <AntAlert type="error" showIcon message={error} />}
+            <section className="detail-text-block">
+              <h4>原始诉求</h4>
+              <div>{task.content || task.description || "-"}</div>
+            </section>
+            <section className="detail-text-block">
+              <h4>任务清单</h4>
+              <div>{draftTaskListText(task)}</div>
+            </section>
           </div>
           <section className="execution-section">
             <h4>执行轮次</h4>
@@ -649,8 +735,7 @@ function TaskDetailModal({
             )}
           </section>
         </div>
-      </section>
-    </div>
+    </Modal>
   )
 }
 
@@ -742,42 +827,50 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
     <div className="page active">
       <PageHeader title="Agent 管理" description="通过一句诉求创建具体能力 Agent，并查看能力标签和工具定义。" />
       <div className="grid two">
-        <form className="form-panel" onSubmit={submit}>
+        <Card className="form-panel" title="极简创建 Agent" size="small">
+        <form onSubmit={submit}>
           <label className="field">
             <span>Agent 名称</span>
-            <input className="input" value={name} onChange={(event) => setName(event.target.value)} />
+            <Input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <label className="field">
             <span>能力诉求</span>
-            <textarea className="textarea" value={ability} onChange={(event) => setAbility(event.target.value)} />
+            <Input.TextArea rows={6} value={ability} onChange={(event) => setAbility(event.target.value)} />
           </label>
-          <button className="btn btn-primary" disabled={submitting || !ability.trim()}>
-            {submitting ? <Loader2 size={16} className="spin" /> : <Bot size={16} />}
+          <Button type="primary" htmlType="submit" icon={<Bot size={16} />} loading={submitting} disabled={!ability.trim()}>
             极简创建 Agent
-          </button>
+          </Button>
           {result && (
-            <div className={`alert ${result.status === "created" ? "success" : "warning"}`}>
-              <strong>{result.status}</strong>
-              <p>{result.message}</p>
-              {result.guidance?.map((item) => <p key={item}>{item}</p>)}
-            </div>
+            <AntAlert
+              className="agent-result"
+              type={result.status === "created" ? "success" : "warning"}
+              showIcon
+              message={result.status}
+              description={<>{result.message}{result.guidance?.map((item) => <p key={item}>{item}</p>)}</>}
+            />
           )}
         </form>
+        </Card>
         <Panel title="已注册 Agent">
-          <div className="agent-list">
-            {agents.map((agent) => (
-              <div className="agent-card" key={agent.id}>
-                <div>
-                  <strong>{agent.name}</strong>
-                  <p>{agent.description}</p>
-                </div>
-                <div className="tag-row">
-                  {(agent.capabilities || []).slice(0, 4).map((capability) => <span className="tag" key={capability}>{capability}</span>)}
-                </div>
-                <small>{(agent.tools || []).map((tool) => tool.type).join("、") || "无工具"}</small>
-              </div>
-            ))}
-          </div>
+          <List
+            dataSource={agents}
+            renderItem={(agent) => (
+              <List.Item>
+                <List.Item.Meta
+                  title={agent.name}
+                  description={
+                    <div>
+                      <Typography.Paragraph ellipsis={{ rows: 2 }}>{agent.description}</Typography.Paragraph>
+                      <Flex wrap gap={6}>
+                        {(agent.capabilities || []).slice(0, 4).map((capability) => <Tag key={capability}>{capability}</Tag>)}
+                        <Tag color="blue">{(agent.tools || []).map((tool) => tool.type).join("、") || "无工具"}</Tag>
+                      </Flex>
+                    </div>
+                  }
+                />
+              </List.Item>
+            )}
+          />
         </Panel>
       </div>
     </div>
@@ -812,8 +905,8 @@ function PageHeader({ title, description, children }: { title: string; descripti
   return (
     <div className="page-header">
       <div>
-        <h2 className="page-title">{title}</h2>
-        <p className="page-description">{description}</p>
+        <Typography.Title level={3} className="page-title">{title}</Typography.Title>
+        <Typography.Paragraph className="page-description">{description}</Typography.Paragraph>
       </div>
       <div className="page-header-actions">{children}</div>
     </div>
@@ -822,25 +915,22 @@ function PageHeader({ title, description, children }: { title: string; descripti
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="panel">
-      <div className="panel-title">{title}</div>
+    <Card className="panel" title={title} size="small">
       {children}
-    </section>
+    </Card>
   )
 }
 
 function Metric({ label, value, tone }: { label: string; value: string | number; tone: string }) {
   return (
-    <div className={`metric-card ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
+    <Card className={`metric-card ${tone}`} size="small">
+      <Statistic title={label} value={value} valueStyle={{ color: toneColor(tone), fontSize: 26 }} />
+    </Card>
   )
 }
 
 function TaskTable({ tasks, compact, onSelect, selectedTaskId }: { tasks: Task[]; compact?: boolean; onSelect?: (id: string) => void; selectedTaskId?: string }) {
   const [page, setPage] = useState(1)
-  const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
   const sortedTasks = useMemo(
     () =>
       tasks
@@ -857,74 +947,77 @@ function TaskTable({ tasks, compact, onSelect, selectedTaskId }: { tasks: Task[]
   }, [page, totalPages])
 
   if (!tasks.length) return <EmptyState text="暂无任务" />
+  const columns: ColumnsType<Task> = [
+    {
+      title: "任务名称",
+      dataIndex: "title",
+      ellipsis: true,
+      render: (_, task) => (
+        <TableCellTooltip text={taskTitle(task)} />
+      ),
+    },
+    ...(!compact ? [{
+      title: "任务描述",
+      dataIndex: "description",
+      ellipsis: true,
+      render: (_: unknown, task: Task) => (
+        <TableCellTooltip text={taskDescription(task)} />
+      ),
+    } as ColumnsType<Task>[number]] : []),
+    ...(!compact ? [{
+      title: "节点",
+      dataIndex: "current_node",
+      width: 160,
+      render: (value: string) => value || "-",
+    } as ColumnsType<Task>[number]] : []),
+    {
+      title: "状态",
+      width: 110,
+      render: (_, task) => <Tag color={statusColor(taskStatus(task))}>{statusText(taskStatus(task))}</Tag>,
+    },
+    {
+      title: "创建时间",
+      dataIndex: "created_at",
+      width: 130,
+      render: (value: string) => formatDate(value),
+    },
+    ...(onSelect ? [{
+      title: "操作",
+      width: 90,
+      render: (_: unknown, task: Task) => <Button size="small" onClick={() => onSelect(task.id)}>详情</Button>,
+    } as ColumnsType<Task>[number]] : []),
+  ]
   return (
     <>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>任务名称</th>
-              {!compact && <th className="description-col">任务描述</th>}
-              {!compact && <th>节点</th>}
-              <th>状态</th>
-              <th>创建时间</th>
-              {onSelect && <th>操作</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleTasks.map((task) => (
-              <tr key={task.id} className={selectedTaskId === task.id ? "selected" : ""}>
-                <td className="task-name-cell">
-                  <span
-                    className="task-name-ellipsis"
-                    onMouseEnter={(event) => setTooltip({ text: taskTitle(task), x: event.clientX, y: event.clientY })}
-                    onMouseMove={(event) => setTooltip((current) => current ? { ...current, x: event.clientX, y: event.clientY } : null)}
-                    onMouseLeave={() => setTooltip(null)}
-                  >
-                    {taskTitle(task)}
-                  </span>
-                </td>
-                {!compact && (
-                  <td className="description-col">
-                    <span
-                      className="description-ellipsis"
-                      onMouseEnter={(event) => setTooltip({ text: taskDescription(task), x: event.clientX, y: event.clientY })}
-                      onMouseMove={(event) => setTooltip((current) => current ? { ...current, x: event.clientX, y: event.clientY } : null)}
-                      onMouseLeave={() => setTooltip(null)}
-                    >
-                      {taskDescription(task)}
-                    </span>
-                  </td>
-                )}
-                {!compact && <td>{task.current_node || "-"}</td>}
-                <td><span className={`status-pill ${taskStatus(task)}`}>{statusText(taskStatus(task))}</span></td>
-                <td>{formatDate(task.created_at)}</td>
-                {onSelect && <td><button className="btn btn-small" onClick={() => onSelect(task.id)}>详情</button></td>}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Table
+        rowKey="id"
+        size="middle"
+        columns={columns}
+        dataSource={visibleTasks}
+        pagination={false}
+        rowClassName={(task) => selectedTaskId === task.id ? "selected" : ""}
+      />
       {!compact && (
         <div className="pagination">
           <span className="muted">第 {Math.min(page, totalPages)} / {totalPages} 页，共展示前 {Math.min(sortedTasks.length, 200)} 条，每页 20 条</span>
-          <div className="pagination-buttons">
-            <button className="btn btn-small" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</button>
-            {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (
-              <button key={item} className={item === page ? "btn btn-small page-active" : "btn btn-small"} onClick={() => setPage(item)}>
-                {item}
-              </button>
-            ))}
-            <button className="btn btn-small" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>下一页</button>
-          </div>
-        </div>
-      )}
-      {tooltip && (
-        <div className="description-tooltip" style={{ left: tooltip.x + 12, top: tooltip.y + 12 }}>
-          {tooltip.text}
+          <Pagination current={Math.min(page, totalPages)} total={Math.min(sortedTasks.length, 200)} pageSize={20} showSizeChanger={false} onChange={setPage} />
         </div>
       )}
     </>
+  )
+}
+
+function TableCellTooltip({ text }: { text: string }) {
+  return (
+    <Tooltip
+      title={text}
+      placement="topLeft"
+      getPopupContainer={() => document.body}
+      mouseEnterDelay={0.2}
+      zIndex={3000}
+    >
+      <span className="table-ellipsis">{text}</span>
+    </Tooltip>
   )
 }
 
@@ -947,10 +1040,5 @@ function EventList({ events }: { events: Array<Record<string, unknown>> }) {
 }
 
 function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="empty-state">
-      <UserCheck size={20} />
-      {text}
-    </div>
-  )
+  return <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description={text} />
 }
