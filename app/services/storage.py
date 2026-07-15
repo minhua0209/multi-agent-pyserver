@@ -118,6 +118,9 @@ class InMemoryTaskStore:
     def list(self) -> list[Task]:
         return list(self._tasks.values())
 
+    def delete(self, task_id: str) -> bool:
+        return self._tasks.pop(task_id, None) is not None
+
 
 metadata = MetaData()
 
@@ -367,6 +370,21 @@ class DatabaseTaskStore:
         with self.engine.begin() as connection:
             rows = connection.execute(select(tasks_table.c.payload)).all()
         return [Task.model_validate_json(row.payload) for row in rows]
+
+    def delete(self, task_id: str) -> bool:
+        task = self.get(task_id)
+        if task is None:
+            return False
+        with self.engine.begin() as connection:
+            connection.execute(delete(task_rounds_table).where(task_rounds_table.c.task_id == task_id))
+            connection.execute(delete(subtasks_table).where(subtasks_table.c.task_id == task_id))
+            connection.execute(delete(task_events_table).where(task_events_table.c.task_id == task_id))
+            connection.execute(delete(task_snapshots_table).where(task_snapshots_table.c.task_id == task_id))
+            connection.execute(delete(tool_executions_table).where(tool_executions_table.c.task_id == task_id))
+            connection.execute(delete(tasks_table).where(tasks_table.c.id == task_id))
+            if task.request_id:
+                connection.execute(delete(task_requests_table).where(task_requests_table.c.id == task.request_id))
+        return True
 
     @staticmethod
     def _task_values(task: Task, payload: str) -> dict:

@@ -134,6 +134,7 @@ class ExecutionResultCreate(BaseModel):
     output: str = ""
     should_complete: bool = True
     metadata: dict = Field(default_factory=dict)
+    execution_mode: str = "sync"
 
 
 class Event(BaseModel):

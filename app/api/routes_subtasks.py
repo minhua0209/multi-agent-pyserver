@@ -14,6 +14,12 @@ def list_human_subtasks(request: Request) -> list[SubTask]:
 @router.post("/{subtask_id}/result", response_model=Task)
 def submit_subtask_result(subtask_id: str, payload: ExecutionResultCreate, request: Request) -> Task:
     try:
+        if payload.execution_mode == "async":
+            task = request.app.state.task_service.submit_subtask_result(subtask_id, payload, resume_flow=False)
+            response_task = task.model_copy(deep=True)
+            if task.current_node.value != "human_execution":
+                request.app.state.task_service.start_background_task(task.id)
+            return response_task
         return request.app.state.task_service.submit_subtask_result(subtask_id, payload)
     except SubTaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Subtask not found") from exc

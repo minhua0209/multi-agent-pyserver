@@ -35,6 +35,10 @@ class WorkflowNotFoundError(Exception):
     pass
 
 
+class TaskCannotBeCancelledError(Exception):
+    pass
+
+
 class TaskService:
     def __init__(
         self,
@@ -133,6 +137,12 @@ class TaskService:
     def list_tasks(self) -> list[Task]:
         return self.store.list()
 
+    def cancel_unconfirmed_task(self, task_id: str) -> None:
+        task = self._get_existing(task_id)
+        if task.current_node != CurrentNode.HUMAN_CONFIRMATION:
+            raise TaskCannotBeCancelledError(task_id)
+        self.store.delete(task_id)
+
     def list_human_subtasks(self) -> list[SubTask]:
         subtasks = []
         for task in self.store.list():
@@ -142,7 +152,7 @@ class TaskService:
                         subtasks.append(subtask)
         return subtasks
 
-    def submit_subtask_result(self, subtask_id: str, payload: ExecutionResultCreate) -> Task:
+    def submit_subtask_result(self, subtask_id: str, payload: ExecutionResultCreate, resume_flow: bool = True) -> Task:
         task, round_index, subtask = self._find_subtask(subtask_id)
         subtask.output = payload.output or payload.result_status.value
         subtask.result_metadata = payload.metadata
@@ -154,6 +164,9 @@ class TaskService:
             return self.store.save(task)
 
         self._merge_completed_round(task, round_index)
+        if not resume_flow:
+            task.events.append(self._event("async_execution_scheduled", "Automatic task flow scheduled after human result"))
+            return self.store.save(task)
         result = self._run_automatic_flow(task)
         self._resume_unblocked_tasks()
         return result

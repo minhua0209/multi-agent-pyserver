@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ClipboardCheck,
   FileText,
-  GitBranch,
   ListChecks,
   Loader2,
   Plus,
@@ -13,6 +12,7 @@ import {
   Send,
   ShieldCheck,
   UserCheck,
+  XCircle,
 } from "lucide-react"
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import {
@@ -20,6 +20,8 @@ import {
   SimpleAgentResponse,
   SubTask,
   Task,
+  TaskRound,
+  cancelTask,
   confirmTask,
   createSimpleAgent,
   createTaskRequest,
@@ -193,13 +195,23 @@ export default function App() {
           {error && <div className="alert danger">{error}</div>}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
           {page === "publish" && <PublishPage onCreated={(created) => {
-            setTasks((current) => [...created, ...current])
+            setTasks((current) => mergeTasks(current, created))
             setSelectedTaskId(created[0]?.id || "")
-            setToast("任务请求已提交，等待人工确认")
+            setToast("已识别任务清单，请在弹窗中确认后执行")
+          }} onConfirmed={(confirmed) => {
+            setTasks((current) => mergeTasks(current, confirmed))
+            setSelectedTaskId(confirmed[0]?.id || selectedTaskId)
+            setToast("任务已确认，系统正在异步执行")
+          }} onCancelled={(cancelledIds) => {
+            setTasks((current) => current.filter((task) => !cancelledIds.includes(task.id)))
+            if (cancelledIds.includes(selectedTaskId)) setSelectedTaskId("")
+            setToast("任务清单已取消")
+          }} />}
+          {page === "confirmation" && <ConfirmationPage humanSubtasks={humanSubtasks} refreshAll={refreshAll} />}
+          {page === "tasks" && <TasksPage tasks={tasks} setSelectedTaskId={setSelectedTaskId} onOpenHumanWorkbench={async () => {
+            await refreshAll()
             setPage("confirmation")
           }} />}
-          {page === "confirmation" && <ConfirmationPage tasks={tasks} setTasks={setTasks} refreshAll={refreshAll} />}
-          {page === "tasks" && <TasksPage tasks={tasks} setSelectedTaskId={setSelectedTaskId} />}
           {page === "agents" && <AgentsPage agents={agents} setAgents={setAgents} setToast={setToast} />}
           {page === "audit" && <AuditPage events={events} />}
           {page === "governance" && <GovernancePage />}
@@ -207,6 +219,11 @@ export default function App() {
       </main>
     </div>
   )
+}
+
+function mergeTasks(current: Task[], incoming: Task[]) {
+  const incomingIds = new Set(incoming.map((task) => task.id))
+  return [...incoming, ...current.filter((task) => !incomingIds.has(task.id))]
 }
 
 function Overview({
@@ -261,23 +278,93 @@ function Overview({
   )
 }
 
-function PublishPage({ onCreated }: { onCreated: (tasks: Task[]) => void }) {
+function PublishPage({
+  onCreated,
+  onConfirmed,
+  onCancelled,
+}: {
+  onCreated: (tasks: Task[]) => void
+  onConfirmed: (tasks: Task[]) => void
+  onCancelled: (taskIds: string[]) => void
+}) {
   const [content, setContent] = useState("请分析客户需求，生成一份报告并保存到本地目录")
+  const [draftTasks, setDraftTasks] = useState<Task[]>([])
+  const [intentModalOpen, setIntentModalOpen] = useState(false)
+  const [intentError, setIntentError] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [message, setMessage] = useState("")
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setSubmitting(true)
     setMessage("")
+    setIntentError("")
+    setDraftTasks([])
+    setIntentModalOpen(true)
     try {
       const response = await createTaskRequest(content)
       onCreated(response.tasks || [])
+      setDraftTasks(response.tasks || [])
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "提交失败")
+      const errorMessage = err instanceof Error ? err.message : "提交失败"
+      setIntentError(errorMessage)
+      setMessage(errorMessage)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function confirmDrafts() {
+    setConfirming(true)
+    setMessage("")
+    try {
+      const confirmed = []
+      for (const task of draftTasks) {
+        confirmed.push(
+          await confirmTask(task.id, {
+            title: taskTitle(task),
+            description: taskDescription(task),
+            execution_mode: "async",
+          }),
+        )
+      }
+      onConfirmed(confirmed)
+      setDraftTasks([])
+      setIntentModalOpen(false)
+      setMessage("任务已确认，系统正在异步执行")
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "确认失败")
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  function updateDraftTask(taskId: string, patch: Partial<Pick<Task, "title" | "description">>) {
+    setDraftTasks((current) => current.map((task) => (task.id === taskId ? { ...task, ...patch } : task)))
+  }
+
+  async function closeIntentModal() {
+    if (submitting || confirming) return
+    const taskIds = draftTasks.map((task) => task.id)
+    if (taskIds.length > 0) {
+      setConfirming(true)
+      setMessage("")
+      try {
+        await Promise.all(taskIds.map((taskId) => cancelTask(taskId)))
+        onCancelled(taskIds)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "取消任务失败"
+        setIntentError(errorMessage)
+        setMessage(errorMessage)
+        return
+      } finally {
+        setConfirming(false)
+      }
+    }
+    setDraftTasks([])
+    setIntentError("")
+    setIntentModalOpen(false)
   }
 
   return (
@@ -296,41 +383,93 @@ function PublishPage({ onCreated }: { onCreated: (tasks: Task[]) => void }) {
           {message && <span className="form-message danger-text">{message}</span>}
         </div>
       </form>
+      {intentModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-panel intent-modal" role="dialog" aria-modal="true" aria-label="意图识别任务清单">
+            <header className="modal-header">
+              <div>
+                <h3>意图识别任务清单</h3>
+                <p>{submitting ? "正在拆分整理任务清单，请稍后" : "请确认识别出的任务名称和描述，确认后系统会异步执行。"}</p>
+              </div>
+              <button className="btn" onClick={() => void closeIntentModal()} disabled={submitting || confirming}>关闭</button>
+            </header>
+            {submitting ? (
+              <div className="intent-loading">
+                <Loader2 size={34} className="spin" />
+                <strong>正在拆分整理任务清单，请稍后</strong>
+                <span>系统正在调用意图识别能力，返回后会在这里展示待确认任务。</span>
+              </div>
+            ) : intentError ? (
+              <div className="intent-loading error">
+                <XCircle size={34} />
+                <strong>任务清单整理失败</strong>
+                <span>{intentError}</span>
+              </div>
+            ) : (
+              <>
+                <div className="intent-task-list">
+                  {draftTasks.map((task, index) => (
+                    <div className="intent-task-card" key={task.id}>
+                      <div className="intent-task-index">任务 {index + 1}</div>
+                      <label className="field">
+                        <span>任务名称</span>
+                        <input className="input" value={taskTitle(task)} onChange={(event) => updateDraftTask(task.id, { title: event.target.value })} />
+                      </label>
+                      <label className="field">
+                        <span>任务描述</span>
+                        <textarea className="textarea" value={taskDescription(task)} onChange={(event) => updateDraftTask(task.id, { description: event.target.value })} />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+                <div className="modal-actions">
+                  <button className="btn" onClick={() => void closeIntentModal()} disabled={confirming}>取消</button>
+                  <button className="btn btn-primary" onClick={confirmDrafts} disabled={confirming || draftTasks.length === 0}>
+                    {confirming ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+                    确认并执行
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   )
 }
 
 function ConfirmationPage({
-  tasks,
-  setTasks,
+  humanSubtasks,
   refreshAll,
 }: {
-  tasks: Task[]
-  setTasks: (tasks: Task[] | ((current: Task[]) => Task[])) => void
+  humanSubtasks: SubTask[]
   refreshAll: () => Promise<void>
 }) {
-  const candidates = tasks.filter((task) => task.current_node === "human_confirmation")
   const [activeId, setActiveId] = useState("")
-  const active = candidates.find((task) => task.id === activeId) || candidates[0]
-  const [title, setTitle] = useState("")
-  const [description, setDescription] = useState("")
+  const active = humanSubtasks.find((subtask) => subtask.id === activeId) || humanSubtasks[0]
+  const [opinion, setOpinion] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (active) {
-      setTitle(taskTitle(active))
-      setDescription(active.description || active.draft?.description || active.content || "")
       setActiveId(active.id)
+      setOpinion(active.output || "")
     }
   }, [active?.id])
 
-  async function submit() {
+  async function submit(decision: "approved" | "rejected") {
     if (!active) return
     setSubmitting(true)
     try {
-      const updated = await confirmTask(active.id, { title, description, execution_mode: "async" })
-      setTasks((current) => current.map((task) => (task.id === updated.id ? updated : task)))
+      await submitHumanSubtaskResult(active.id, {
+        result_status: "succeeded",
+        output: opinion.trim() || (decision === "approved" ? "人工确认通过" : "人工驳回"),
+        should_complete: true,
+        metadata: { decision },
+        execution_mode: "async",
+      })
       await refreshAll()
+      setOpinion("")
     } finally {
       setSubmitting(false)
     }
@@ -338,32 +477,49 @@ function ConfirmationPage({
 
   return (
     <div className="page active">
-      <PageHeader title="人工确认工作台" description="对照原始请求和识别草稿，确认后进入自动执行。" />
+      <PageHeader title="人工节点工作台" description="处理任务流转中的人工节点，提交通过或驳回结果。" />
       {!active ? (
-        <EmptyState text="暂无待确认任务" />
+        <EmptyState text="暂无待处理人工节点" />
       ) : (
         <div className="grid two">
-          <Panel title="确认队列">
-            {candidates.map((task) => (
-              <button key={task.id} className={task.id === active.id ? "list-item active" : "list-item"} onClick={() => setActiveId(task.id)}>
-                <span>{taskTitle(task)}</span>
-                <small>{task.current_node}</small>
+          <Panel title="人工节点队列">
+            {humanSubtasks.map((subtask) => (
+              <button key={subtask.id} className={subtask.id === active.id ? "list-item active" : "list-item"} onClick={() => setActiveId(subtask.id)}>
+                <span>{subtask.title || subtask.description || subtask.id}</span>
+                <small>{subtask.current_node || subtask.assignee_type || "human"}</small>
               </button>
             ))}
           </Panel>
-          <Panel title="任务细节">
+          <Panel title="人工处理">
+            <div className="human-subtask-detail">
+              <div>
+                <span className="muted">子任务名称</span>
+                <strong>{active.title || active.id}</strong>
+              </div>
+              <div>
+                <span className="muted">子任务描述</span>
+                <p>{active.description || "-"}</p>
+              </div>
+              <div className="detail-grid">
+                <span className={`status-pill ${active.status || "running"}`}>{statusText(active.status)}</span>
+                <span className="muted">任务 ID：{active.task_id || "-"}</span>
+                <span className="muted">处理节点：{active.current_node || "human"}</span>
+              </div>
+            </div>
             <label className="field">
-              <span>标题</span>
-              <input className="input" value={title} onChange={(event) => setTitle(event.target.value)} />
+              <span>处理意见</span>
+              <textarea className="textarea" value={opinion} onChange={(event) => setOpinion(event.target.value)} placeholder="填写人工判断、补充信息或驳回原因" />
             </label>
-            <label className="field">
-              <span>描述</span>
-              <textarea className="textarea" value={description} onChange={(event) => setDescription(event.target.value)} />
-            </label>
-            <button className="btn btn-primary" onClick={submit} disabled={submitting}>
-              {submitting ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
-              确认并异步执行
-            </button>
+            <div className="form-actions">
+              <button className="btn btn-primary" onClick={() => void submit("approved")} disabled={submitting}>
+                {submitting ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+                确认通过
+              </button>
+              <button className="btn btn-danger" onClick={() => void submit("rejected")} disabled={submitting}>
+                <XCircle size={16} />
+                驳回
+              </button>
+            </div>
           </Panel>
         </div>
       )}
@@ -371,7 +527,15 @@ function ConfirmationPage({
   )
 }
 
-function TasksPage({ tasks, setSelectedTaskId }: { tasks: Task[]; setSelectedTaskId: (id: string) => void }) {
+function TasksPage({
+  tasks,
+  setSelectedTaskId,
+  onOpenHumanWorkbench,
+}: {
+  tasks: Task[]
+  setSelectedTaskId: (id: string) => void
+  onOpenHumanWorkbench: () => Promise<void>
+}) {
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState("")
@@ -390,6 +554,26 @@ function TasksPage({ tasks, setSelectedTaskId }: { tasks: Task[]; setSelectedTas
     }
   }
 
+  useEffect(() => {
+    if (!detailTask || taskStatus(detailTask) !== "running") return
+    let cancelled = false
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await getTask(detailTask.id)
+        if (!cancelled) {
+          setDetailTask(latest)
+          setDetailError("")
+        }
+      } catch (err) {
+        if (!cancelled) setDetailError(err instanceof Error ? err.message : "任务详情刷新失败")
+      }
+    }, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [detailTask?.id, detailTask?.task_status, detailTask?.status])
+
   return (
     <div className="page active">
       <PageHeader title="任务列表" description="按状态、节点、来源和执行者定位任务，点击详情查看执行轨迹。" />
@@ -401,6 +585,12 @@ function TasksPage({ tasks, setSelectedTaskId }: { tasks: Task[]; setSelectedTas
           task={detailTask}
           loading={detailLoading}
           error={detailError}
+          polling={taskStatus(detailTask) === "running"}
+          onOpenHumanWorkbench={() => {
+            setDetailTask(null)
+            setDetailError("")
+            void onOpenHumanWorkbench()
+          }}
           onClose={() => {
             setDetailTask(null)
             setDetailError("")
@@ -411,7 +601,21 @@ function TasksPage({ tasks, setSelectedTaskId }: { tasks: Task[]; setSelectedTas
   )
 }
 
-function TaskDetailModal({ task, loading, error, onClose }: { task: Task; loading: boolean; error: string; onClose: () => void }) {
+function TaskDetailModal({
+  task,
+  loading,
+  error,
+  polling,
+  onOpenHumanWorkbench,
+  onClose,
+}: {
+  task: Task
+  loading: boolean
+  error: string
+  polling: boolean
+  onOpenHumanWorkbench: () => void
+  onClose: () => void
+}) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal-panel task-detail-modal" role="dialog" aria-modal="true" aria-label="任务详情" onMouseDown={(event) => event.stopPropagation()}>
@@ -422,39 +626,93 @@ function TaskDetailModal({ task, loading, error, onClose }: { task: Task; loadin
           </div>
           <button className="btn" onClick={onClose}>关闭</button>
         </header>
-        {loading && <div className="alert"><Loader2 size={16} className="spin" /> 正在加载最新详情</div>}
-        {error && <div className="alert danger">{error}</div>}
-        <div className="detail-grid">
-          <span className={`status-pill ${taskStatus(task)}`}>{statusText(taskStatus(task))}</span>
-          <span className="muted">当前节点：{task.current_node || "-"}</span>
-          <span className="muted">循环轮次：{task.loop_count ?? 0}/{task.max_loop_count ?? 10}</span>
-        </div>
-        <div className="context-box">{task.context?.summary || task.final_output || "暂无上下文摘要"}</div>
-        <h4>执行轮次</h4>
-        {(task.context?.rounds || []).length ? (
-          <div className="modal-scroll">
-            {task.context?.rounds?.map((round) => (
-              <div className="round-card" key={round.id || round.round_index}>
-                <strong>第 {round.round_index ?? "-"} 轮 · {round.execution_mode || "unknown"}</strong>
-                {round.reason && (
-                  <details className="round-reason">
-                    <summary>分发说明</summary>
-                    <p>{round.reason}</p>
-                  </details>
-                )}
-                {(round.subtasks || []).map((subtask) => (
-                  <div className="subtask-row" key={subtask.id}>
-                    <span>{subtask.title}</span>
-                    <span className={`status-pill ${subtask.status}`}>{statusText(subtask.status)}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
+        <div className="task-detail-body">
+          <div className="task-detail-summary">
+            {loading && <div className="alert"><Loader2 size={16} className="spin" /> 正在加载最新详情</div>}
+            {polling && !loading && <div className="alert info"><Loader2 size={16} className="spin" /> 任务执行中，详情每 3 秒自动刷新</div>}
+            {error && <div className="alert danger">{error}</div>}
+            <div className="detail-grid">
+              <span className={`status-pill ${taskStatus(task)}`}>{statusText(taskStatus(task))}</span>
+              <span className="muted">当前节点：{task.current_node || "-"}</span>
+              <span className="muted">循环轮次：{task.loop_count ?? 0}/{task.max_loop_count ?? 10}</span>
+            </div>
+            <div className="context-box">{task.context?.summary || task.final_output || "暂无上下文摘要"}</div>
           </div>
-        ) : (
-          <EmptyState text="暂无执行轮次" />
-        )}
+          <section className="execution-section">
+            <h4>执行轮次</h4>
+            {(task.context?.rounds || []).length ? (
+              <div className="modal-scroll execution-scroll">
+                <ExecutionGraph rounds={task.context?.rounds || []} onOpenHumanWorkbench={onOpenHumanWorkbench} />
+              </div>
+            ) : (
+              <EmptyState text="暂无执行轮次" />
+            )}
+          </section>
+        </div>
       </section>
+    </div>
+  )
+}
+
+function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[]; onOpenHumanWorkbench: () => void }) {
+  return (
+    <div className="execution-graph" aria-label="任务执行有向图">
+      <div className="graph-node graph-terminal">
+        <span className="graph-terminal-dot" />
+        任务开始
+      </div>
+      {rounds.map((round) => (
+        <div className="graph-step" key={round.id || round.round_index}>
+          <div className="graph-arrow" aria-hidden="true" />
+          <section className="graph-round-node">
+            <header className="graph-round-header">
+              <div>
+                <strong>第 {round.round_index ?? "-"} 轮</strong>
+                <span>{round.execution_mode || "unknown"}</span>
+              </div>
+              <span className="status-pill info">{round.subtasks?.length || 0} 个子任务</span>
+            </header>
+            {round.reason && (
+              <details className="round-reason">
+                <summary>分发说明</summary>
+                <p>{round.reason}</p>
+              </details>
+            )}
+            <div className={round.execution_mode === "parallel" ? "graph-subtasks parallel" : "graph-subtasks sequential"}>
+              {(round.subtasks || []).map((subtask) => {
+                const isHumanNode = subtask.assignee_type === "human" || subtask.current_node === "human"
+                const canOpenHumanWorkbench = isHumanNode && (subtask.status || "running") === "running"
+                const nodeContent = (
+                  <>
+                    <div className="subtask-node-title">{subtask.title || subtask.id}</div>
+                    <div className="subtask-node-meta">
+                      <span>{isHumanNode ? "人工节点" : "Agent节点"}</span>
+                      <span className={`status-pill ${subtask.status}`}>{statusText(subtask.status)}</span>
+                    </div>
+                    {canOpenHumanWorkbench && <span className="subtask-node-action">点击处理</span>}
+                  </>
+                )
+                return canOpenHumanWorkbench ? (
+                  <button type="button" className={`graph-subtask-node clickable ${subtask.status || "running"}`} key={subtask.id} onClick={onOpenHumanWorkbench}>
+                    {nodeContent}
+                  </button>
+                ) : (
+                  <article className={`graph-subtask-node ${subtask.status || "running"}`} key={subtask.id}>
+                    {nodeContent}
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        </div>
+      ))}
+      <div className="graph-step">
+        <div className="graph-arrow" aria-hidden="true" />
+        <div className="graph-node graph-terminal">
+          <CheckCircle2 size={16} />
+          任务闭环
+        </div>
+      </div>
     </div>
   )
 }

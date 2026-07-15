@@ -457,6 +457,21 @@
 | 404 | `Task not found` | 任务不存在 |
 | 404 | `Workflow not found` | 指定 workflow 模板不存在 |
 
+### 取消未确认主任务
+
+`DELETE /api/v1/tasks/{task_id}`
+
+用于任务发布页意图识别完成后，人工在任务清单确认弹窗中点击取消。该接口只允许取消仍处于 `human_confirmation` 的未确认草稿任务；任务一旦确认并进入自动执行流，不允许通过该接口删除。
+
+响应：`204 No Content`
+
+错误：
+
+| HTTP 状态 | detail | 说明 |
+| --- | --- | --- |
+| 404 | `Task not found` | 任务不存在 |
+| 409 | `Only unconfirmed tasks can be cancelled` | 任务已确认或已进入执行流，不能取消 |
+
 ### 提交主任务执行结果
 
 `POST /api/v1/tasks/{task_id}/result`
@@ -554,6 +569,11 @@
 
 并行轮次中可以同时存在 agent 子任务和人工子任务。agent 子任务会先自动执行，人工子任务会挂起等待该接口提交。提交后，如果本轮所有子任务都完成，系统会合并上下文并自动恢复后续分发流程。
 
+`execution_mode` 支持：
+
+- `sync`：默认值。接口会等待后续自动流程执行完成后再返回。
+- `async`：接口只保存人工结果并调度后台恢复流程，立即返回当前任务快照，适合前端人工确认工作台使用。
+
 请求示例：
 
 ```json
@@ -563,7 +583,8 @@
   "should_complete": true,
   "metadata": {
     "decision": "approved"
-  }
+  },
+  "execution_mode": "async"
 }
 ```
 

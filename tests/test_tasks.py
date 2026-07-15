@@ -26,6 +26,23 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
     assert task["draft"]["title"] == "Create a quote for customer A"
 
 
+def test_unconfirmed_task_can_be_cancelled_and_removed_from_task_list(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Create a quote for customer B",
+        },
+    ).json()["tasks"][0]
+
+    response = client.delete(f"/api/v1/tasks/{created['id']}")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/tasks").json() == []
+
+
 def test_task_request_does_not_use_intent_mock_when_system_fallback_disabled(
     tmp_path: Path,
     monkeypatch,
@@ -484,3 +501,60 @@ def test_human_subtask_result_resumes_task_flow(tmp_path: Path, monkeypatch) -> 
     human_subtask = resumed["context"]["rounds"][0]["subtasks"][0]
     assert human_subtask["status"] == "succeeded"
     assert human_subtask["output"] == "discount approved"
+
+
+def test_human_subtask_result_can_resume_task_flow_async(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    started: list[str] = []
+
+    def _plan(task, agents):
+        from app.core.models import RoundPlan, SubTask
+
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need human approval",
+                subtasks=[
+                    SubTask(
+                        id="subtask_human_async_resume",
+                        title="Approve risk",
+                        description="Human must approve the risk summary",
+                        assignee_type="human",
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, reason="No remaining subtasks", final_output=task.context.summary)
+
+    def _capture_background_start(self, task_id):
+        started.append(task_id)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.services.task_service.TaskService.start_background_task", _capture_background_start)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Approve risk"},
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "Approve risk", "description": "Human must approve the risk summary"},
+    ).json()
+    assert paused["current_node"] == "human_execution"
+
+    response = client.post(
+        "/api/v1/subtasks/subtask_human_async_resume/result",
+        json={
+            "result_status": "succeeded",
+            "output": "risk approved",
+            "should_complete": True,
+            "execution_mode": "async",
+        },
+    )
+
+    assert response.status_code == 200
+    submitted = response.json()
+    assert submitted["task_status"] == "running"
+    assert submitted["current_node"] == "context_update"
+    assert "risk approved" in submitted["context"]["summary"]
+    assert started == [created["id"]]
+    assert client.get("/api/v1/subtasks/human").json() == []

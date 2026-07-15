@@ -220,6 +220,17 @@ button {
   background: oklch(0.48 0.13 218);
 }
 
+.btn-danger {
+  color: oklch(0.48 0.17 27);
+  background: var(--danger-soft);
+  border-color: oklch(0.78 0.08 27);
+}
+
+.btn-danger:hover {
+  background: oklch(0.95 0.03 27);
+  border-color: oklch(0.68 0.12 27);
+}
+
 .btn-small {
   min-height: 30px;
   padding: 4px 9px;
@@ -462,6 +473,15 @@ tr.selected td {
   border-color: oklch(0.82 0.09 72);
 }
 
+.alert.info {
+  color: oklch(0.42 0.11 250);
+  background: var(--info-soft);
+  border-color: oklch(0.8 0.06 250);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .alert {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -523,15 +543,308 @@ tr.selected td {
   margin-top: 4px;
 }
 
+.intent-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(860px, 100%);
+}
+
+.intent-task-list {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.intent-task-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: oklch(0.99 0.006 225);
+  padding: 12px;
+}
+
+.intent-task-index {
+  color: var(--text-muted);
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.intent-loading {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.intent-loading svg {
+  color: var(--accent);
+}
+
+.intent-loading strong {
+  font-size: 18px;
+}
+
+.intent-loading span {
+  max-width: 420px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.intent-loading.error svg,
+.intent-loading.error strong {
+  color: var(--danger);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+}
+
 .task-detail-modal {
   display: grid;
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(920px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+}
+
+.task-detail-modal .modal-header {
+  min-height: 0;
+  max-height: 132px;
+  overflow: hidden;
+}
+
+.task-detail-modal .modal-header > div {
+  min-width: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.task-detail-modal .modal-header h3 {
+  line-height: 1.5;
+}
+
+.task-detail-modal .modal-header p {
+  max-height: 68px;
+  overflow: auto;
+  line-height: 1.6;
+}
+
+.task-detail-modal .modal-header .btn {
+  flex: 0 0 auto;
+}
+
+.task-detail-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(128px, 220px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.task-detail-summary {
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.task-detail-summary .detail-grid {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.task-detail-summary .context-box {
+  max-height: 118px;
+  overflow: auto;
+  line-height: 1.65;
+}
+
+.execution-section {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.execution-section h4 {
+  margin: 0 0 10px;
 }
 
 .modal-scroll {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+}
+
+.execution-scroll {
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: oklch(0.99 0.006 225 / 0.76);
+  padding: 12px;
+}
+
+.execution-graph {
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  padding: 4px 4px 16px;
+}
+
+.graph-step {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+}
+
+.graph-arrow {
+  width: 2px;
+  height: 28px;
+  background: var(--border-strong, var(--border));
+  position: relative;
+}
+
+.graph-arrow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--border-strong, var(--border));
+  border-bottom: 2px solid var(--border-strong, var(--border));
+  transform: translateX(-50%) rotate(45deg);
+  background: transparent;
+}
+
+.graph-node,
+.graph-round-node {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: oklch(0.995 0.004 230 / 0.82);
+  box-shadow: 0 10px 28px oklch(0.23 0.02 245 / 0.08);
+}
+
+.graph-terminal {
+  min-width: 160px;
+  min-height: 42px;
+  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.graph-terminal-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.graph-round-node {
+  width: min(820px, 100%);
+  padding: 14px;
+}
+
+.graph-round-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.graph-round-header div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.graph-round-header span:not(.status-pill) {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.graph-subtasks {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.graph-subtasks.parallel {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.graph-subtasks.sequential {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.graph-subtask-node {
+  position: relative;
+  min-height: 76px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--info);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, oklch(0.998 0.004 230), oklch(0.972 0.012 225));
+  padding: 10px;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.graph-subtask-node.clickable {
+  cursor: pointer;
+}
+
+.graph-subtask-node.clickable:hover {
+  border-color: oklch(0.72 0.08 218);
+  box-shadow: 0 10px 22px oklch(0.23 0.02 245 / 0.1);
+}
+
+.graph-subtask-node.succeeded {
+  border-left-color: var(--success);
+}
+
+.graph-subtask-node.failed {
+  border-left-color: var(--danger);
+}
+
+.graph-subtask-node.running {
+  border-left-color: var(--info);
+}
+
+.subtask-node-title {
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+
+.subtask-node-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.subtask-node-action {
+  display: inline-flex;
+  margin-top: 10px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .flow-row,
@@ -612,6 +925,26 @@ tr.selected td {
 .list-item.active {
   background: var(--accent-soft);
   border-color: oklch(0.82 0.06 218);
+}
+
+.human-subtask-detail {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.human-subtask-detail > div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: oklch(0.99 0.006 225);
+  padding: 10px;
+}
+
+.human-subtask-detail p {
+  margin: 0;
+  line-height: 1.6;
 }
 
 .context-box,

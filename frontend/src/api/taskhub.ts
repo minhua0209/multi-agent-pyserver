@@ -146,11 +146,26 @@ export function confirmTask(taskId: string, payload: { title: string; descriptio
   })
 }
 
+export function cancelTask(taskId: string) {
+  return request<void>(`/api/v1/tasks/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+  })
+}
+
 export function listHumanSubtasks() {
   return request<SubTask[]>("/api/v1/subtasks/human")
 }
 
-export function submitHumanSubtaskResult(subtaskId: string, payload: { status: string; output: string; metadata?: Record<string, string> }) {
+export function submitHumanSubtaskResult(
+  subtaskId: string,
+  payload: {
+    result_status: "succeeded" | "failed" | "blocked" | "partial"
+    output: string
+    should_complete?: boolean
+    metadata?: Record<string, string>
+    execution_mode?: "sync" | "async"
+  },
+) {
   return request<Task>(`/api/v1/subtasks/${encodeURIComponent(subtaskId)}/result`, {
     method: "POST",
     body: JSON.stringify(payload),

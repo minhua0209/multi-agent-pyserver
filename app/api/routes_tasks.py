@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from app.core.enums import CurrentNode
 from app.core.models import ExecutionResultCreate, Task, TaskConfirm, TaskRequestCreate, TaskRequestResponse
-from app.services.task_service import TaskNotFoundError, WorkflowNotFoundError
+from app.services.task_service import TaskCannotBeCancelledError, TaskNotFoundError, WorkflowNotFoundError
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -38,6 +38,16 @@ def submit_task_result(task_id: str, payload: ExecutionResultCreate, request: Re
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except WorkflowNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
+
+
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_task(task_id: str, request: Request) -> None:
+    try:
+        request.app.state.task_service.cancel_unconfirmed_task(task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except TaskCannotBeCancelledError as exc:
+        raise HTTPException(status_code=409, detail="Only unconfirmed tasks can be cancelled") from exc
 
 
 @router.get("/{task_id}", response_model=Task)
