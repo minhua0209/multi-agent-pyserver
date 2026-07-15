@@ -12,6 +12,7 @@ import {
   Menu,
   Modal,
   Pagination,
+  Select,
   Spin,
   Statistic,
   Table,
@@ -42,6 +43,7 @@ import {
   SubTask,
   Task,
   TaskRound,
+  WorkflowTemplate,
   cancelTask,
   confirmTask,
   createSimpleAgent,
@@ -50,6 +52,7 @@ import {
   listAgents,
   listHumanSubtasks,
   listTasks,
+  listWorkflows,
   submitHumanSubtaskResult,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
@@ -345,6 +348,29 @@ function PublishPage({
   const [submitting, setSubmitting] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [message, setMessage] = useState("")
+  const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
+  const [workflowId, setWorkflowId] = useState("")
+  const [workflowLoading, setWorkflowLoading] = useState(false)
+  const [workflowError, setWorkflowError] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    setWorkflowLoading(true)
+    setWorkflowError("")
+    listWorkflows()
+      .then((items) => {
+        if (!cancelled) setWorkflows(items || [])
+      })
+      .catch((err) => {
+        if (!cancelled) setWorkflowError(err instanceof Error ? err.message : "流程模板加载失败")
+      })
+      .finally(() => {
+        if (!cancelled) setWorkflowLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -354,7 +380,7 @@ function PublishPage({
     setDraftTasks([])
     setIntentModalOpen(true)
     try {
-      const response = await createTaskRequest(title.trim(), content)
+      const response = await createTaskRequest(title.trim(), content, workflowId)
       onCreated(response.tasks || [])
       setDraftTasks(response.tasks || [])
     } catch (err) {
@@ -450,11 +476,28 @@ function PublishPage({
           <span>任务诉求</span>
           <Input.TextArea rows={7} value={content} onChange={(event) => setContent(event.target.value)} />
         </label>
+        <label className="field">
+          <span>流程模板（可选）</span>
+          <Select
+            allowClear
+            showSearch
+            loading={workflowLoading}
+            value={workflowId || undefined}
+            placeholder="不选择则按无模板协同流程执行"
+            optionFilterProp="label"
+            options={workflows.map((workflow) => ({
+              value: workflow.id,
+              label: workflow.name,
+            }))}
+            onChange={(value) => setWorkflowId(value || "")}
+          />
+        </label>
         <div className="form-actions">
           <Button type="primary" htmlType="submit" icon={<Send size={16} />} loading={submitting} disabled={!title.trim() || title.trim().length > 50 || !content.trim()}>
             提交请求
           </Button>
           {message && <Typography.Text type="danger">{message}</Typography.Text>}
+          {workflowError && <Typography.Text type="secondary">流程模板加载失败，仍可按无模板流程提交</Typography.Text>}
         </div>
       </form>
       </Card>

@@ -83,6 +83,15 @@ export interface TaskRequestResponse {
   tasks: Task[]
 }
 
+export interface WorkflowTemplate {
+  id: string
+  name: string
+  description?: string
+  status?: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface SimpleAgentResponse {
   status: "created" | "ready" | "needs_split" | "tool_missing"
   message: string
@@ -92,7 +101,7 @@ export interface SimpleAgentResponse {
   guidance: string[]
 }
 
-const configuredBaseUrl = import.meta.env.VITE_TASKHUB_API_BASE_URL as string | undefined
+const configuredBaseUrl = (import.meta as ImportMeta & { env?: { VITE_TASKHUB_API_BASE_URL?: string } }).env?.VITE_TASKHUB_API_BASE_URL
 const apiBaseUrl = (configuredBaseUrl || "").replace(/\/+$/, "")
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -128,15 +137,24 @@ export function getTask(taskId: string) {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export function createTaskRequest(title: string, content: string, sourceType = "business_system") {
+export function buildTaskRequestPayload(title: string, content: string, workflowId = "", sourceType = "business_system") {
+  return {
+    source_type: sourceType,
+    title,
+    content,
+    metadata: workflowId
+      ? {
+          execution_mode: "workflow_template",
+          workflow_id: workflowId,
+        }
+      : {},
+  }
+}
+
+export function createTaskRequest(title: string, content: string, workflowId = "", sourceType = "business_system") {
   return request<TaskRequestResponse>("/api/v1/tasks/requests", {
     method: "POST",
-    body: JSON.stringify({
-      source_type: sourceType,
-      title,
-      content,
-      metadata: {},
-    }),
+    body: JSON.stringify(buildTaskRequestPayload(title, content, workflowId, sourceType)),
   })
 }
 
@@ -185,5 +203,5 @@ export function createSimpleAgent(ability: string, name?: string) {
 }
 
 export function listWorkflows() {
-  return request<Array<Record<string, unknown>>>("/api/v1/workflows")
+  return request<WorkflowTemplate[]>("/api/v1/workflows")
 }
