@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -106,7 +107,7 @@ class TaskRequestCreate(BaseModel):
     source_type: SourceType
     title: str = Field(default="", max_length=50)
     content: str = Field(min_length=1)
-    metadata: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskDraft(BaseModel):
@@ -199,7 +200,7 @@ class Task(BaseModel):
     request_id: str | None = None
     source_type: SourceType
     content: str
-    request_metadata: dict[str, str] = Field(default_factory=dict)
+    request_metadata: dict[str, Any] = Field(default_factory=dict)
     task_status: TaskStatus
     current_node: CurrentNode
     draft: TaskDraft | None = None

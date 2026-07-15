@@ -137,6 +137,82 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
     assert "quote approved" in resumed["context"]["summary"]
 
 
+def test_workflow_template_task_snapshots_definition_when_request_is_created(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    quote_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Quote Agent", "description": "Handles quotes", "capabilities": ["quote"]},
+    ).json()
+    risk_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Risk Agent", "description": "Handles risk", "capabilities": ["risk"]},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Snapshot Workflow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "make_quote", "type": "agent", "agent_id": quote_agent["id"], "title": "Make quote"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "make_quote"},
+                    {"from": "make_quote", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "快照任务",
+            "content": "Run original workflow",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+
+    client.put(
+        f"/api/v1/workflows/{workflow['id']}",
+        json={
+            "name": "Snapshot Workflow Updated",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "risk_check", "type": "agent", "agent_id": risk_agent["id"], "title": "Risk check"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "risk_check"},
+                    {"from": "risk_check", "to": "end"},
+                ],
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "快照任务", "description": "Run original workflow"},
+    ).json()
+
+    snapshot_nodes = confirmed["request_metadata"]["workflow_definition"]["nodes"]
+    completed_titles = [
+        subtask["title"]
+        for round_item in confirmed["context"]["rounds"]
+        for subtask in round_item["subtasks"]
+    ]
+    assert [node["id"] for node in snapshot_nodes] == ["start", "make_quote", "end"]
+    assert "Make quote" in completed_titles
+    assert "Risk check" not in completed_titles
+
+
 def test_workflow_template_routes_by_human_result_metadata(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
     revise_agent = client.post(

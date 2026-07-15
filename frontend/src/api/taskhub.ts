@@ -83,13 +83,48 @@ export interface TaskRequestResponse {
   tasks: Task[]
 }
 
+export interface WorkflowNode {
+  id: string
+  type: string
+  title?: string
+  description?: string
+  agent_id?: string | null
+  config?: Record<string, unknown>
+}
+
+export interface WorkflowEdge {
+  from: string
+  to: string
+  condition?: Record<string, unknown>
+}
+
+export interface WorkflowDefinition {
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+}
+
 export interface WorkflowTemplate {
   id: string
   name: string
   description?: string
+  definition: WorkflowDefinition
   status?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface WorkflowCreatePayload {
+  name: string
+  description?: string
+  definition: WorkflowDefinition
+}
+
+export interface WorkflowTaskMetadata {
+  execution_mode: "workflow_template"
+  workflow_id?: string
+  workflow_name?: string
+  workflow_description?: string
+  workflow_definition?: WorkflowDefinition
 }
 
 export interface SimpleAgentResponse {
@@ -137,24 +172,37 @@ export function getTask(taskId: string) {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export function buildTaskRequestPayload(title: string, content: string, workflowId = "", sourceType = "business_system") {
+export function buildTaskRequestPayload(
+  title: string,
+  content: string,
+  workflow: string | WorkflowTaskMetadata = "",
+  sourceType = "business_system",
+) {
+  const metadata = typeof workflow === "string"
+    ? workflow
+      ? {
+          execution_mode: "workflow_template",
+          workflow_id: workflow,
+        }
+      : {}
+    : workflow
   return {
     source_type: sourceType,
     title,
     content,
-    metadata: workflowId
-      ? {
-          execution_mode: "workflow_template",
-          workflow_id: workflowId,
-        }
-      : {},
+    metadata,
   }
 }
 
-export function createTaskRequest(title: string, content: string, workflowId = "", sourceType = "business_system") {
+export function createTaskRequest(
+  title: string,
+  content: string,
+  workflow: string | WorkflowTaskMetadata = "",
+  sourceType = "business_system",
+) {
   return request<TaskRequestResponse>("/api/v1/tasks/requests", {
     method: "POST",
-    body: JSON.stringify(buildTaskRequestPayload(title, content, workflowId, sourceType)),
+    body: JSON.stringify(buildTaskRequestPayload(title, content, workflow, sourceType)),
   })
 }
 
@@ -204,4 +252,11 @@ export function createSimpleAgent(ability: string, name?: string) {
 
 export function listWorkflows() {
   return request<WorkflowTemplate[]>("/api/v1/workflows")
+}
+
+export function createWorkflow(payload: WorkflowCreatePayload) {
+  return request<WorkflowTemplate>("/api/v1/workflows", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }

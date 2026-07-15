@@ -8,10 +8,12 @@ from urllib import request
 from app.core.models import Agent, RoundPlan, SubTask, Task, TaskDraft, ToolCall, ToolExecutionResult, new_id
 
 
-RESPONSES_API_URL = os.getenv("MODEL_RESPONSES_API_URL", "http://192.168.18.94:30377/v1/responses")
+DEFAULT_RESPONSES_API_URL = "http://192.168.18.94:30377/v1/responses"
+DEFAULT_MODEL_NAME = "qwen3.6-35b"
+RESPONSES_API_URL = os.getenv("MODEL_RESPONSES_API_URL", DEFAULT_RESPONSES_API_URL)
 RESPONSES_API_KEY = os.getenv("MODEL_API_KEY", "")
 CHAT_COMPLETIONS_API_URL = RESPONSES_API_URL.replace("/v1/responses", "/v1/chat/completions")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen3.6-35b")
+MODEL_NAME = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_OUTPUT_TOKENS = 512
 
@@ -23,9 +25,9 @@ class ModelCallError(Exception):
 class OpenAIResponsesClient:
     def __init__(
         self,
-        url: str = CHAT_COMPLETIONS_API_URL,
-        api_key: str = RESPONSES_API_KEY,
-        model: str = MODEL_NAME,
+        url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
         timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         self.url = url
@@ -35,7 +37,7 @@ class OpenAIResponsesClient:
 
     def create(self, system_prompt: str, user_prompt: str) -> str:
         payload = {
-            "model": self.model,
+            "model": self._model(),
             "messages": [
                 {
                     "role": "system",
@@ -50,10 +52,10 @@ class OpenAIResponsesClient:
             "max_tokens": MAX_OUTPUT_TOKENS,
         }
         req = request.Request(
-            self.url,
+            self._url(),
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {self._api_key()}",
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -68,6 +70,22 @@ class OpenAIResponsesClient:
         if not text:
             raise ModelCallError("Responses API returned empty text")
         return text
+
+    def _url(self) -> str:
+        if self.url is not None:
+            return self.url
+        responses_api_url = os.getenv("MODEL_RESPONSES_API_URL", DEFAULT_RESPONSES_API_URL)
+        return responses_api_url.replace("/v1/responses", "/v1/chat/completions")
+
+    def _api_key(self) -> str:
+        if self.api_key is not None:
+            return self.api_key
+        return os.getenv("MODEL_API_KEY", "")
+
+    def _model(self) -> str:
+        if self.model is not None:
+            return self.model
+        return os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
 
     def extract_text(self, response_body: dict[str, Any]) -> str:
         output_text = response_body.get("output_text")

@@ -45,6 +45,24 @@ def test_task_request_title_must_not_exceed_50_chars(tmp_path: Path) -> None:
     assert response.status_code == 422
 
 
+def test_task_request_uses_manual_task_name_for_task_title(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    response = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "客户交付报告任务",
+            "content": "分析客户需求并生成交付报告",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()["tasks"][0]
+    assert task["title"] == "客户交付报告任务"
+    assert task["draft"]["title"] == "分析客户需求并生成交付报告"
+
+
 def test_unconfirmed_task_can_be_cancelled_and_removed_from_task_list(tmp_path: Path) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
 

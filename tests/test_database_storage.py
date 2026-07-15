@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from app.core.config import DEFAULT_DATABASE_URL
 from app.core.enums import CurrentNode, SourceType, TaskStatus
 from app.core.models import AgentCreate, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
 from app.main import create_app
@@ -125,9 +126,9 @@ def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
     create_app()
 
     assert captured_urls == [
-        ("agent", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
-        ("task", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
-        ("workflow", "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"),
+        ("agent", DEFAULT_DATABASE_URL),
+        ("task", DEFAULT_DATABASE_URL),
+        ("workflow", DEFAULT_DATABASE_URL),
     ]
 
 

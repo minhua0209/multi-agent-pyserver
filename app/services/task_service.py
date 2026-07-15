@@ -15,6 +15,8 @@ from app.core.models import (
     TaskDraft,
     TaskRequestCreate,
     TaskRequestResponse,
+    WorkflowDefinition,
+    WorkflowTemplate,
     new_id,
     utc_now,
 )
@@ -60,17 +62,18 @@ class TaskService:
             require_system_mock_fallback_enabled("intent_recognition")
             raw_drafts = mock_intent_recognitions(payload.content, agents)
         draft = self._merge_drafts(payload.content, raw_drafts)
+        request_metadata = self._request_metadata_with_workflow_snapshot(payload.metadata)
         task = Task(
             id=new_id("task"),
             request_id=request_id,
             source_type=payload.source_type,
-            title=payload.title or draft.title,
             description=payload.content,
             content=payload.content,
-            request_metadata=payload.metadata,
+            request_metadata=request_metadata,
             task_status=TaskStatus.RUNNING,
             current_node=CurrentNode.HUMAN_CONFIRMATION,
             draft=draft,
+            title=payload.title.strip() or draft.title,
             assigned_agent_id=draft.suggested_agent_id,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -182,6 +185,17 @@ class TaskService:
         return task.request_metadata.get("execution_mode") == "workflow_template"
 
     def _get_task_workflow(self, task: Task):
+        workflow_definition = task.request_metadata.get("workflow_definition")
+        if workflow_definition:
+            return WorkflowTemplate(
+                id=str(task.request_metadata.get("workflow_id") or f"{task.id}_workflow"),
+                name=str(task.request_metadata.get("workflow_name") or task.title or "Task workflow"),
+                description=str(task.request_metadata.get("workflow_description") or ""),
+                definition=WorkflowDefinition.model_validate(workflow_definition),
+                status="active",
+                created_at=task.created_at,
+                updated_at=task.created_at,
+            )
         workflow_id = task.request_metadata.get("workflow_id")
         if not workflow_id or self.workflow_registry is None:
             raise WorkflowNotFoundError(workflow_id or "")
@@ -189,6 +203,25 @@ class TaskService:
         if workflow is None:
             raise WorkflowNotFoundError(workflow_id)
         return workflow
+
+    def _request_metadata_with_workflow_snapshot(self, metadata: dict) -> dict:
+        request_metadata = dict(metadata)
+        if request_metadata.get("execution_mode") != "workflow_template":
+            return request_metadata
+        if request_metadata.get("workflow_definition"):
+            definition = WorkflowDefinition.model_validate(request_metadata["workflow_definition"])
+            request_metadata["workflow_definition"] = definition.model_dump(mode="json", by_alias=True)
+            return request_metadata
+        workflow_id = request_metadata.get("workflow_id")
+        if not workflow_id or self.workflow_registry is None:
+            raise WorkflowNotFoundError(str(workflow_id or ""))
+        workflow = self.workflow_registry.get_workflow(str(workflow_id))
+        if workflow is None:
+            raise WorkflowNotFoundError(str(workflow_id))
+        request_metadata["workflow_name"] = workflow.name
+        request_metadata["workflow_description"] = workflow.description
+        request_metadata["workflow_definition"] = workflow.definition.model_dump(mode="json", by_alias=True)
+        return request_metadata
 
     def _find_subtask(self, subtask_id: str) -> tuple[Task, int, SubTask]:
         for task in self.store.list():

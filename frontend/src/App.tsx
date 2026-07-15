@@ -43,6 +43,7 @@ import {
   SubTask,
   Task,
   TaskRound,
+  WorkflowDefinition,
   WorkflowTemplate,
   cancelTask,
   confirmTask,
@@ -56,6 +57,7 @@ import {
   submitHumanSubtaskResult,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
+import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 
 type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "audit" | "governance"
 
@@ -247,7 +249,7 @@ export default function App() {
           {toast && <div className="toast">{toast}</div>}
           {error && <AntAlert type="error" showIcon message={error} className="page-alert" />}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
-          {page === "publish" && <PublishPage onCreated={(created) => {
+          {page === "publish" && <PublishPage agents={agents} setToast={setToast} onCreated={(created) => {
             setTasks((current) => mergeTasks(current, created))
             setSelectedTaskId(created[0]?.id || "")
             setToast("已识别任务清单，请在弹窗中确认后执行")
@@ -332,10 +334,14 @@ function Overview({
 }
 
 function PublishPage({
+  agents,
+  setToast,
   onCreated,
   onConfirmed,
   onCancelled,
 }: {
+  agents: Agent[]
+  setToast: (value: string) => void
   onCreated: (tasks: Task[]) => void
   onConfirmed: (tasks: Task[]) => void
   onCancelled: (taskIds: string[]) => void
@@ -352,6 +358,8 @@ function PublishPage({
   const [workflowId, setWorkflowId] = useState("")
   const [workflowLoading, setWorkflowLoading] = useState(false)
   const [workflowError, setWorkflowError] = useState("")
+  const [workflowModalOpen, setWorkflowModalOpen] = useState(false)
+  const [workflowSubmitting, setWorkflowSubmitting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -389,6 +397,60 @@ function PublishPage({
       setMessage(errorMessage)
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  function openWorkflowBuilder() {
+    setMessage("")
+    if (!title.trim() || title.trim().length > 50 || !content.trim()) {
+      setMessage("请先填写 50 字以内任务名称和任务诉求")
+      return
+    }
+    setWorkflowModalOpen(true)
+  }
+
+  function rememberWorkflow(saved: WorkflowTemplate) {
+    setWorkflows((current) => {
+      const savedIds = new Set([saved.id])
+      return [saved, ...current.filter((workflow) => !savedIds.has(workflow.id))]
+    })
+  }
+
+  async function submitWorkflowTask(definition: WorkflowDefinition) {
+    if (!title.trim() || title.trim().length > 50 || !content.trim()) {
+      setMessage("请先填写 50 字以内任务名称和任务诉求")
+      return
+    }
+    setWorkflowSubmitting(true)
+    setMessage("")
+    try {
+      const response = await createTaskRequest(title.trim(), content.trim(), {
+        execution_mode: "workflow_template",
+        workflow_name: title.trim(),
+        workflow_description: content.trim(),
+        workflow_definition: definition,
+      })
+      const created = response.tasks || []
+      onCreated(created)
+      const confirmed = []
+      for (const task of created) {
+        confirmed.push(
+          await confirmTask(task.id, {
+            title: task.title || title.trim(),
+            description: draftTaskListText(task),
+            execution_mode: "async",
+          }),
+        )
+      }
+      onConfirmed(confirmed)
+      setWorkflowModalOpen(false)
+      setMessage("任务已按 Agent 编排提交")
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Agent 编排任务提交失败"
+      setMessage(errorMessage)
+      throw err
+    } finally {
+      setWorkflowSubmitting(false)
     }
   }
 
@@ -500,6 +562,17 @@ function PublishPage({
           {workflowError && <Typography.Text type="secondary">流程模板加载失败，仍可按无模板流程提交</Typography.Text>}
         </div>
       </form>
+      <Card size="small" className="workflow-publish-card">
+        <Flex align="center" justify="space-between" gap={16} wrap>
+          <div>
+            <Typography.Text strong>Agent 节点编排</Typography.Text>
+            <div className="muted">打开大画布选择 Agent、拖动连线、配置人工节点和执行交代，提交后任务严格按画布流程执行。</div>
+          </div>
+          <Button icon={<Bot size={16} />} onClick={openWorkflowBuilder} disabled={!title.trim() || title.trim().length > 50 || !content.trim()}>
+            打开 Agent 编排
+          </Button>
+        </Flex>
+      </Card>
       </Card>
       <Modal
         title="意图识别任务清单"
@@ -550,6 +623,28 @@ function PublishPage({
                 </div>
               </>
             )}
+      </Modal>
+      <Modal
+        title="Agent 节点编排"
+        open={workflowModalOpen}
+        width="min(1680px, 96vw)"
+        footer={null}
+        destroyOnHidden
+        maskClosable={false}
+        className="agent-workflow-modal"
+        onCancel={() => {
+          if (!workflowSubmitting) setWorkflowModalOpen(false)
+        }}
+      >
+        <WorkflowBuilderPage
+          modal
+          agents={agents}
+          workflows={workflows}
+          onWorkflowSaved={rememberWorkflow}
+          setToast={setToast}
+          submittingTask={workflowSubmitting}
+          onSubmitTask={submitWorkflowTask}
+        />
       </Modal>
     </div>
   )

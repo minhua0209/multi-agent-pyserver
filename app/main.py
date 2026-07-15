@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -62,7 +63,24 @@ def create_app(
 app = create_app()
 
 
-def run_dev_server() -> None:
+def configure_model_environment_from_args(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--model-api-key")
+    parser.add_argument("--model-responses-api-url")
+    parser.add_argument("--model-name")
+    args, _ = parser.parse_known_args(argv)
+
+    if args.model_api_key is not None:
+        os.environ["MODEL_API_KEY"] = args.model_api_key
+    if args.model_responses_api_url is not None:
+        os.environ["MODEL_RESPONSES_API_URL"] = args.model_responses_api_url
+    if args.model_name is not None:
+        os.environ["MODEL_NAME"] = args.model_name
+
+
+def run_dev_server(argv: list[str] | None = None) -> None:
+    configure_model_environment_from_args(argv)
+
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000)

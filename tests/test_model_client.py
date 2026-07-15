@@ -62,6 +62,31 @@ def test_responses_client_extracts_chat_completion_content() -> None:
     assert text == '{"ok": true}'
 
 
+def test_responses_client_reads_api_key_from_runtime_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_headers: dict[str, str] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured_headers["authorization"] = req.get_header("Authorization")
+        return FakeResponse()
+
+    client = OpenAIResponsesClient(url="http://model.test/v1/chat/completions", model="test-model")
+    monkeypatch.setenv("MODEL_API_KEY", "runtime-test-key")
+    monkeypatch.setattr("app.core.model_client.request.urlopen", fake_urlopen)
+
+    assert client.create("system", "user") == "ok"
+    assert captured_headers["authorization"] == "Bearer runtime-test-key"
+
+
 def test_model_intent_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "app.core.model_client.default_client.create",

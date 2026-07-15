@@ -9,7 +9,10 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 @router.post("/requests", response_model=TaskRequestResponse, status_code=status.HTTP_201_CREATED)
 def create_task_request(payload: TaskRequestCreate, request: Request) -> TaskRequestResponse:
-    return request.app.state.task_service.create_request(payload)
+    try:
+        return request.app.state.task_service.create_request(payload)
+    except WorkflowNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Workflow not found") from exc
 
 
 @router.post("/{task_id}/confirm", response_model=Task)
