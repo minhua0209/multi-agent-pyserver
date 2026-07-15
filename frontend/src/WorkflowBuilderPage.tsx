@@ -3,7 +3,6 @@ import {
   Bot,
   CheckCircle2,
   GitBranch,
-  ListFilter,
   PanelRight,
   Pencil,
   Plus,
@@ -34,11 +33,14 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Agent, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
 import { defaultWorkflowNodePositions, removeWorkflowNode } from "./workflowCanvas"
 import { AgentSummary, buildWorkflowDefinition } from "./workflowBuilder"
+import { capabilityLabel } from "./workflowLabels"
 import {
   WorkflowReactFlowEdge,
   WorkflowReactFlowNode,
-  applyNodeInstruction,
+  applyNodeConfig,
   reactFlowToWorkflow,
+  workflowNodeDetailItems,
+  workflowNodeInlineEditFields,
   workflowToReactFlow,
 } from "./workflowReactFlow"
 
@@ -88,63 +90,6 @@ function nodeKindText(type: string) {
   return { start: "开始", agent: "Agent", human: "人工", condition: "条件", end: "结束" }[type] || type
 }
 
-function contextList(value: unknown, fallback: string) {
-  if (Array.isArray(value)) {
-    const text = value.map(String).filter(Boolean).join("、")
-    return text || fallback
-  }
-  if (typeof value === "string" && value.trim()) return value
-  return fallback
-}
-
-function nodeContext(node?: WorkflowNode) {
-  if (!node) {
-    return {
-      input: "-",
-      output: "-",
-      condition: "请选择画布节点",
-    }
-  }
-  const config = node.config || {}
-  const input = contextList(config.context_inputs, "继承上游节点输出和任务上下文")
-  const output = contextList(config.context_outputs, "写入 context.summary 或节点执行结果")
-  if (node.id === "start") {
-    return {
-      input: "task.content、source_type、request_metadata",
-      output: "初始化 context.summary，写入任务目标与执行约束",
-      condition: "无条件，作为画布起点",
-    }
-  }
-  if (node.type === "agent") {
-    return {
-      input,
-      output,
-      condition: "从画布连线读取上游上下文，执行完成后输出给下游节点",
-    }
-  }
-  if (node.type === "human") {
-    return {
-      input,
-      output: "result_metadata.decision、人工备注、修订要求",
-      condition: "人工确认后继续流转，可作为条件节点的判断来源",
-    }
-  }
-  if (node.type === "condition") {
-    const field = typeof config.field === "string" ? config.field : "decision"
-    const decisions = contextList(config.allowed_decisions, "approved、rejected")
-    return {
-      input,
-      output: `${field} 命中后进入对应下游节点`,
-      condition: `field=${field}，可选值：${decisions}`,
-    }
-  }
-  return {
-    input,
-    output: "final_output、context.summary、产物引用",
-    condition: "作为画布终点汇总结果",
-  }
-}
-
 const nodeTypes = { workflowNode: WorkflowCanvasNode }
 
 export function WorkflowBuilderPage({
@@ -164,6 +109,8 @@ export function WorkflowBuilderPage({
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowReactFlowNode>([])
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<WorkflowReactFlowEdge>([])
   const [activeNodeId, setActiveNodeId] = useState("start")
+  const [hoveredNodeId, setHoveredNodeId] = useState("")
+  const [editingNodeId, setEditingNodeId] = useState("")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
 
@@ -187,15 +134,56 @@ export function WorkflowBuilderPage({
 
   const definition = useMemo(() => reactFlowToWorkflow(canvasNodes, flowEdges), [canvasNodes, flowEdges])
   const activeNode = definition.nodes.find((node) => node.id === activeNodeId) || definition.nodes[0] || null
-  const selectedNode: WorkflowNode = activeNode || {
-    id: "empty",
-    type: "start",
-    title: "未选择节点",
-    description: "从画布选择节点，或从左侧 Agent 列表加入新节点。",
-  }
-  const context = nodeContext(activeNode)
   const canDeleteActiveNode = Boolean(activeNode && activeNode.id !== "start" && activeNode.id !== "end")
   const filteredAgents = availableAgents.filter((agent) => agentMatchesCapability(agent, capabilityFilter))
+  const handleNodeConfigChange = useCallback((nodeId: string, patch: Record<string, unknown>) => {
+    setCanvasNodes((current) => applyNodeConfig({ nodes: current, edges: [] }, nodeId, patch).nodes)
+    setFlowNodes((current) =>
+      current.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                ...flowDataPatch(patch),
+              },
+            }
+          : node,
+      ),
+    )
+    setActiveNodeId(nodeId)
+  }, [setFlowNodes])
+  const handleNodeEditStart = useCallback((nodeId: string) => {
+    setActiveNodeId(nodeId)
+    setHoveredNodeId("")
+    setEditingNodeId(nodeId)
+  }, [])
+  const visibleFlowNodes = useMemo(
+    () =>
+      flowNodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          editing: node.id === editingNodeId,
+          onConfigChange: handleNodeConfigChange,
+          onEditStart: handleNodeEditStart,
+          onEditEnd: () => setEditingNodeId(""),
+        },
+        className: node.id === hoveredNodeId || node.id === editingNodeId ? "workflow-flow-node-hovered" : undefined,
+        zIndex: node.id === hoveredNodeId || node.id === editingNodeId ? 1000 : undefined,
+      })),
+    [editingNodeId, flowNodes, handleNodeConfigChange, handleNodeEditStart, hoveredNodeId],
+  )
+
+  function flowDataPatch(patch: Record<string, unknown>): Partial<WorkflowReactFlowNode["data"]> {
+    return {
+      ...(patch.execution_instruction !== undefined ? { instruction: String(patch.execution_instruction || "") } : {}),
+      ...(patch.assignee !== undefined ? { assignee: String(patch.assignee || "") } : {}),
+      ...(patch.handoff_instruction !== undefined ? { handoffInstruction: String(patch.handoff_instruction || "") } : {}),
+      ...(patch.condition_description !== undefined ? { conditionDescription: String(patch.condition_description || "") } : {}),
+      ...(patch.condition_content !== undefined ? { conditionContent: String(patch.condition_content || "") } : {}),
+    }
+  }
 
   function createNodeId(prefix: string) {
     const normalized = prefix.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 28) || "node"
@@ -262,6 +250,8 @@ export function WorkflowBuilderPage({
         context_inputs: ["context.summary", "subtask.output"],
         context_outputs: ["result_metadata.decision", "human_comment"],
         required_metadata: ["decision"],
+        assignee: "",
+        handoff_instruction: "",
       },
     }
     appendCanvasNode(node)
@@ -280,6 +270,8 @@ export function WorkflowBuilderPage({
         field: "decision",
         allowed_decisions: ["approved", "rejected", "need_more_info"],
         default_decision: "need_more_info",
+        condition_description: "",
+        condition_content: "",
       },
     }
     appendCanvasNode(node)
@@ -293,27 +285,19 @@ export function WorkflowBuilderPage({
     setFlowNodes((current) => current.filter((node) => node.id !== activeNode.id))
     setFlowEdges((current) => current.filter((edge) => edge.source !== activeNode.id && edge.target !== activeNode.id))
     setActiveNodeId("start")
+    setEditingNodeId("")
     setMessage(`${activeNode.title || activeNode.id} 已删除`)
     setToast(`${activeNode.title || activeNode.id} 已从画布删除`)
   }
 
+  function updateActiveNodeConfig(patch: Record<string, unknown>) {
+    if (!activeNode) return
+    handleNodeConfigChange(activeNode.id, patch)
+  }
+
   function updateActiveInstruction(value: string) {
     if (!activeNode || activeNode.type !== "agent") return
-    const updated = applyNodeInstruction(definition, activeNode.id, value)
-    setCanvasNodes(updated.nodes)
-    setFlowNodes((current) =>
-      current.map((node) =>
-        node.id === activeNode.id
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                instruction: value,
-              },
-            }
-          : node,
-      ),
-    )
+    updateActiveNodeConfig({ execution_instruction: value })
   }
 
   const onConnect = useCallback(
@@ -398,7 +382,7 @@ export function WorkflowBuilderPage({
             <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
               {capabilityOptions.map((capability) => (
                 <option key={capability} value={capability}>
-                  {capability === "all" ? "全部能力" : capability}
+                  {capabilityLabel(capability)}
                 </option>
               ))}
             </select>
@@ -414,7 +398,9 @@ export function WorkflowBuilderPage({
                       <span className="workflow-icon success"><Bot size={16} /></span>
                       <span>{agent.name}</span>
                     </span>
-                    <span className="tag">{isOnCanvas ? "已在画布" : agent.agent_type || "processing"}</span>
+                    <span className={isOnCanvas ? "tag workflow-agent-status-tag active" : "tag workflow-agent-status-tag"}>
+                      {isOnCanvas ? "已在画布" : agent.agent_type || "processing"}
+                    </span>
                   </div>
                   <p>{agent.description || "暂无描述"}</p>
                   <div className="tag-row">
@@ -468,13 +454,15 @@ export function WorkflowBuilderPage({
           </label>
           <div className="workflow-canvas" aria-label="Workflow 自由画布">
             <ReactFlow
-              nodes={flowNodes}
+              nodes={visibleFlowNodes}
               edges={flowEdges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               onNodeClick={(_event, node) => setActiveNodeId(node.id)}
+              onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
+              onNodeMouseLeave={() => setHoveredNodeId("")}
               fitView
               minZoom={0.2}
               maxZoom={1.8}
@@ -485,52 +473,74 @@ export function WorkflowBuilderPage({
             </ReactFlow>
           </div>
         </section>
-
-        <section className="panel workflow-context-panel">
-          <div className="panel-title">
-            <span className="nav-text">
-              <ListFilter size={16} />
-              上下文与条件
-            </span>
-            <span className="tag">{nodeKindText(selectedNode.type)}</span>
-          </div>
-          <div className="workflow-info-box">
-            <strong>{selectedNode.title || selectedNode.id}</strong>
-            <p>{selectedNode.description || "-"}</p>
-            <div className="tag-row">
-              <span className="tag">{selectedNode.id}</span>
-              {selectedNode.agent_id && <span className="tag">{selectedNode.agent_id}</span>}
-            </div>
-          </div>
-          <div className="workflow-info-box">
-            <strong>输入上下文</strong>
-            <p>{context.input}</p>
-          </div>
-          <div className="workflow-info-box">
-            <strong>输出上下文</strong>
-            <p>{context.output}</p>
-          </div>
-          <div className="workflow-info-box">
-            <strong>条件配置</strong>
-            <p>{context.condition}</p>
-          </div>
-          {selectedNode.type === "agent" && (
-            <label className="field workflow-info-box">
-              <strong>执行交代</strong>
+        {activeNode?.type === "agent" && (
+          <section className="workflow-node-config-panel">
+            <strong>选中 Agent 执行交代</strong>
+            <label className="field compact-field">
+              <span>执行交代</span>
               <textarea
                 className="textarea"
-                value={String(selectedNode.config?.execution_instruction || "")}
+                value={String(activeNode.config?.execution_instruction || "")}
                 onChange={(event) => updateActiveInstruction(event.target.value)}
                 placeholder="给该 Agent 的执行要求，例如重点检查字段、输出格式、注意事项"
               />
             </label>
-          )}
-          <div className="workflow-info-box">
-            <strong>保存参数预览</strong>
-            <p>nodes={definition.nodes.length}，edges={definition.edges.length}，templates={workflows.length}</p>
-            {message && <p className={message.includes("失败") || message.includes("Workflow not found") ? "danger-text" : "muted"}>{message}</p>}
-          </div>
-        </section>
+          </section>
+        )}
+        {activeNode?.type === "human" && (
+          <section className="workflow-node-config-panel">
+            <strong>人工确认配置</strong>
+            <div className="workflow-config-grid">
+              <label className="field compact-field">
+                <span>指定人员</span>
+                <input
+                  className="input"
+                  value={String(activeNode.config?.assignee || "")}
+                  onChange={(event) => updateActiveNodeConfig({ assignee: event.target.value })}
+                  placeholder="人员姓名、角色或用户 ID"
+                />
+              </label>
+              <label className="field compact-field">
+                <span>人工交代</span>
+                <textarea
+                  className="textarea"
+                  value={String(activeNode.config?.handoff_instruction || "")}
+                  onChange={(event) => updateActiveNodeConfig({ handoff_instruction: event.target.value })}
+                  placeholder="给人工确认人的处理要求、注意事项或输出格式"
+                />
+              </label>
+            </div>
+          </section>
+        )}
+        {activeNode?.type === "condition" && (
+          <section className="workflow-node-config-panel">
+            <strong>条件节点配置</strong>
+            <div className="workflow-config-grid">
+              <label className="field compact-field">
+                <span>条件描述</span>
+                <input
+                  className="input"
+                  value={String(activeNode.config?.condition_description || "")}
+                  onChange={(event) => updateActiveNodeConfig({ condition_description: event.target.value })}
+                  placeholder="例如：人工通过后完成，否则返工"
+                />
+              </label>
+              <label className="field compact-field">
+                <span>条件内容</span>
+                <textarea
+                  className="textarea"
+                  value={String(activeNode.config?.condition_content || "")}
+                  onChange={(event) => updateActiveNodeConfig({ condition_content: event.target.value })}
+                  placeholder="例如：decision=approved -> 完成；decision=rejected -> 返工"
+                />
+              </label>
+            </div>
+          </section>
+        )}
+        <div className="workflow-save-summary">
+          <span>nodes={definition.nodes.length}，edges={definition.edges.length}，templates={workflows.length}</span>
+          {message && <span className={message.includes("失败") || message.includes("Workflow not found") ? "danger-text" : "muted"}>{message}</span>}
+        </div>
       </div>
     </div>
   )
@@ -553,22 +563,33 @@ function EmptyPanel({ text }: { text: string }) {
 }
 
 function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
+  const editableFields = workflowNodeInlineEditFields(data)
+  const editing = Boolean(data.editing)
   const className = [
     "workflow-node",
     String(data.kind),
     data.kind === "condition" ? "condition" : "",
+    editableFields.length > 0 ? "editable" : "",
+    editing ? "editing" : "",
   ].filter(Boolean).join(" ")
   const showTargetHandle = data.kind !== "start"
   const showSourceHandle = data.kind !== "end"
+  const detailItems = workflowNodeDetailItems(data)
+
+  function beginInlineEdit(event: React.MouseEvent<HTMLDivElement>) {
+    if (!editableFields.length) return
+    event.stopPropagation()
+    data.onEditStart?.(data.id)
+  }
 
   return (
-    <div className={className} aria-label={`${data.title || data.id} ${nodeKindText(String(data.kind))}`}>
+    <div className={className} aria-label={`${data.title || data.id} ${nodeKindText(String(data.kind))}`} onDoubleClick={beginInlineEdit}>
       {showTargetHandle && <Handle type="target" position={Position.Left} />}
       {data.kind === "condition" ? (
         <span className="workflow-condition-inner">
           <span className="workflow-icon violet">{nodeIcon(String(data.kind), data.id)}</span>
           <strong>{data.title || data.id}</strong>
-          <small>decision</small>
+          <small>{data.conditionDescription || "decision"}</small>
         </span>
       ) : (
         <>
@@ -579,8 +600,76 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
             <strong>{data.title || data.id}</strong>
           </span>
           <small>{data.description || "-"}</small>
+          {data.kind === "human" && data.assignee && <small className="workflow-node-instruction">人员：{data.assignee}</small>}
+          {data.kind === "human" && data.handoffInstruction && <small className="workflow-node-instruction">{data.handoffInstruction}</small>}
           {data.kind === "agent" && data.instruction && <small className="workflow-node-instruction">{data.instruction}</small>}
         </>
+      )}
+      {editableFields.length > 0 && !editing && <small className="workflow-node-edit-hint">双击编辑</small>}
+      {editing && (
+        <div
+          className="workflow-node-inline-editor nodrag nowheel"
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <strong>节点信息</strong>
+          {editableFields.map((field) => (
+            <label className="workflow-inline-field" key={field.key}>
+              <span>{field.label}</span>
+              {field.inputType === "textarea" ? (
+                <textarea
+                  value={field.value}
+                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  placeholder={field.placeholder}
+                />
+              ) : (
+                <input
+                  value={field.value}
+                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  placeholder={field.placeholder}
+                />
+              )}
+            </label>
+          ))}
+          <div className="workflow-inline-actions">
+            <button
+              className="btn btn-small"
+              type="button"
+              onClickCapture={(event) => {
+                event.stopPropagation()
+                data.onEditEnd?.()
+              }}
+              onClick={(event) => event.stopPropagation()}
+              onMouseDownCapture={(event) => {
+                event.stopPropagation()
+                data.onEditEnd?.()
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation()
+                data.onEditEnd?.()
+              }}
+            >
+              完成
+            </button>
+          </div>
+        </div>
+      )}
+      {detailItems.length > 0 && (
+        <div className="workflow-node-popover" role="tooltip">
+          <strong>{data.title || data.id}</strong>
+          <dl>
+            {detailItems.map((item) => (
+              <div key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
       )}
       {showSourceHandle && <Handle type="source" position={Position.Right} />}
     </div>
