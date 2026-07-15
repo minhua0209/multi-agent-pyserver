@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 from urllib import request
 
 import pymysql
@@ -34,6 +35,8 @@ class ToolExecutor:
             return self._execute_mysql(tool, tool_call)
         if tool.type == "smtp_email":
             return self._execute_smtp_email(tool, tool_call)
+        if tool.type == "file_write":
+            return self._execute_file_write(tool, tool_call)
 
         return ToolExecutionResult(
             tool_name=tool.name,
@@ -194,4 +197,43 @@ class ToolExecutor:
             arguments=tool_call.arguments,
             success=True,
             result=f"Email sent to {message['To']}",
+        )
+
+    def _execute_file_write(self, tool: AgentTool, tool_call: ToolCall) -> ToolExecutionResult:
+        filename = str(tool_call.arguments.get("filename", "")).strip()
+        content = str(tool_call.arguments.get("content", ""))
+        if not filename:
+            return ToolExecutionResult(
+                tool_name=tool.name,
+                arguments=tool_call.arguments,
+                success=False,
+                error="File write tool filename is empty",
+            )
+
+        base_dir = Path(tool.config.get("base_dir", "./runtime/agent_outputs")).resolve()
+        target_path = (base_dir / filename).resolve()
+        if base_dir != target_path and base_dir not in target_path.parents:
+            return ToolExecutionResult(
+                tool_name=tool.name,
+                arguments=tool_call.arguments,
+                success=False,
+                error="File write target must stay inside base_dir",
+            )
+
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            return ToolExecutionResult(
+                tool_name=tool.name,
+                arguments=tool_call.arguments,
+                success=False,
+                error=str(exc),
+            )
+
+        return ToolExecutionResult(
+            tool_name=tool.name,
+            arguments=tool_call.arguments,
+            success=True,
+            result=str(target_path),
         )

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, delete, select
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, delete, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from app.core.models import (
@@ -31,6 +31,9 @@ class AgentRegistry:
     def list_agents(self) -> list[Agent]:
         raw_agents = json.loads(self.file_path.read_text())
         return [Agent.model_validate(raw_agent) for raw_agent in raw_agents]
+
+    def list_processing_agents(self) -> list[Agent]:
+        return filter_processing_agents(self.list_agents())
 
     def create_agent(self, payload: AgentCreate) -> Agent:
         agents = self.list_agents()
@@ -125,6 +128,7 @@ agents_table = Table(
     Column("payload", Text, nullable=True),
     Column("name", String(255), nullable=True),
     Column("description", Text, nullable=True),
+    Column("agent_type", String(64), nullable=False, default="processing"),
     Column("capabilities_json", Text, nullable=True),
     Column("input_schema_json", Text, nullable=True),
     Column("output_schema_json", Text, nullable=True),
@@ -199,6 +203,7 @@ subtasks_table = Table(
     Column("max_retry_count", Integer, nullable=False, default=3),
     Column("output", Text, nullable=True),
     Column("error_message", Text, nullable=True),
+    Column("result_metadata_json", Text, nullable=True),
     Column("tool_calls_json", Text, nullable=True),
     Column("tool_results_json", Text, nullable=True),
     Column("started_at", DateTime(timezone=True), nullable=True),
@@ -275,15 +280,32 @@ def _round_id(task_id: str, round_index: int) -> str:
     return f"{task_id}_round_{round_index}"
 
 
+def filter_processing_agents(agents: list[Agent]) -> list[Agent]:
+    return [agent for agent in agents if agent.agent_type == "processing"]
+
+
+def _ensure_column(engine: Engine, table_name: str, column_name: str, definition: str) -> None:
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns(table_name)}
+    if column_name in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
 class DatabaseAgentRegistry:
     def __init__(self, database_url: str) -> None:
         self.engine = _create_engine(database_url)
         metadata.create_all(self.engine)
+        _ensure_column(self.engine, "agents", "agent_type", "VARCHAR(64) NOT NULL DEFAULT 'processing'")
 
     def list_agents(self) -> list[Agent]:
         with self.engine.begin() as connection:
             rows = connection.execute(select(agents_table.c.payload)).all()
         return [Agent.model_validate_json(row.payload) for row in rows]
+
+    def list_processing_agents(self) -> list[Agent]:
+        return filter_processing_agents(self.list_agents())
 
     def create_agent(self, payload: AgentCreate) -> Agent:
         agent = Agent(id=new_id("agent"), created_at=utc_now(), **payload.model_dump())
@@ -294,6 +316,7 @@ class DatabaseAgentRegistry:
                     payload=agent.model_dump_json(),
                     name=agent.name,
                     description=agent.description,
+                    agent_type=agent.agent_type,
                     capabilities_json=_json_dump(agent.capabilities),
                     input_schema_json=_json_dump(agent.input_schema),
                     output_schema_json=_json_dump(agent.output_schema),
@@ -311,6 +334,7 @@ class DatabaseTaskStore:
     def __init__(self, database_url: str) -> None:
         self.engine = _create_engine(database_url)
         metadata.create_all(self.engine)
+        _ensure_column(self.engine, "subtasks", "result_metadata_json", "TEXT NULL")
 
     def save(self, task: Task) -> Task:
         task.updated_at = utc_now()
@@ -501,6 +525,7 @@ class DatabaseTaskStore:
             "max_retry_count": 3,
             "output": subtask.output,
             "error_message": subtask.output if subtask.status.value == "failed" else None,
+            "result_metadata_json": _json_dump(subtask.result_metadata),
             "tool_calls_json": _json_dump([tool_call.model_dump(mode="json") for tool_call in subtask.tool_calls]),
             "tool_results_json": _json_dump(
                 [tool_result.model_dump(mode="json") for tool_result in subtask.tool_results]

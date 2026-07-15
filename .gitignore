@@ -10,3 +10,8 @@ __pycache__/
 *.egg-info/
 app/data/agents.json
 app/data/workflows.json
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

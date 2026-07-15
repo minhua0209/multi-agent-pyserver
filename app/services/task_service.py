@@ -50,7 +50,7 @@ class TaskService:
 
     def create_request(self, payload: TaskRequestCreate) -> TaskRequestResponse:
         request_id = new_id("req")
-        agents = self.agent_registry.list_agents()
+        agents = self.agent_registry.list_processing_agents()
         raw_drafts = recognize_tasks_with_model(payload.content, agents)
         if not raw_drafts:
             require_system_mock_fallback_enabled("intent_recognition")
@@ -145,6 +145,7 @@ class TaskService:
     def submit_subtask_result(self, subtask_id: str, payload: ExecutionResultCreate) -> Task:
         task, round_index, subtask = self._find_subtask(subtask_id)
         subtask.output = payload.output or payload.result_status.value
+        subtask.result_metadata = payload.metadata
         subtask.status = TaskStatus.FAILED if payload.result_status == ResultStatus.FAILED else TaskStatus.SUCCEEDED
         subtask.current_node = CurrentNode.HUMAN_EXECUTION
         task.events.append(self._event("human_result_submitted", f"{subtask.title}: {subtask.output}"))

@@ -75,6 +75,57 @@ def test_task_graph_does_not_use_round_plan_mock_when_system_fallback_disabled(
         TaskGraphRunner(registry).run(task)
 
 
+def test_task_graph_passes_only_processing_agents_to_planner(tmp_path: Path, monkeypatch) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    processing_agent = registry.create_agent(
+        AgentCreate(name="Processing Agent", description="Handles work", capabilities=["work"])
+    )
+    registry.create_agent(
+        AgentCreate(
+            name="Canvas Human Node",
+            description="Only used by workflow canvas",
+            agent_type="human",
+            capabilities=["approval"],
+        )
+    )
+    task = Task(
+        id=new_id("task"),
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Create quote for customer D",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.HUMAN_CONFIRMATION,
+        title="Create quote for customer D",
+        description="Prepare quote for customer D",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    seen_agent_ids = []
+
+    def _plan(task, agents):
+        seen_agent_ids.extend(agent.id for agent in agents)
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                subtasks=[
+                    SubTask(
+                        id="subtask_processing",
+                        title="Do work",
+                        description="Do work",
+                        assigned_agent_id=processing_agent.id,
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", lambda *args: ([], "done"))
+
+    TaskGraphRunner(registry).run(task)
+
+    assert seen_agent_ids == [processing_agent.id, processing_agent.id]
+
+
 def test_task_graph_executes_agent_tool_calls(tmp_path: Path, monkeypatch) -> None:
     registry = AgentRegistry(tmp_path / "agents.json")
     agent = registry.create_agent(

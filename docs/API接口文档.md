@@ -78,6 +78,7 @@
 {
   "name": "Email Agent",
   "description": "Handles sending emails to target recipients",
+  "agent_type": "processing",
   "capabilities": ["email", "notification", "send_email"],
   "input_schema": {},
   "output_schema": {},
@@ -124,6 +125,7 @@
   "id": "agent_xxx",
   "name": "Email Agent",
   "description": "Handles sending emails to target recipients",
+  "agent_type": "processing",
   "capabilities": ["email", "notification", "send_email"],
   "input_schema": {},
   "output_schema": {},
@@ -170,6 +172,7 @@
 | --- | --- | --- | --- |
 | `name` | string | 是 | agent 名称 |
 | `description` | string | 否 | agent 描述，分发 agent 会参考 |
+| `agent_type` | string | 否 | agent 类型，默认 `processing`。可用于标识 `processing`、`condition`、`system` 等类型 |
 | `capabilities` | string[] | 否 | 能力标签，分发 agent 会参考 |
 | `input_schema` | object | 否 | 期望输入结构 |
 | `output_schema` | object | 否 | 期望输出结构 |
@@ -184,6 +187,101 @@
 | `http` | 发起基础 HTTP 请求 |
 | `mysql` | 执行只读 MySQL `SELECT` 查询 |
 | `smtp_email` | 通过 SMTP 发送邮件 |
+| `file_write` | 将文章、报告、总结写入本地指定目录 |
+
+`agent_type` 说明：
+
+- `GET /api/v1/agents` 会返回全部 agent/画布元素，便于前端流程画布使用。
+- 无流程动态协同中的意图识别、LLM/CrewAI 分发和执行候选只使用 `agent_type=processing` 的 agent。
+- `condition` 流程节点不要求注册为 agent；如果前端为了画布物料管理注册了非处理 agent，不会参与动态分发。
+
+### 极简创建 Agent
+
+`POST /api/v1/agents/simple`
+
+用于让非专业用户通过一句自然语言诉求创建处理 agent。系统会基于内置工具目录自动生成 `AgentCreate` 参数，并继续复用现有 `agents` 表/文件持久化逻辑。
+
+请求示例：
+
+```json
+{
+  "ability": "帮我创建一个可以向指定目录写入文章或者报告总结的agent",
+  "name": "报告写入助手"
+}
+```
+
+创建成功响应：`201 Created`
+
+```json
+{
+  "status": "created",
+  "message": "已根据诉求生成 agent 参数。",
+  "agent": {
+    "id": "agent_xxx",
+    "name": "报告写入助手",
+    "description": "根据用户诉求自动生成：帮我创建一个可以向指定目录写入文章或者报告总结的agent",
+    "agent_type": "processing",
+    "capabilities": ["write_article", "write_report", "summarize", "save_file"],
+    "execution_config": {
+      "system_prompt": "你是一个将文章、报告、总结写入本地指定目录的处理 agent...",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 60,
+      "max_retries": 1,
+      "max_tool_calls": 5
+    },
+    "tools": [
+      {
+        "name": "file_write",
+        "description": "将文章、报告、总结写入本地指定目录",
+        "type": "file_write",
+        "config": {
+          "base_dir": "./runtime/agent_outputs"
+        }
+      }
+    ],
+    "created_at": "2026-07-15T00:00:00Z"
+  },
+  "matched_tools": ["file_write"],
+  "missing_tools": [],
+  "guidance": []
+}
+```
+
+如果诉求包含多个独立能力，不会创建 agent，响应：`200 OK`
+
+```json
+{
+  "status": "needs_split",
+  "message": "当前诉求包含多个独立能力，建议分开创建多个 agent，或先补充对应工具后再创建。",
+  "agent": null,
+  "matched_tools": ["mysql", "smtp_email", "http"],
+  "missing_tools": [],
+  "guidance": [
+    "一个处理 agent 建议只承接一类稳定能力。",
+    "例如将数据库查询、邮件发送、HTTP 调用分别创建为不同 agent。"
+  ]
+}
+```
+
+如果诉求需要当前系统尚未支持的工具，不会创建 agent，响应：`200 OK`
+
+```json
+{
+  "status": "tool_missing",
+  "message": "当前诉求需要系统尚未接入的工具能力，请先补充工具或调整诉求。",
+  "agent": null,
+  "matched_tools": [],
+  "missing_tools": [
+    {
+      "type": "wechat_group_sender",
+      "reason": "当前系统没有企业微信或微信群消息发送工具。",
+      "suggested_action": "可以接入企业微信 webhook 工具，或用 HTTP 工具配置 webhook 地址。"
+    }
+  ],
+  "guidance": ["可以先寻找或注册对应工具，再创建处理 agent。"]
+}
+```
 
 ### 查询 Agent 列表
 
@@ -197,6 +295,7 @@
     "id": "agent_xxx",
     "name": "Email Agent",
     "description": "Handles sending emails to target recipients",
+    "agent_type": "processing",
     "capabilities": ["email"],
     "input_schema": {},
     "output_schema": {},
@@ -461,7 +560,10 @@
 {
   "result_status": "succeeded",
   "output": "人工确认通过",
-  "should_complete": true
+  "should_complete": true,
+  "metadata": {
+    "decision": "approved"
+  }
 }
 ```
 
@@ -512,6 +614,19 @@
         "config": {}
       },
       {
+        "id": "judge_approval",
+        "type": "condition",
+        "title": "判断审批结果",
+        "description": "将人工审批结果归一化为 decision",
+        "config": {
+          "mode": "rule",
+          "source_node_id": "approve_quote",
+          "field": "decision",
+          "allowed_decisions": ["approved", "rejected", "need_more_info"],
+          "default_decision": "need_more_info"
+        }
+      },
+      {
         "id": "end",
         "type": "end",
         "title": "结束",
@@ -521,7 +636,8 @@
     "edges": [
       {"from": "start", "to": "make_quote", "condition": {}},
       {"from": "make_quote", "to": "approve_quote", "condition": {}},
-      {"from": "approve_quote", "to": "end", "condition": {}}
+      {"from": "approve_quote", "to": "judge_approval", "condition": {}},
+      {"from": "judge_approval", "to": "end", "condition": {"type": "decision", "value": "approved"}}
     ]
   }
 }
@@ -588,7 +704,26 @@
 | `start` | 开始节点 |
 | `agent` | agent 自动处理节点，需要配置 `agent_id` |
 | `human` | 人工处理节点 |
+| `condition` | 通用条件判断节点，第一版支持 `config.mode=rule`，输出标准 `decision` |
 | `end` | 结束节点 |
+
+条件判断节点说明：
+
+- `condition` 节点不注册为普通 agent，不调用工具。
+- 第一版 `mode=rule` 会从 `source_node_id` 指定的上游节点 `result_metadata` 中读取 `field`。
+- 输出会写入子任务 `result_metadata.decision`。
+- 后续边建议使用标准 decision 条件：
+
+```json
+{
+  "from": "judge_approval",
+  "to": "make_quote",
+  "condition": {
+    "type": "decision",
+    "value": "approved"
+  }
+}
+```
 
 ### 查询 Workflow 列表
 

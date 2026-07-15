@@ -19,6 +19,7 @@ def utc_now() -> datetime:
 class AgentCreate(BaseModel):
     name: str = Field(min_length=1)
     description: str = ""
+    agent_type: str = "processing"
     capabilities: list[str] = Field(default_factory=list)
     input_schema: dict = Field(default_factory=dict)
     output_schema: dict = Field(default_factory=dict)
@@ -29,6 +30,26 @@ class AgentCreate(BaseModel):
 class Agent(AgentCreate):
     id: str
     created_at: datetime
+
+
+class SimpleAgentCreate(BaseModel):
+    ability: str = Field(min_length=1)
+    name: str = ""
+
+
+class MissingTool(BaseModel):
+    type: str
+    reason: str
+    suggested_action: str = ""
+
+
+class SimpleAgentCreateResponse(BaseModel):
+    status: str
+    message: str
+    agent: Agent | None = None
+    matched_tools: list[str] = Field(default_factory=list)
+    missing_tools: list[MissingTool] = Field(default_factory=list)
+    guidance: list[str] = Field(default_factory=list)
 
 
 class AgentExecutionConfig(BaseModel):
@@ -112,6 +133,7 @@ class ExecutionResultCreate(BaseModel):
     result_status: ResultStatus
     output: str = ""
     should_complete: bool = True
+    metadata: dict = Field(default_factory=dict)
 
 
 class Event(BaseModel):
@@ -144,6 +166,7 @@ class SubTask(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolExecutionResult] = Field(default_factory=list)
     output: str = ""
+    result_metadata: dict = Field(default_factory=dict)
 
 
 class TaskRound(BaseModel):

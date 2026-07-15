@@ -203,3 +203,58 @@ def test_tool_executor_rejects_smtp_email_tool_without_required_fields() -> None
 
     assert result.success is False
     assert "subject" in result.error
+
+
+def test_tool_executor_runs_file_write_tool(tmp_path) -> None:
+    agent = Agent(
+        id="agent_file",
+        name="File Writer Agent",
+        description="Writes reports to local files",
+        capabilities=["write_report", "save_file"],
+        tools=[
+            AgentTool(
+                name="file_write",
+                description="Write content to a local file",
+                type="file_write",
+                config={"base_dir": str(tmp_path)},
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(
+            tool_name="file_write",
+            arguments={"filename": "reports/summary.md", "content": "hello report"},
+        ),
+    )
+
+    assert result.success is True
+    assert (tmp_path / "reports" / "summary.md").read_text() == "hello report"
+    assert "summary.md" in result.result
+
+
+def test_tool_executor_rejects_file_write_path_traversal(tmp_path) -> None:
+    agent = Agent(
+        id="agent_file",
+        name="File Writer Agent",
+        description="Writes reports to local files",
+        capabilities=["write_report", "save_file"],
+        tools=[
+            AgentTool(
+                name="file_write",
+                type="file_write",
+                config={"base_dir": str(tmp_path)},
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(tool_name="file_write", arguments={"filename": "../escape.md", "content": "bad"}),
+    )
+
+    assert result.success is False
+    assert "base_dir" in result.error

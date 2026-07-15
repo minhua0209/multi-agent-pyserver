@@ -6,6 +6,13 @@ import os
 DEFAULT_DATABASE_URL = "mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"
 
 
+def get_task_planner_type() -> str:
+    planner_type = os.getenv("TASK_PLANNER_TYPE", "llm").lower()
+    if planner_type not in {"llm", "crewai"}:
+        return "llm"
+    return planner_type
+
+
 def is_default_database_enabled() -> bool:
     return os.getenv("DISABLE_DEFAULT_DATABASE_URL", "false").lower() not in {"1", "true", "yes", "on"}
 

@@ -17,8 +17,8 @@ class WorkflowTemplateRunner:
         completed_node_ids = self._completed_node_ids(task)
         node_map = {node.id: node for node in workflow.definition.nodes}
         while True:
-            ready_nodes = self._ready_nodes(workflow, completed_node_ids)
-            runnable_nodes = [node for node in ready_nodes if node.type in {"agent", "human"}]
+            ready_nodes = self._ready_nodes(workflow, completed_node_ids, task)
+            runnable_nodes = [node for node in ready_nodes if node.type in {"agent", "human", "condition"}]
             if not runnable_nodes:
                 task.task_status = TaskStatus.SUCCEEDED
                 task.current_node = CurrentNode.COMPLETION_JUDGE
@@ -36,7 +36,7 @@ class WorkflowTemplateRunner:
             if task.current_node.value == "human_execution":
                 return task
             completed_node_ids = self._completed_node_ids(task)
-            if all(node.type == "end" for node in self._ready_nodes(workflow, completed_node_ids)):
+            if all(node.type == "end" for node in self._ready_nodes(workflow, completed_node_ids, task)):
                 task.task_status = TaskStatus.SUCCEEDED
                 task.current_node = CurrentNode.COMPLETION_JUDGE
                 task.final_output = task.context.summary
@@ -63,13 +63,16 @@ class WorkflowTemplateRunner:
 
     @staticmethod
     def _node_to_subtask(task: Task, node: WorkflowNode) -> SubTask:
-        return SubTask(
+        subtask = SubTask(
             id=f"{task.id}_{node.id}",
             title=node.title or node.id,
             description=node.description or node.title or node.id,
             assigned_agent_id=node.agent_id,
-            assignee_type="human" if node.type == "human" else "agent",
+            assignee_type=node.type if node.type in {"human", "condition"} else "agent",
         )
+        if node.type == "condition":
+            subtask.result_metadata = {"config": node.config}
+        return subtask
 
     @staticmethod
     def _completed_node_ids(task: Task) -> set[str]:
@@ -90,20 +93,78 @@ class WorkflowTemplateRunner:
         return False
 
     @staticmethod
-    def _ready_nodes(workflow: WorkflowTemplate, completed_node_ids: set[str]) -> list[WorkflowNode]:
+    def _ready_nodes(workflow: WorkflowTemplate, completed_node_ids: set[str], task: Task) -> list[WorkflowNode]:
         node_map = {node.id: node for node in workflow.definition.nodes}
+        completed_subtasks = WorkflowTemplateRunner._completed_subtasks_by_node_id(task)
         incoming = {node.id: [] for node in workflow.definition.nodes}
         outgoing = {node.id: [] for node in workflow.definition.nodes}
         for edge in workflow.definition.edges:
-            incoming.setdefault(edge.to_node, []).append(edge.from_node)
+            incoming.setdefault(edge.to_node, []).append(edge)
             outgoing.setdefault(edge.from_node, []).append(edge.to_node)
 
         ready = []
         for node in workflow.definition.nodes:
             if node.id in completed_node_ids or node.type == "start":
                 continue
-            dependencies = incoming.get(node.id, [])
-            normalized_dependencies = [item for item in dependencies if node_map.get(item) and node_map[item].type != "start"]
-            if all(item in completed_node_ids for item in normalized_dependencies):
+            dependencies = [
+                edge for edge in incoming.get(node.id, []) if node_map.get(edge.from_node) and node_map[edge.from_node].type != "start"
+            ]
+            if WorkflowTemplateRunner._dependencies_ready(dependencies, completed_node_ids, completed_subtasks):
                 ready.append(node)
         return ready
+
+    @staticmethod
+    def _completed_subtasks_by_node_id(task: Task) -> dict[str, SubTask]:
+        completed = {}
+        prefix = f"{task.id}_"
+        for round_item in task.context.rounds:
+            for subtask in round_item.subtasks:
+                if subtask.status != TaskStatus.SUCCEEDED:
+                    continue
+                node_id = subtask.id[len(prefix) :] if subtask.id.startswith(prefix) else subtask.id
+                completed[node_id] = subtask
+        return completed
+
+    @staticmethod
+    def _dependencies_ready(edges, completed_node_ids: set[str], completed_subtasks: dict[str, SubTask]) -> bool:
+        if not edges:
+            return True
+        conditional_edges = [edge for edge in edges if edge.condition]
+        if conditional_edges:
+            return any(
+                edge.from_node in completed_node_ids
+                and WorkflowTemplateRunner._condition_matches(edge.condition, completed_subtasks.get(edge.from_node))
+                for edge in conditional_edges
+            )
+        return all(edge.from_node in completed_node_ids for edge in edges)
+
+    @staticmethod
+    def _condition_matches(condition: dict, source_subtask: SubTask | None) -> bool:
+        if not condition:
+            return True
+        if source_subtask is None:
+            return False
+        if condition.get("type") == "decision":
+            return source_subtask.result_metadata.get("decision") == condition.get("value")
+        field = condition.get("field")
+        if not isinstance(field, str) or not field:
+            return False
+        data = source_subtask.result_metadata
+        actual = data.get(field)
+        operator = condition.get("operator", "eq")
+        expected = condition.get("value")
+        if operator == "eq":
+            return actual == expected
+        if operator == "ne":
+            return actual != expected
+        if operator == "in":
+            return isinstance(expected, list) and actual in expected
+        if operator == "not_in":
+            return isinstance(expected, list) and actual not in expected
+        if operator == "exists":
+            return field in data
+        if operator == "not_exists":
+            return field not in data
+        if operator == "contains":
+            return isinstance(actual, (list, str)) and expected in actual
+        return False

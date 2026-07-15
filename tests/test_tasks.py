@@ -69,6 +69,15 @@ def test_task_request_intent_recognition_uses_registered_agents(tmp_path: Path, 
             "capabilities": ["quote"],
         },
     ).json()
+    client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Canvas Human Node",
+            "description": "Only used by workflow canvas",
+            "agent_type": "human",
+            "capabilities": ["approval"],
+        },
+    )
 
     response = client.post(
         "/api/v1/tasks/requests",

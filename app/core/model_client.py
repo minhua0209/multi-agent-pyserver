@@ -295,6 +295,8 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
         "如果前置结果不足，先创建获取前置信息的子任务；如果已有足够上下文，再创建后续子任务。"
         "每轮可以返回多个可并发执行的子任务，也可以返回一个需要同步执行的子任务。"
         "当没有待执行子任务时，should_continue=false，并给出 final_output。"
+        "所有面向用户或存储展示的文本必须使用中文，包括 reason、final_output、subtasks.title、subtasks.description。"
+        "如果输入上下文或 agent 描述中含有英文，也要用中文概括，不要原样输出英文长句。"
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"should_continue": true|false, "execution_mode": "parallel|sequential", '
         '"reason": "...", "final_output": "...", '

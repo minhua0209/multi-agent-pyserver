@@ -5,6 +5,64 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 
 
+def test_create_simple_agent_from_file_writing_ability(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/simple",
+        json={
+            "ability": "帮我创建一个可以向指定目录写入文章或者报告总结的agent",
+            "name": "报告写入助手",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "created"
+    assert body["agent"]["name"] == "报告写入助手"
+    assert body["agent"]["agent_type"] == "processing"
+    assert "write_report" in body["agent"]["capabilities"]
+    assert body["agent"]["tools"][0]["type"] == "file_write"
+    assert body["matched_tools"] == ["file_write"]
+    assert body["missing_tools"] == []
+
+
+def test_create_simple_agent_rejects_too_many_abilities(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/simple",
+        json={
+            "ability": "帮我创建一个agent，既能查询MySQL客户数据，又能发送邮件，还能调用外部HTTP接口",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "needs_split"
+    assert body["agent"] is None
+    assert "分开创建" in body["message"]
+    assert client.get("/api/v1/agents").json() == []
+
+
+def test_create_simple_agent_reports_missing_tool(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/simple",
+        json={"ability": "帮我创建一个agent，可以登录企业微信并把日报发送到群里"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "tool_missing"
+    assert body["agent"] is None
+    assert body["missing_tools"][0]["type"] == "wechat_group_sender"
+
+
 def test_create_agent_persists_to_local_json_file(tmp_path: Path) -> None:
     data_file = tmp_path / "agents.json"
     client = TestClient(create_app(agent_file=data_file))
@@ -22,6 +80,7 @@ def test_create_agent_persists_to_local_json_file(tmp_path: Path) -> None:
     body = response.json()
     assert body["name"] == "Quote Agent"
     assert body["capabilities"] == ["quote", "crm"]
+    assert body["agent_type"] == "processing"
 
     list_response = client.get("/api/v1/agents")
     assert list_response.status_code == 200
@@ -64,6 +123,25 @@ def test_create_agent_accepts_tool_definitions(tmp_path: Path) -> None:
     assert body["tools"][0]["name"] == "crm_query"
     assert body["tools"][0]["type"] == "http"
     assert body["tools"][0]["input_schema"]["properties"]["customer_id"]["type"] == "string"
+
+
+def test_create_agent_accepts_agent_type(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Condition Judge Agent",
+            "description": "Normalizes workflow decisions",
+            "agent_type": "condition",
+            "capabilities": ["decision"],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["agent_type"] == "condition"
 
 
 def test_create_agent_accepts_execution_config_and_io_schema(tmp_path: Path) -> None:

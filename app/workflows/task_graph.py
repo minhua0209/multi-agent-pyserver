@@ -7,8 +7,9 @@ from langgraph.graph import END, StateGraph
 from app.core.config import require_system_mock_fallback_enabled
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
-from app.core.model_client import execute_subtask_with_tools_model, plan_next_round_with_model
+from app.core.model_client import execute_subtask_with_tools_model
 from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, utc_now
+from app.planners.factory import get_task_planner
 from app.services.storage import AgentRegistry
 from app.services.tool_executor import ToolExecutor
 
@@ -37,6 +38,10 @@ class SubTaskExecutionOutcome:
             return self.output
         reason = self.error or self.output or "Subtask did not complete"
         return reason
+
+
+def plan_next_round_with_model(task: Task, agents: list) -> RoundPlan | None:
+    return get_task_planner().plan_next_round(task, agents)
 
 
 class TaskGraphRunner:
@@ -103,7 +108,7 @@ class TaskGraphRunner:
         if task.loop_count >= task.max_loop_count:
             return {"task": task, "round_plan": RoundPlan(should_continue=False), "round_outputs": [], "paused": False}
 
-        agents = self.agent_registry.list_agents()
+        agents = self.agent_registry.list_processing_agents()
         plan = plan_next_round_with_model(task, agents)
         if plan is None:
             require_system_mock_fallback_enabled("round_dispatch")
@@ -129,7 +134,7 @@ class TaskGraphRunner:
         task = state["task"]
         task.current_node = CurrentNode.SUBTASK_EXECUTION
         paused = False
-        agents = self.agent_registry.list_agents()
+        agents = self.agent_registry.list_processing_agents()
         agent_subtasks = []
         for subtask in state["round_plan"].subtasks:
             if subtask.assignee_type == "human":
@@ -137,6 +142,10 @@ class TaskGraphRunner:
                 subtask.current_node = CurrentNode.HUMAN_EXECUTION
                 paused = True
                 task.events.append(self._event("human_task_created", f"{subtask.title}: waiting for human input"))
+                continue
+            if subtask.assignee_type == "condition":
+                outcome = self._execute_condition_subtask(task, subtask)
+                self._apply_subtask_outcome(task, subtask, None, outcome)
                 continue
             agent_subtasks.append(subtask)
 
@@ -268,6 +277,37 @@ class TaskGraphRunner:
             return SubTaskExecutionOutcome(completed=True, output=output)
         require_system_mock_fallback_enabled("human_node_processing")
         return SubTaskExecutionOutcome(completed=True, output=mock_human_node_processing(task))
+
+    def _execute_condition_subtask(self, task: Task, subtask: SubTask) -> SubTaskExecutionOutcome:
+        config = subtask.result_metadata.get("config", {})
+        source_node_id = str(config.get("source_node_id", "")).strip()
+        field = str(config.get("field", "decision")).strip() or "decision"
+        default_decision = str(config.get("default_decision", "unknown")).strip() or "unknown"
+        allowed_decisions = config.get("allowed_decisions", [])
+        source_subtask = self._find_completed_workflow_subtask(task, source_node_id) if source_node_id else None
+        source_value = source_subtask.result_metadata.get(field) if source_subtask else None
+        decision = str(source_value or default_decision)
+        if isinstance(allowed_decisions, list) and allowed_decisions and decision not in allowed_decisions:
+            decision = default_decision
+        subtask.result_metadata = {
+            "decision": decision,
+            "reason": f"Matched {source_node_id}.{field}" if source_subtask and source_value is not None else "Used default decision",
+            "source_node_id": source_node_id,
+            "source_value": source_value,
+        }
+        subtask.current_node = CurrentNode.SUBTASK_EXECUTION
+        return SubTaskExecutionOutcome(completed=True, output=f"Condition decision: {decision}")
+
+    @staticmethod
+    def _find_completed_workflow_subtask(task: Task, node_id: str) -> SubTask | None:
+        if not node_id:
+            return None
+        expected_id = f"{task.id}_{node_id}"
+        for round_item in task.context.rounds:
+            for subtask in round_item.subtasks:
+                if subtask.id == expected_id and subtask.status == TaskStatus.SUCCEEDED:
+                    return subtask
+        return None
 
     @staticmethod
     def _format_subtask_context(subtask: SubTask, outcome: SubTaskExecutionOutcome) -> str:
