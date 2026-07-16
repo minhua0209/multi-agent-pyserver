@@ -41,6 +41,48 @@ export interface WorkflowNodeInlineEditField {
   placeholder: string
 }
 
+export interface WorkflowInlineTextDraftState {
+  value: string
+  composing: boolean
+}
+
+export type WorkflowInlineTextDraftAction =
+  | { type: "external_value"; value: string }
+  | { type: "composition_start" }
+  | { type: "composition_end"; value: string }
+  | { type: "change"; value: string; isComposing?: boolean }
+  | { type: "blur"; value: string }
+
+export function reduceWorkflowInlineTextDraft(
+  state: WorkflowInlineTextDraftState,
+  action: WorkflowInlineTextDraftAction,
+): { state: WorkflowInlineTextDraftState; commitValue?: string } {
+  if (action.type === "external_value") {
+    if (state.composing) return { state }
+    return { state: { ...state, value: action.value } }
+  }
+  if (action.type === "composition_start") {
+    return { state: { ...state, composing: true } }
+  }
+  if (action.type === "composition_end") {
+    return {
+      state: { value: action.value, composing: false },
+      commitValue: action.value,
+    }
+  }
+  if (action.type === "change") {
+    const composing = Boolean(action.isComposing || state.composing)
+    return {
+      state: { value: action.value, composing },
+      commitValue: composing ? undefined : action.value,
+    }
+  }
+  return {
+    state: { value: action.value, composing: false },
+    commitValue: action.value,
+  }
+}
+
 export function workflowNodeDetailItems(data: WorkflowNodeData): WorkflowNodeDetailItem[] {
   return [
     { label: "类型", value: nodeKindLabel(data.kind) },

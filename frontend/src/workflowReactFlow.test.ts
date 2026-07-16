@@ -5,6 +5,7 @@ import {
   applyNodeInstruction,
   workflowNodeDetailItems,
   workflowNodeInlineEditFields,
+  reduceWorkflowInlineTextDraft,
   workflowToReactFlow,
 } from "./workflowReactFlow"
 
@@ -210,5 +211,32 @@ describe("workflowReactFlow helpers", () => {
       "condition_content",
     ])
     expect(workflowNodeInlineEditFields(result.nodes[2].data)).toEqual([])
+  })
+
+  it("buffers inline textarea changes while Chinese IME composition is active", () => {
+    let result = reduceWorkflowInlineTextDraft({ value: "", composing: false }, { type: "composition_start" })
+    expect(result).toEqual({
+      state: { value: "", composing: true },
+      commitValue: undefined,
+    })
+
+    result = reduceWorkflowInlineTextDraft(result.state, {
+      type: "change",
+      value: "qing",
+      isComposing: true,
+    })
+    expect(result).toEqual({
+      state: { value: "qing", composing: true },
+      commitValue: undefined,
+    })
+
+    result = reduceWorkflowInlineTextDraft(result.state, {
+      type: "composition_end",
+      value: "请确认合同风险",
+    })
+    expect(result).toEqual({
+      state: { value: "请确认合同风险", composing: false },
+      commitValue: "请确认合同风险",
+    })
   })
 })

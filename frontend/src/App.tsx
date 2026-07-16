@@ -41,7 +41,7 @@ import {
   Edit3,
   XCircle,
 } from "lucide-react"
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Agent,
   SubTask,
@@ -73,6 +73,7 @@ import {
   updateUser,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
+import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 
 type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "users" | "audit" | "governance"
@@ -152,7 +153,8 @@ export default function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [toast, setToast] = useState("")
+  const [toast, setToastState] = useState<ToastMessage | null>(null)
+  const nextToastId = useRef(0)
 
   const events = useMemo(
     () =>
@@ -162,6 +164,18 @@ export default function App() {
     [tasks],
   )
   const isAdmin = currentUser?.role === "admin"
+  const setToast = useCallback((value: string) => {
+    nextToastId.current += 1
+    setToastState(createToastMessage(value, nextToastId.current))
+  }, [])
+
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => {
+      setToastState((current) => shouldDismissToast(current, toast.id) ? null : current)
+    }, TOAST_DISMISS_MS)
+    return () => window.clearTimeout(timer)
+  }, [toast])
 
   async function refreshAll() {
     setLoading(true)
@@ -303,7 +317,7 @@ export default function App() {
           </Layout.Header>
 
           <Layout.Content className="content">
-          {toast && <div className="toast">{toast}</div>}
+          {toast && <div className="toast" key={toast.id}>{toast.text}</div>}
           {error && <AntAlert type="error" showIcon message={error} className="page-alert" />}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
           {page === "publish" && <PublishPage agents={agents} users={assignableUsers} setToast={setToast} onCreated={(created) => {

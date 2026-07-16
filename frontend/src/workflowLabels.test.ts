@@ -8,6 +8,9 @@ describe("workflow labels", () => {
     expect(capabilityLabel("general_processing")).toBe("通用处理")
     expect(capabilityLabel("write_report")).toBe("报告撰写")
     expect(capabilityLabel("send_email")).toBe("发送邮件")
+    expect(capabilityLabel("requirement_analysis")).toBe("需求分析")
+    expect(capabilityLabel("monitoring_alerting")).toBe("监控告警")
+    expect(capabilityLabel("quality_gate")).toBe("质量门禁")
   })
 
   it("falls back to readable text for unknown capability values", () => {

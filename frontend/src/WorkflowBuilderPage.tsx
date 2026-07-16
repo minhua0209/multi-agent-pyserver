@@ -4,8 +4,6 @@ import {
   CheckCircle2,
   GitBranch,
   ListFilter,
-  PanelRight,
-  PanelRightClose,
   Pencil,
   Plus,
   Save,
@@ -30,7 +28,7 @@ import {
   useNodesState,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { useCallback, useMemo, useState } from "react"
+import { ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 
 import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
 import { defaultWorkflowNodePositions, removeWorkflowNode } from "./workflowCanvas"
@@ -39,11 +37,13 @@ import {
   WorkflowReactFlowEdge,
   WorkflowReactFlowNode,
   applyNodeConfig,
+  reduceWorkflowInlineTextDraft,
   reactFlowToWorkflow,
   workflowNodeDetailItems,
   workflowNodeInlineEditFields,
   workflowToReactFlow,
 } from "./workflowReactFlow"
+import { workflowTemplateCardView } from "./workflowTemplateCard"
 
 interface WorkflowBuilderPageProps {
   agents: Agent[]
@@ -151,8 +151,8 @@ export function WorkflowBuilderPage({
   const [activeNodeId, setActiveNodeId] = useState("start")
   const [hoveredNodeId, setHoveredNodeId] = useState("")
   const [editingNodeId, setEditingNodeId] = useState("")
-  const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false)
-  const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false)
+  const [activeResourcePanel, setActiveResourcePanel] = useState<"agents" | "templates">("agents")
+  const [activeTemplateId, setActiveTemplateId] = useState("")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
 
@@ -262,6 +262,7 @@ export function WorkflowBuilderPage({
 
   function addAgentNode(agent: Agent) {
     setMessage("")
+    setActiveTemplateId("")
     const node: WorkflowNode = {
       id: createNodeId(`agent_${agent.id || agent.name}`),
       type: "agent",
@@ -281,6 +282,7 @@ export function WorkflowBuilderPage({
 
   function addHumanNode() {
     setMessage("")
+    setActiveTemplateId("")
     const node: WorkflowNode = {
       id: createNodeId("human_review"),
       type: "human",
@@ -302,6 +304,7 @@ export function WorkflowBuilderPage({
 
   function addConditionNode() {
     setMessage("")
+    setActiveTemplateId("")
     const node: WorkflowNode = {
       id: createNodeId("condition"),
       type: "condition",
@@ -329,6 +332,7 @@ export function WorkflowBuilderPage({
     setFlowNodes(withAgentNames(flow.nodes, agentNameById))
     setFlowEdges(flow.edges)
     setActiveNodeId("start")
+    setActiveTemplateId("")
     setMessage("已创建新画布")
   }
 
@@ -340,6 +344,7 @@ export function WorkflowBuilderPage({
     setFlowNodes(withAgentNames(flow.nodes, agentNameById))
     setFlowEdges(flow.edges)
     setActiveNodeId(template.definition.nodes?.[0]?.id || "start")
+    setActiveTemplateId(template.id)
     setMessage(`已加载模板：${template.name}`)
     setToast(`${template.name} 已渲染到画布`)
   }
@@ -406,38 +411,35 @@ export function WorkflowBuilderPage({
     }
   }
 
-  const summaryText = `画布节点 ${definition.nodes.length} 个，连线 ${definition.edges.length} 条；选中节点后新增会自动从当前节点连接。`
-  const layoutClassName = [
-    "workflow-layout",
-    nodeDrawerOpen ? "" : "workflow-layout-node-collapsed",
-    templateDrawerOpen ? "" : "workflow-layout-template-collapsed",
-  ].filter(Boolean).join(" ")
-
   return (
     <div className={modal ? "workflow-page workflow-page-modal" : "page active workflow-page"}>
       <PageTitle
         title="Agent 节点编排"
         description="选择 Agent 节点，在自由画布中配置执行节点、人工确认、条件判断和上下文流转。"
       >
-        <button className="btn" type="button" onClick={() => setMessage(`保存参数：nodes=${definition.nodes.length}，edges=${definition.edges.length}`)}>
-          <PanelRight size={16} />
-          查看保存参数
-        </button>
         <button className="btn btn-primary" type="button" onClick={saveWorkflow} disabled={saving || !workflowName.trim()}>
           <Save size={16} />
           {saving ? "保存中" : "保存 Workflow"}
         </button>
       </PageTitle>
 
-      <div className={layoutClassName}>
+      <div className="workflow-layout">
         <section className="panel workflow-canvas-panel">
           <div className="workflow-canvas-header">
-            <div>
+            <div className="workflow-config-fields">
               <label className="field compact-field">
                 <span>Workflow 名称</span>
                 <input className="input" value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} placeholder="请输入 Workflow 名称" />
               </label>
-              <p className="muted">{summaryText}</p>
+              <label className="field compact-field">
+                <span>描述</span>
+                <input className="input" value={workflowDescription} onChange={(event) => setWorkflowDescription(event.target.value)} placeholder="请输入 Workflow 描述" />
+              </label>
+              <div className="workflow-config-summary" aria-label="Workflow 画布统计">
+                <span>节点 {definition.nodes.length}</span>
+                <span>连线 {definition.edges.length}</span>
+                <small>选中节点后新增会自动连接</small>
+              </div>
             </div>
             <div className="workflow-canvas-tools">
               <button className="btn btn-small" type="button" onClick={addHumanNode}>
@@ -460,35 +462,51 @@ export function WorkflowBuilderPage({
               )}
             </div>
           </div>
-          <label className="field compact-field">
-            <span>描述</span>
-            <input className="input" value={workflowDescription} onChange={(event) => setWorkflowDescription(event.target.value)} placeholder="请输入 Workflow 描述" />
-          </label>
           <div className="workflow-canvas" aria-label="Workflow 自由画布">
-            <aside className="workflow-left-drawers">
-              <section className="panel workflow-agent-panel workflow-drawer-panel">
-                <div className="panel-title">
-                  <span className="nav-text">
-                    <Bot size={16} />
-                    可编排节点
-                  </span>
-                  <button className="btn btn-small btn-icon" type="button" onClick={() => setNodeDrawerOpen((value) => !value)} title={nodeDrawerOpen ? "收起可编排节点" : "展开可编排节点"}>
-                    {nodeDrawerOpen ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
-                  </button>
-                </div>
-                {nodeDrawerOpen && (
-                  <>
-                    <p className="muted drawer-summary">{availableAgents.length} 个可选节点</p>
-                    <label className="field">
-                      <span>筛选能力</span>
-                      <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
-                        {capabilityOptions.map((capability) => (
-                          <option key={capability} value={capability}>
-                            {capabilityLabel(capability)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+            <aside className="workflow-left-drawers" aria-label="Workflow 资源侧栏">
+              <div className="workflow-resource-tabs" role="tablist" aria-label="Workflow 资源类型">
+                <button
+                  className={activeResourcePanel === "agents" ? "workflow-resource-tab active" : "workflow-resource-tab"}
+                  type="button"
+                  onClick={() => setActiveResourcePanel("agents")}
+                  role="tab"
+                  aria-selected={activeResourcePanel === "agents"}
+                >
+                  <Bot size={15} />
+                  可编排节点
+                </button>
+                <button
+                  className={activeResourcePanel === "templates" ? "workflow-resource-tab active" : "workflow-resource-tab"}
+                  type="button"
+                  onClick={() => setActiveResourcePanel("templates")}
+                  role="tab"
+                  aria-selected={activeResourcePanel === "templates"}
+                >
+                  <ListFilter size={15} />
+                  流程模板
+                </button>
+              </div>
+
+              <section className="workflow-resource-panel">
+                {activeResourcePanel === "agents" ? (
+                  <div className="workflow-resource-content">
+                    <div className="workflow-resource-toolbar">
+                      <div className="workflow-resource-title">
+                        <strong>可编排节点</strong>
+                        <span>{availableAgents.length} 个</span>
+                      </div>
+                      <p className="muted drawer-summary">{availableAgents.length} 个可选节点</p>
+                      <label className="field">
+                        <span>筛选能力</span>
+                        <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
+                          {capabilityOptions.map((capability) => (
+                            <option key={capability} value={capability}>
+                              {capabilityLabel(capability)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
                     <div className="workflow-agent-list">
                       {!filteredAgents.length && <EmptyPanel text="暂无可选节点，可先到流程节点管理创建" />}
                       {filteredAgents.map((agent) => {
@@ -518,71 +536,70 @@ export function WorkflowBuilderPage({
                         )
                       })}
                     </div>
-                  </>
-                )}
-              </section>
-
-              <section className="panel workflow-template-panel workflow-drawer-panel">
-                <div className="panel-title">
-                  <span className="nav-text">
-                    <ListFilter size={16} />
-                    流程模板
-                  </span>
-                  <button className="btn btn-small btn-icon" type="button" onClick={() => setTemplateDrawerOpen((value) => !value)} title={templateDrawerOpen ? "收起流程模板" : "展开流程模板"}>
-                    {templateDrawerOpen ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
-                  </button>
-                </div>
-                {templateDrawerOpen && (
-                  <div className="workflow-agent-list">
-                    <button className="btn btn-small workflow-new-canvas-button" type="button" onClick={loadEmptyCanvas}>
-                      <Sparkles size={14} />
-                      新建空白画布
-                    </button>
-                    {!workflows.length && <EmptyPanel text="暂无已保存流程模板" />}
-                    {workflows.map((workflow) => (
-                      <div className="workflow-agent-card workflow-template-card" key={workflow.id}>
-                        <div className="workflow-agent-head">
-                          <span className="workflow-agent-name">
-                            <span className="workflow-icon violet"><GitBranch size={16} /></span>
-                            <span>{workflow.name}</span>
-                          </span>
-                          <span className="tag">{workflow.status || "active"}</span>
-                        </div>
-                        <p>{workflow.description || "暂无描述"}</p>
-                        <div className="tag-row">
-                          <span className="tag">nodes={workflow.definition.nodes.length}</span>
-                          <span className="tag">edges={workflow.definition.edges.length}</span>
-                        </div>
-                        <div className="workflow-card-actions">
-                          <button className="btn btn-small" type="button" onClick={() => loadWorkflowTemplate(workflow)}>
-                            <Plus size={14} />
-                            渲染到画布
-                          </button>
-                        </div>
+                  </div>
+                ) : (
+                  <div className="workflow-resource-content">
+                    <div className="workflow-resource-toolbar">
+                      <div className="workflow-resource-title">
+                        <strong>流程模板</strong>
+                        <span>{workflows.length} 个</span>
                       </div>
-                    ))}
+                      <button className="btn btn-small workflow-new-canvas-button" type="button" onClick={loadEmptyCanvas}>
+                        <Sparkles size={14} />
+                        新建空白画布
+                      </button>
+                    </div>
+                    <div className="workflow-agent-list">
+                      {!workflows.length && <EmptyPanel text="暂无已保存流程模板" />}
+                      {workflows.map((workflow) => {
+                        const card = workflowTemplateCardView(workflow)
+                        return (
+                          <button
+                            className={activeTemplateId === workflow.id ? "workflow-agent-card workflow-template-card active" : "workflow-agent-card workflow-template-card"}
+                            key={workflow.id}
+                            type="button"
+                            onClick={() => loadWorkflowTemplate(workflow)}
+                          >
+                            <div className="workflow-agent-head">
+                              <span className="workflow-agent-name">
+                                <span className="workflow-icon violet"><GitBranch size={16} /></span>
+                                <span>{card.title}</span>
+                              </span>
+                              <span className="tag workflow-agent-status-tag active">{card.statusLabel}</span>
+                            </div>
+                            <p>{card.description}</p>
+                            <div className="tag-row">
+                              <span className="tag">{card.nodeCountLabel}</span>
+                              <span className="tag">{card.edgeCountLabel}</span>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </section>
             </aside>
-            <ReactFlow
-              nodes={visibleFlowNodes}
-              edges={flowEdges}
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              onNodeClick={(_event, node) => setActiveNodeId(node.id)}
-              onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
-              onNodeMouseLeave={() => setHoveredNodeId("")}
-              fitView
-              minZoom={0.2}
-              maxZoom={1.8}
-            >
-              <Background gap={18} />
-              <MiniMap pannable zoomable />
-              <Controls />
-            </ReactFlow>
+            <div className="workflow-flow-area">
+              <ReactFlow
+                nodes={visibleFlowNodes}
+                edges={flowEdges}
+                nodeTypes={nodeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onNodeClick={(_event, node) => setActiveNodeId(node.id)}
+                onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
+                onNodeMouseLeave={() => setHoveredNodeId("")}
+                fitView
+                minZoom={0.2}
+                maxZoom={1.8}
+              >
+                <Background gap={18} />
+                <MiniMap pannable zoomable />
+                <Controls />
+              </ReactFlow>
+            </div>
           </div>
           <div className="workflow-save-summary">
             <span>nodes={definition.nodes.length}，edges={definition.edges.length}，templates={workflows.length}</span>
@@ -594,7 +611,7 @@ export function WorkflowBuilderPage({
   )
 }
 
-function PageTitle({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+function PageTitle({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
     <div className="page-header">
       <div>
@@ -667,17 +684,16 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
             <label className="workflow-inline-field" key={field.key}>
               <span>{field.label}</span>
               {field.inputType === "textarea" ? (
-                <textarea
-                  value={field.value}
-                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
-                  onKeyDown={(event) => event.stopPropagation()}
-                  placeholder={field.placeholder}
+                <WorkflowInlineTextInput
+                  as="textarea"
+                  field={field}
+                  onChange={(value) => data.onConfigChange?.(data.id, { [field.key]: value })}
                 />
               ) : field.inputType === "user_select" ? (
                 <select
                   value={field.value}
-                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
                   onKeyDown={(event) => event.stopPropagation()}
+                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
                 >
                   <option value="">{field.placeholder}</option>
                   {(data.userOptions || []).map((user) => (
@@ -687,11 +703,10 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
                   ))}
                 </select>
               ) : (
-                <input
-                  value={field.value}
-                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
-                  onKeyDown={(event) => event.stopPropagation()}
-                  placeholder={field.placeholder}
+                <WorkflowInlineTextInput
+                  as="input"
+                  field={field}
+                  onChange={(value) => data.onConfigChange?.(data.id, { [field.key]: value })}
                 />
               )}
             </label>
@@ -735,6 +750,53 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
       {showSourceHandle && <Handle type="source" position={Position.Right} />}
     </div>
   )
+}
+
+function WorkflowInlineTextInput({
+  as,
+  field,
+  onChange,
+}: {
+  as: "input" | "textarea"
+  field: { value: string; placeholder: string }
+  onChange: (value: string) => void
+}) {
+  const [draft, setDraft] = useState({ value: field.value, composing: false })
+
+  useEffect(() => {
+    setDraft((current) => reduceWorkflowInlineTextDraft(current, { type: "external_value", value: field.value }).state)
+  }, [field.value])
+
+  function applyDraft(action: Parameters<typeof reduceWorkflowInlineTextDraft>[1]) {
+    setDraft((current) => {
+      const result = reduceWorkflowInlineTextDraft(current, action)
+      if (result.commitValue !== undefined) onChange(result.commitValue)
+      return result.state
+    })
+  }
+
+  const commonProps = {
+    value: draft.value,
+    placeholder: field.placeholder,
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      applyDraft({
+        type: "change",
+        value: event.target.value,
+        isComposing: isComposingNativeEvent(event.nativeEvent),
+      }),
+    onCompositionStart: () => applyDraft({ type: "composition_start" }),
+    onCompositionEnd: (event: React.CompositionEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      applyDraft({ type: "composition_end", value: event.currentTarget.value }),
+    onBlur: (event: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      applyDraft({ type: "blur", value: event.currentTarget.value }),
+    onKeyDown: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => event.stopPropagation(),
+  }
+
+  return as === "textarea" ? <textarea {...commonProps} /> : <input {...commonProps} />
+}
+
+function isComposingNativeEvent(event: Event) {
+  return Boolean((event as Event & { isComposing?: boolean }).isComposing)
 }
 
 function normalizeNodePatch(patch: Record<string, unknown>, users: UserOption[]): Record<string, unknown> {
