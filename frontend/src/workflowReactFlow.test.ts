@@ -93,7 +93,7 @@ describe("workflowReactFlow helpers", () => {
     })
   })
 
-  it("builds compact hover detail items for canvas nodes", () => {
+  it("builds compact hover detail items with agent names instead of ids", () => {
     expect(
       workflowNodeDetailItems({
         id: "agent_1",
@@ -101,13 +101,14 @@ describe("workflowReactFlow helpers", () => {
         description: "检查合同风险并输出建议。",
         kind: "agent",
         agentId: "agent_contract",
+        agentName: "合同审核 Agent",
         instruction: "重点检查违约条款。",
       }),
     ).toEqual([
       { label: "类型", value: "Agent" },
       { label: "节点", value: "agent_1" },
       { label: "描述", value: "检查合同风险并输出建议。" },
-      { label: "Agent", value: "agent_contract" },
+      { label: "Agent", value: "合同审核 Agent" },
       { label: "交代", value: "重点检查违约条款。" },
     ])
   })

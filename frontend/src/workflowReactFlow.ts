@@ -9,6 +9,7 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   description: string
   kind: string
   agentId?: string | null
+  agentName?: string | null
   instruction: string
   assignee?: string
   handoffInstruction?: string
@@ -41,7 +42,7 @@ export function workflowNodeDetailItems(data: WorkflowNodeData): WorkflowNodeDet
     { label: "类型", value: nodeKindLabel(data.kind) },
     { label: "节点", value: data.id },
     { label: "描述", value: data.description },
-    { label: "Agent", value: data.agentId || "" },
+    { label: "Agent", value: data.agentName || data.agentId || "" },
     { label: "人员", value: data.assignee },
     { label: "条件", value: data.conditionDescription },
     { label: "内容", value: data.conditionContent },
@@ -109,6 +110,7 @@ export function workflowToReactFlow(
         description: node.description || "",
         kind: node.type,
         agentId: node.agent_id,
+        agentName: String(node.config?.agent_name || node.config?.agentName || ""),
         instruction: String(node.config?.execution_instruction || ""),
         assignee: String(node.config?.assignee || ""),
         handoffInstruction: String(node.config?.handoff_instruction || ""),

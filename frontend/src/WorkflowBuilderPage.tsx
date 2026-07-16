@@ -67,6 +67,21 @@ function agentMatchesCapability(agent: Agent, capability: string) {
     .some((value) => String(value).toLowerCase().includes(search))
 }
 
+function withAgentNames(nodes: WorkflowReactFlowNode[], agentNameById: Map<string, string>) {
+  return nodes.map((node) => {
+    const agentId = node.data.agentId ? String(node.data.agentId) : ""
+    const agentName = agentId ? agentNameById.get(agentId) : ""
+    if (!agentName) return node
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        agentName,
+      },
+    }
+  })
+}
+
 function nodeIcon(type: string, id: string) {
   if (type === "start") return <Sparkles size={16} />
   if (type === "human") return <UserCheck size={16} />
@@ -122,6 +137,7 @@ export function WorkflowBuilderPage({
   onSubmitTask,
 }: WorkflowBuilderPageProps) {
   const availableAgents = useMemo(() => processingAgents(agents), [agents])
+  const agentNameById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
   const [workflowName, setWorkflowName] = useState("")
   const [workflowDescription, setWorkflowDescription] = useState("")
   const [capabilityFilter, setCapabilityFilter] = useState("all")
@@ -223,7 +239,7 @@ export function WorkflowBuilderPage({
     const position = nextNodePosition()
     const flow = workflowToReactFlow({ nodes: [node], edges: [] }, { [node.id]: { left: position.x, top: position.y } })
     setCanvasNodes((current) => [...current, node])
-    setFlowNodes((current) => [...current, flow.nodes[0]])
+    setFlowNodes((current) => [...current, withAgentNames(flow.nodes, agentNameById)[0]])
     setFlowEdges((current) => {
       if (!sourceId || sourceId === node.id) return current
       if (!canvasNodes.some((item) => item.id === sourceId)) return current
@@ -245,6 +261,7 @@ export function WorkflowBuilderPage({
         context_inputs: ["task.content", "context.summary"],
         context_outputs: ["subtask.output", "result_metadata"],
         capabilities: agent.capabilities || [],
+        agent_name: agent.name,
       },
     }
     appendCanvasNode(node)
@@ -296,7 +313,7 @@ export function WorkflowBuilderPage({
     setWorkflowName("")
     setWorkflowDescription("")
     setCanvasNodes(nextDefinition.nodes)
-    setFlowNodes(flow.nodes)
+    setFlowNodes(withAgentNames(flow.nodes, agentNameById))
     setFlowEdges(flow.edges)
     setActiveNodeId("start")
     setMessage("已创建新画布")
@@ -307,7 +324,7 @@ export function WorkflowBuilderPage({
     setWorkflowName(template.name || "")
     setWorkflowDescription(template.description || "")
     setCanvasNodes(template.definition.nodes || [])
-    setFlowNodes(flow.nodes)
+    setFlowNodes(withAgentNames(flow.nodes, agentNameById))
     setFlowEdges(flow.edges)
     setActiveNodeId(template.definition.nodes?.[0]?.id || "start")
     setMessage(`已加载模板：${template.name}`)

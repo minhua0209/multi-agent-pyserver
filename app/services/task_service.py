@@ -56,13 +56,16 @@ class TaskService:
 
     def create_request(self, payload: TaskRequestCreate) -> TaskRequestResponse:
         request_id = new_id("req")
-        agents = self.agent_registry.list_processing_agents()
-        raw_drafts = recognize_tasks_with_model(payload.content, agents)
-        if not raw_drafts:
-            require_system_mock_fallback_enabled("intent_recognition")
-            raw_drafts = mock_intent_recognitions(payload.content, agents)
-        draft = self._merge_drafts(payload.content, raw_drafts)
         request_metadata = self._request_metadata_with_workflow_snapshot(payload.metadata)
+        if request_metadata.get("execution_mode") == "workflow_template":
+            draft = self._workflow_template_draft(payload, request_metadata)
+        else:
+            agents = self.agent_registry.list_processing_agents()
+            raw_drafts = recognize_tasks_with_model(payload.content, agents)
+            if not raw_drafts:
+                require_system_mock_fallback_enabled("intent_recognition")
+                raw_drafts = mock_intent_recognitions(payload.content, agents)
+            draft = self._merge_drafts(payload.content, raw_drafts)
         task = Task(
             id=new_id("task"),
             request_id=request_id,
@@ -79,7 +82,10 @@ class TaskService:
             updated_at=utc_now(),
         )
         task.events.append(self._event("task_created", f"Main task created from request {request_id}"))
-        task.events.append(self._event("intent_recognized", "Intent recognition created a main task draft"))
+        if request_metadata.get("execution_mode") == "workflow_template":
+            task.events.append(self._event("workflow_template_selected", "Workflow template created a main task draft"))
+        else:
+            task.events.append(self._event("intent_recognized", "Intent recognition created a main task draft"))
         return TaskRequestResponse(request_id=request_id, tasks=[self.store.save(task)])
 
     def confirm_task(self, task_id: str, payload: TaskConfirm) -> Task:
@@ -112,7 +118,15 @@ class TaskService:
             task.current_node = CurrentNode.WAITING_DEPENDENCIES
             task.events.append(self._event("dependency_waiting", "Task is waiting for prerequisite tasks"))
             return self.store.save(task)
-        result = self._run_automatic_flow(task)
+        try:
+            result = self._run_automatic_flow(task)
+        except Exception as exc:
+            task.task_status = TaskStatus.FAILED
+            task.current_node = CurrentNode.COMPLETION_JUDGE
+            task.final_output = str(exc)
+            task.events.append(self._event("task_failed", str(exc)))
+            task.updated_at = utc_now()
+            return self.store.save(task)
         self._resume_unblocked_tasks()
         return result
 
@@ -224,6 +238,17 @@ class TaskService:
         request_metadata["workflow_description"] = workflow.description
         request_metadata["workflow_definition"] = workflow.definition.model_dump(mode="json", by_alias=True)
         return request_metadata
+
+    @staticmethod
+    def _workflow_template_draft(payload: TaskRequestCreate, request_metadata: dict) -> TaskDraft:
+        title = payload.title.strip() or str(request_metadata.get("workflow_name") or "流程模板任务")
+        return TaskDraft(
+            title=title,
+            description=payload.content,
+            confidence=1.0,
+            suggested_assignee_type="human",
+            suggested_agent_id=None,
+        )
 
     def _find_subtask(self, subtask_id: str) -> tuple[Task, int, SubTask]:
         for task in self.store.list():

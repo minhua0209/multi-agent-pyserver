@@ -145,6 +145,49 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
     assert "quote approved" in resumed["context"]["summary"]
 
 
+def test_workflow_template_request_skips_intent_fallback_when_system_fallback_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    monkeypatch.setattr("app.services.task_service.recognize_tasks_with_model", lambda _content, _agents: [])
+    client = TestClient(
+        create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"),
+        raise_server_exceptions=False,
+    )
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Template Flow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [{"from": "start", "to": "end"}],
+            },
+        },
+    ).json()
+
+    response = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "模板任务",
+            "content": "Run workflow template without intent fallback",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()["tasks"][0]
+    assert task["current_node"] == "human_confirmation"
+    assert task["title"] == "模板任务"
+    assert task["draft"]["title"] == "模板任务"
+    assert task["request_metadata"]["workflow_id"] == workflow["id"]
+    assert task["request_metadata"]["workflow_definition"]["nodes"][0]["id"] == "start"
+
+
 def test_workflow_template_task_snapshots_definition_when_request_is_created(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
     quote_agent = client.post(

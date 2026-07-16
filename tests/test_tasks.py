@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.core.models import TaskConfirm
 
 
 def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
@@ -194,6 +195,39 @@ def test_task_request_intent_recognition_uses_registered_agents(tmp_path: Path, 
     assert task["draft"]["suggested_assignee_type"] == "agent"
     assert task["draft"]["suggested_agent_id"] == agent["id"]
     assert task["assigned_agent_id"] == agent["id"]
+
+
+def test_background_task_failure_is_persisted_on_task(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "后台失败任务",
+            "content": "Run a task that fails in background",
+        },
+    ).json()["tasks"][0]
+    service = client.app.state.task_service
+    service.confirm_task_details(
+        created["id"],
+        payload=TaskConfirm(
+            title="后台失败任务",
+            description="Run a task that fails in background",
+        ),
+    )
+
+    def _raise(_task):
+        raise RuntimeError("model execution failed")
+
+    monkeypatch.setattr(service, "_run_automatic_flow", _raise)
+
+    result = service.run_confirmed_task(created["id"])
+
+    assert result.task_status == "failed"
+    assert result.current_node == "completion_judge"
+    assert result.final_output == "model execution failed"
+    assert result.events[-1].type == "task_failed"
+    assert service.get_task(created["id"]).task_status == "failed"
 
 
 def test_task_request_merges_identified_steps_into_one_main_task(tmp_path: Path, monkeypatch) -> None:
