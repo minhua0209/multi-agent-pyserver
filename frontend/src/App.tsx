@@ -12,7 +12,9 @@ import {
   Menu,
   Modal,
   Pagination,
+  Popconfirm,
   Select,
+  Space,
   Spin,
   Statistic,
   Table,
@@ -34,6 +36,9 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Trash2,
+  Users,
+  Edit3,
   XCircle,
 } from "lucide-react"
 import { FormEvent, useEffect, useMemo, useState } from "react"
@@ -42,25 +47,35 @@ import {
   SubTask,
   Task,
   TaskRound,
+  User,
+  UserCreatePayload,
+  UserOption,
   WorkflowDefinition,
   WorkflowTemplate,
   cancelTask,
   confirmTask,
   createAgent,
-  createHumanNode,
+  createHumanNodeForUser,
   createSimpleAgent,
   createTaskRequest,
+  createUser,
+  deleteUser,
+  getCurrentUser,
   getTask,
+  listAssignableUsers,
   listAgents,
   listHumanSubtasks,
   listTasks,
+  listUsers,
   listWorkflows,
+  setCurrentUserId,
   submitHumanSubtaskResult,
+  updateUser,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 
-type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "audit" | "governance"
+type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "users" | "audit" | "governance"
 
 const navGroups = [
   { label: "工作总览", items: [{ id: "overview", text: "协同总览", icon: Activity }] },
@@ -75,9 +90,10 @@ const navGroups = [
   {
     label: "管理治理",
     items: [
-      { id: "agents", text: "流程节点管理", icon: Bot },
-      { id: "audit", text: "审计记录", icon: FileText },
-      { id: "governance", text: "平台治理", icon: ShieldCheck },
+      { id: "agents", text: "流程节点管理", icon: Bot, adminOnly: true },
+      { id: "users", text: "用户管理", icon: Users, adminOnly: true },
+      { id: "audit", text: "审计记录", icon: FileText, adminOnly: true },
+      { id: "governance", text: "平台治理", icon: ShieldCheck, adminOnly: true },
     ],
   },
 ] as const
@@ -129,6 +145,9 @@ export default function App() {
   const [page, setPage] = useState<PageId>("overview")
   const [tasks, setTasks] = useState<Task[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [assignableUsers, setAssignableUsers] = useState<UserOption[]>([])
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [humanSubtasks, setHumanSubtasks] = useState<SubTask[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string>("")
   const [loading, setLoading] = useState(false)
@@ -142,16 +161,30 @@ export default function App() {
         .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))),
     [tasks],
   )
+  const isAdmin = currentUser?.role === "admin"
 
   async function refreshAll() {
     setLoading(true)
     setError("")
     try {
-      const [nextTasks, nextAgents, nextHumanSubtasks] = await Promise.all([listTasks(), listAgents(), listHumanSubtasks()])
+      const nextCurrentUser = await getCurrentUser()
+      const [nextTasks, nextAgents, nextHumanSubtasks, nextAssignableUsers] = await Promise.all([
+        listTasks(),
+        listAgents(),
+        listHumanSubtasks(),
+        listAssignableUsers(),
+      ])
+      const nextUsers = nextCurrentUser.role === "admin" ? await listUsers() : []
+      setCurrentUser(nextCurrentUser)
       setTasks(nextTasks || [])
       setAgents(nextAgents || [])
+      setAssignableUsers(nextAssignableUsers || [])
+      setUsers(nextUsers || [])
       setHumanSubtasks(nextHumanSubtasks || [])
       if (!selectedTaskId && nextTasks?.[0]) setSelectedTaskId(nextTasks[0].id)
+      if (nextCurrentUser.role !== "admin" && ["agents", "users", "audit", "governance"].includes(page)) {
+        setPage("overview")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新失败")
     } finally {
@@ -174,6 +207,7 @@ export default function App() {
   }
 
   async function navigateTo(nextPage: PageId) {
+    if (!isAdmin && ["agents", "users", "audit", "governance"].includes(nextPage)) return
     setPage(nextPage)
     if (nextPage === "tasks") {
       await refreshTaskList()
@@ -184,11 +218,25 @@ export default function App() {
     void refreshAll()
   }, [])
 
+  async function switchCurrentUser(userId: string) {
+    setCurrentUserId(userId)
+    setSelectedTaskId("")
+    await refreshAll()
+  }
+
+  const userSwitchOptions = useMemo(() => {
+    const optionMap = new Map<string, { value: string; label: string }>()
+    ;[...users, ...assignableUsers].forEach((user) => {
+      optionMap.set(user.id, { value: user.id, label: user.name })
+    })
+    return Array.from(optionMap.values())
+  }, [assignableUsers, users])
+
   const menuItems = navGroups.flatMap((group) => [
     {
       type: "group" as const,
       label: group.label,
-      children: group.items.map((item) => {
+      children: group.items.filter((item) => isAdmin || !("adminOnly" in item && item.adminOnly)).map((item) => {
         const Icon = item.icon
         return { key: item.id, label: item.text, icon: <Icon size={16} /> }
       }),
@@ -239,6 +287,14 @@ export default function App() {
               readOnly
             />
             <Flex align="center" gap={12}>
+              <Select
+                className="user-switcher"
+                value={currentUser?.id || "root"}
+                options={userSwitchOptions}
+                onChange={(value) => void switchCurrentUser(value)}
+                placeholder="当前用户"
+              />
+              <Tag color={isAdmin ? "gold" : "blue"}>{isAdmin ? "管理员" : "普通用户"}</Tag>
               <Tag color={error ? "error" : "success"}>{error ? "接口异常" : "接口联调模式"}</Tag>
               <Button icon={loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} onClick={refreshAll} loading={loading}>
                 刷新
@@ -250,7 +306,7 @@ export default function App() {
           {toast && <div className="toast">{toast}</div>}
           {error && <AntAlert type="error" showIcon message={error} className="page-alert" />}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
-          {page === "publish" && <PublishPage agents={agents} setToast={setToast} onCreated={(created) => {
+          {page === "publish" && <PublishPage agents={agents} users={assignableUsers} setToast={setToast} onCreated={(created) => {
             setTasks((current) => mergeTasks(current, created))
             setSelectedTaskId(created[0]?.id || "")
             setToast("已识别任务清单，请在弹窗中确认后执行")
@@ -268,9 +324,10 @@ export default function App() {
             await refreshAll()
             setPage("confirmation")
           }} />}
-          {page === "agents" && <AgentsPage agents={agents} setAgents={setAgents} setToast={setToast} />}
-          {page === "audit" && <AuditPage events={events} />}
-          {page === "governance" && <GovernancePage />}
+          {page === "agents" && isAdmin && <AgentsPage agents={agents} users={assignableUsers} setAgents={setAgents} setToast={setToast} />}
+          {page === "users" && isAdmin && <UsersPage users={users} setUsers={setUsers} setToast={setToast} />}
+          {page === "audit" && isAdmin && <AuditPage events={events} />}
+          {page === "governance" && isAdmin && <GovernancePage />}
           </Layout.Content>
         </Layout>
       </Layout>
@@ -336,12 +393,14 @@ function Overview({
 
 function PublishPage({
   agents,
+  users,
   setToast,
   onCreated,
   onConfirmed,
   onCancelled,
 }: {
   agents: Agent[]
+  users: UserOption[]
   setToast: (value: string) => void
   onCreated: (tasks: Task[]) => void
   onConfirmed: (tasks: Task[]) => void
@@ -640,6 +699,7 @@ function PublishPage({
         <WorkflowBuilderPage
           modal
           agents={agents}
+          users={users}
           workflows={workflows}
           onWorkflowSaved={rememberWorkflow}
           setToast={setToast}
@@ -941,13 +1001,28 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
   )
 }
 
-function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgents: (agents: Agent[] | ((current: Agent[]) => Agent[])) => void; setToast: (value: string) => void }) {
+function AgentsPage({
+  agents,
+  users,
+  setAgents,
+  setToast,
+}: {
+  agents: Agent[]
+  users: UserOption[]
+  setAgents: (agents: Agent[] | ((current: Agent[]) => Agent[])) => void
+  setToast: (value: string) => void
+}) {
   const [nodeType, setNodeType] = useState("processing")
   const [description, setDescription] = useState("向指定目录写入文章或者报告总结")
-  const [humanAssigneeName, setHumanAssigneeName] = useState("王大锤")
+  const [humanAssigneeUserId, setHumanAssigneeUserId] = useState("")
   const [name, setName] = useState("报告写入节点")
   const [result, setResult] = useState<{ status: string; message: string; agent?: Agent | null; guidance?: string[] } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const selectedHumanAssignee = users.find((user) => user.id === humanAssigneeUserId)
+
+  useEffect(() => {
+    if (!humanAssigneeUserId && users[0]) setHumanAssigneeUserId(users[0].id)
+  }, [humanAssigneeUserId, users])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -963,7 +1038,8 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
         return
       }
       if (nodeType === "human") {
-        const response = await createHumanNode(humanAssigneeName.trim(), name.trim())
+        if (!selectedHumanAssignee) return
+        const response = await createHumanNodeForUser(selectedHumanAssignee, name.trim())
         setResult(response)
         if (response.agent) {
           setAgents((current) => [response.agent!, ...current])
@@ -1009,11 +1085,17 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
           </label>
           {nodeType === "human" ? (
             <label className="field">
-              <span>审批人姓名</span>
-              <Input
-                value={humanAssigneeName}
-                onChange={(event) => setHumanAssigneeName(event.target.value)}
-                placeholder="请输入审批人姓名，例如：王大锤"
+              <span>审批人员</span>
+              <Select
+                showSearch
+                value={humanAssigneeUserId || undefined}
+                placeholder="请选择人员姓名"
+                optionFilterProp="label"
+                options={users.map((user) => ({
+                  value: user.id,
+                  label: user.name,
+                }))}
+                onChange={setHumanAssigneeUserId}
               />
             </label>
           ) : (
@@ -1032,7 +1114,7 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
             htmlType="submit"
             icon={<Bot size={16} />}
             loading={submitting}
-            disabled={!name.trim() || (nodeType === "human" && !humanAssigneeName.trim())}
+            disabled={!name.trim() || (nodeType === "human" && !selectedHumanAssignee)}
           >
             创建流程节点
           </Button>
@@ -1079,12 +1161,199 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
   )
 }
 
+const emptyUserForm: UserCreatePayload = {
+  name: "",
+  phone: "",
+  email: "",
+  role: "user",
+  department: "",
+  position: "",
+  status: "active",
+  remark: "",
+}
+
+function UsersPage({
+  users,
+  setUsers,
+  setToast,
+}: {
+  users: User[]
+  setUsers: (users: User[] | ((current: User[]) => User[])) => void
+  setToast: (value: string) => void
+}) {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [form, setForm] = useState<UserCreatePayload>(emptyUserForm)
+  const [submitting, setSubmitting] = useState(false)
+
+  function openCreate() {
+    setEditingUser(null)
+    setForm(emptyUserForm)
+    setModalOpen(true)
+  }
+
+  function openEdit(user: User) {
+    setEditingUser(user)
+    setForm({
+      name: user.name,
+      phone: user.phone || "",
+      email: user.email || "",
+      role: user.role,
+      department: user.department || "",
+      position: user.position || "",
+      status: user.status || "active",
+      remark: user.remark || "",
+    })
+    setModalOpen(true)
+  }
+
+  function patchForm(patch: Partial<UserCreatePayload>) {
+    setForm((current) => ({ ...current, ...patch }))
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSubmitting(true)
+    try {
+      if (editingUser) {
+        const updated = await updateUser(editingUser.id, form)
+        setUsers((current) => current.map((user) => user.id === updated.id ? updated : user))
+        setToast("用户已更新")
+      } else {
+        const created = await createUser(form)
+        setUsers((current) => [created, ...current])
+        setToast("用户已新增")
+      }
+      setModalOpen(false)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function remove(user: User) {
+    await deleteUser(user.id)
+    setUsers((current) => current.filter((item) => item.id !== user.id))
+    setToast("用户已删除")
+  }
+
+  const columns: ColumnsType<User> = [
+    { title: "姓名", dataIndex: "name", ellipsis: true },
+    { title: "手机号", dataIndex: "phone", ellipsis: true, render: (value: string) => value || "-" },
+    { title: "邮箱", dataIndex: "email", ellipsis: true, render: (value: string) => value || "-" },
+    { title: "角色", dataIndex: "role", width: 110, render: (value: string) => <Tag color={value === "admin" ? "gold" : "blue"}>{roleLabel(value)}</Tag> },
+    { title: "部门", dataIndex: "department", ellipsis: true, render: (value: string) => value || "-" },
+    { title: "岗位", dataIndex: "position", ellipsis: true, render: (value: string) => value || "-" },
+    { title: "状态", dataIndex: "status", width: 100, render: (value: string) => <Tag color={value === "active" ? "success" : "default"}>{userStatusLabel(value)}</Tag> },
+    {
+      title: "操作",
+      width: 150,
+      render: (_, user) => (
+        <Space>
+          <Button size="small" icon={<Edit3 size={14} />} onClick={() => openEdit(user)}>编辑</Button>
+          <Popconfirm title="确认删除该用户？" onConfirm={() => void remove(user)} okText="删除" cancelText="取消">
+            <Button size="small" danger icon={<Trash2 size={14} />} disabled={user.id === "root"}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <div className="page active">
+      <PageHeader title="用户管理" description="维护系统用户、角色和基础联系方式，人工节点按人员姓名分配。">
+        <Button type="primary" icon={<Plus size={16} />} onClick={openCreate}>
+          新增用户
+        </Button>
+      </PageHeader>
+      <Panel title="用户列表">
+        <Table rowKey="id" columns={columns} dataSource={users} pagination={false} />
+      </Panel>
+      <Modal
+        title={editingUser ? "编辑用户" : "新增用户"}
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        footer={null}
+        destroyOnHidden
+      >
+        <form className="user-form" onSubmit={submit}>
+          <label className="field">
+            <span>姓名</span>
+            <Input value={form.name} onChange={(event) => patchForm({ name: event.target.value })} placeholder="请输入姓名" />
+          </label>
+          <div className="form-grid two">
+            <label className="field">
+              <span>手机号</span>
+              <Input value={form.phone} onChange={(event) => patchForm({ phone: event.target.value })} placeholder="请输入手机号" />
+            </label>
+            <label className="field">
+              <span>邮箱</span>
+              <Input value={form.email} onChange={(event) => patchForm({ email: event.target.value })} placeholder="请输入邮箱" />
+            </label>
+          </div>
+          <div className="form-grid two">
+            <label className="field">
+              <span>角色</span>
+              <Select
+                value={form.role}
+                options={[
+                  { value: "admin", label: "管理员" },
+                  { value: "user", label: "普通用户" },
+                ]}
+                onChange={(value) => patchForm({ role: value })}
+              />
+            </label>
+            <label className="field">
+              <span>状态</span>
+              <Select
+                value={form.status}
+                options={[
+                  { value: "active", label: "启用" },
+                  { value: "disabled", label: "停用" },
+                ]}
+                onChange={(value) => patchForm({ status: value })}
+              />
+            </label>
+          </div>
+          <div className="form-grid two">
+            <label className="field">
+              <span>部门</span>
+              <Input value={form.department} onChange={(event) => patchForm({ department: event.target.value })} placeholder="请输入部门" />
+            </label>
+            <label className="field">
+              <span>岗位</span>
+              <Input value={form.position} onChange={(event) => patchForm({ position: event.target.value })} placeholder="请输入岗位" />
+            </label>
+          </div>
+          <label className="field">
+            <span>备注</span>
+            <Input.TextArea rows={3} value={form.remark} onChange={(event) => patchForm({ remark: event.target.value })} placeholder="可填写职责范围或说明" />
+          </label>
+          <div className="form-actions">
+            <Button onClick={() => setModalOpen(false)} disabled={submitting}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={submitting} disabled={!form.name?.trim()}>
+              保存
+            </Button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  )
+}
+
 function nodeTypeLabel(type?: string) {
   return { processing: "Agent 节点", human: "人工节点", condition: "判断节点" }[type || "processing"] || type || "Agent 节点"
 }
 
 function nodeTypeColor(type?: string) {
   return { processing: "blue", human: "green", condition: "purple" }[type || "processing"] || "default"
+}
+
+function roleLabel(role?: string) {
+  return { admin: "管理员", user: "普通用户" }[role || "user"] || role || "普通用户"
+}
+
+function userStatusLabel(status?: string) {
+  return { active: "启用", disabled: "停用" }[status || "active"] || status || "启用"
 }
 
 function AuditPage({ events }: { events: Array<Record<string, unknown>> }) {

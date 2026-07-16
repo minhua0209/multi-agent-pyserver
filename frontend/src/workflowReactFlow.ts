@@ -12,6 +12,10 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   agentName?: string | null
   instruction: string
   assignee?: string
+  assigneeUserId?: string
+  assigneeUserName?: string
+  assigneeRole?: string
+  userOptions?: Array<{ id: string; name: string; role: string }>
   handoffInstruction?: string
   conditionDescription?: string
   conditionContent?: string
@@ -32,7 +36,7 @@ export interface WorkflowNodeDetailItem {
 export interface WorkflowNodeInlineEditField {
   key: string
   label: string
-  inputType: "input" | "textarea"
+  inputType: "input" | "textarea" | "user_select"
   value: string
   placeholder: string
 }
@@ -43,7 +47,8 @@ export function workflowNodeDetailItems(data: WorkflowNodeData): WorkflowNodeDet
     { label: "节点", value: data.id },
     { label: "描述", value: data.description },
     { label: "Agent", value: data.agentName || data.agentId || "" },
-    { label: "人员", value: data.assignee },
+    { label: "人员", value: data.assigneeUserName || data.assignee },
+    { label: "角色", value: data.assigneeRole },
     { label: "条件", value: data.conditionDescription },
     { label: "内容", value: data.conditionContent },
     { label: "交代", value: data.instruction },
@@ -55,11 +60,11 @@ export function workflowNodeInlineEditFields(data: WorkflowNodeData): WorkflowNo
   if (data.kind === "human") {
     return [
       {
-        key: "assignee",
+        key: "assignee_user_id",
         label: "指定人员",
-        inputType: "input",
-        value: String(data.assignee || ""),
-        placeholder: "人员姓名、角色或用户 ID",
+        inputType: "user_select",
+        value: String(data.assigneeUserId || ""),
+        placeholder: "请选择人员姓名",
       },
       {
         key: "handoff_instruction",
@@ -112,7 +117,10 @@ export function workflowToReactFlow(
         agentId: node.agent_id,
         agentName: String(node.config?.agent_name || node.config?.agentName || ""),
         instruction: String(node.config?.execution_instruction || ""),
-        assignee: String(node.config?.assignee || ""),
+        assignee: String(node.config?.assignee_user_name || node.config?.assignee || ""),
+        assigneeUserId: String(node.config?.assignee_user_id || ""),
+        assigneeUserName: String(node.config?.assignee_user_name || node.config?.assignee || ""),
+        assigneeRole: String(node.config?.assignee_role || ""),
         handoffInstruction: String(node.config?.handoff_instruction || ""),
         conditionDescription: String(node.config?.condition_description || ""),
         conditionContent: String(node.config?.condition_content || ""),

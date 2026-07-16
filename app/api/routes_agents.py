@@ -38,13 +38,14 @@ def create_simple_agent(payload: SimpleAgentCreate, request: Request, response: 
 @router.post("/human-node", response_model=SimpleAgentCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_human_node(payload: HumanNodeCreate, request: Request) -> SimpleAgentCreateResponse:
     assignee_name = payload.assignee_user_name.strip()
+    assignee_user_id = payload.assignee_user_id.strip() or assignee_name
     agent_create = AgentCreate(
         name=payload.name.strip(),
         description=f"人工审批节点，审批人：{assignee_name}",
         agent_type="human",
         capabilities=["human_approval"],
         metadata={
-            "assignee_user_id": assignee_name,
+            "assignee_user_id": assignee_user_id,
             "assignee_user_name": assignee_name,
             "assignee_role": payload.assignee_role.strip() or "approver",
         },

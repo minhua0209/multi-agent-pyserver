@@ -64,6 +64,49 @@ def test_task_request_uses_manual_task_name_for_task_title(tmp_path: Path) -> No
     assert task["draft"]["title"] == "分析客户需求并生成交付报告"
 
 
+def test_task_list_and_detail_are_scoped_to_normal_user(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    alice = client.post(
+        "/api/v1/users",
+        json={"name": "张三", "phone": "13800000001", "email": "alice@example.com", "role": "user"},
+    ).json()
+    bob = client.post(
+        "/api/v1/users",
+        json={"name": "李四", "phone": "13800000002", "email": "bob@example.com", "role": "user"},
+    ).json()
+
+    alice_task = client.post(
+        "/api/v1/tasks/requests",
+        headers={"X-User-Id": alice["id"]},
+        json={
+            "source_type": "business_system",
+            "title": "张三发起任务",
+            "content": "Create a quote for customer A",
+        },
+    ).json()["tasks"][0]
+    bob_task = client.post(
+        "/api/v1/tasks/requests",
+        headers={"X-User-Id": bob["id"]},
+        json={
+            "source_type": "business_system",
+            "title": "李四发起任务",
+            "content": "Review contract for customer B",
+        },
+    ).json()["tasks"][0]
+
+    assert alice_task["created_by_user_id"] == alice["id"]
+    assert alice_task["created_by_user_name"] == "张三"
+    assert bob_task["created_by_user_id"] == bob["id"]
+
+    admin_task_ids = {task["id"] for task in client.get("/api/v1/tasks").json()}
+    assert {alice_task["id"], bob_task["id"]}.issubset(admin_task_ids)
+
+    alice_task_ids = {task["id"] for task in client.get("/api/v1/tasks", headers={"X-User-Id": alice["id"]}).json()}
+    assert alice_task_ids == {alice_task["id"]}
+    assert client.get(f"/api/v1/tasks/{alice_task['id']}", headers={"X-User-Id": alice["id"]}).status_code == 200
+    assert client.get(f"/api/v1/tasks/{bob_task['id']}", headers={"X-User-Id": alice["id"]}).status_code == 403
+
+
 def test_unconfirmed_task_can_be_cancelled_and_removed_from_task_list(tmp_path: Path) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
 

@@ -1,6 +1,6 @@
 from threading import Thread
 
-from app.core.enums import CurrentNode, ResultStatus, TaskStatus
+from app.core.enums import CurrentNode, ResultStatus, TaskStatus, UserRole
 from app.core.config import require_system_mock_fallback_enabled
 from app.core.model_client import recognize_tasks_with_model
 from app.core.mock_llm import (
@@ -15,6 +15,7 @@ from app.core.models import (
     TaskDraft,
     TaskRequestCreate,
     TaskRequestResponse,
+    User,
     WorkflowDefinition,
     WorkflowTemplate,
     new_id,
@@ -41,6 +42,10 @@ class TaskCannotBeCancelledError(Exception):
     pass
 
 
+class PermissionDeniedError(Exception):
+    pass
+
+
 class TaskService:
     def __init__(
         self,
@@ -54,7 +59,7 @@ class TaskService:
         self.task_graph = TaskGraphRunner(agent_registry)
         self.workflow_runner = WorkflowTemplateRunner(agent_registry)
 
-    def create_request(self, payload: TaskRequestCreate) -> TaskRequestResponse:
+    def create_request(self, payload: TaskRequestCreate, created_by: User | None = None) -> TaskRequestResponse:
         request_id = new_id("req")
         request_metadata = self._request_metadata_with_workflow_snapshot(payload.metadata)
         if request_metadata.get("execution_mode") == "workflow_template":
@@ -73,6 +78,8 @@ class TaskService:
             description=payload.content,
             content=payload.content,
             request_metadata=request_metadata,
+            created_by_user_id=created_by.id if created_by else "root",
+            created_by_user_name=created_by.name if created_by else "管理员",
             task_status=TaskStatus.RUNNING,
             current_node=CurrentNode.HUMAN_CONFIRMATION,
             draft=draft,
@@ -162,19 +169,34 @@ class TaskService:
             raise TaskCannotBeCancelledError(task_id)
         self.store.delete(task_id)
 
-    def list_human_subtasks(self, assignee_user_id: str | None = None) -> list[SubTask]:
+    def list_human_subtasks(
+        self,
+        assignee_user_id: str | None = None,
+        current_user: User | None = None,
+    ) -> list[SubTask]:
+        effective_assignee_user_id = assignee_user_id
+        if current_user and current_user.role != UserRole.ADMIN:
+            effective_assignee_user_id = current_user.id
         subtasks = []
         for task in self.store.list():
             for round_item in task.context.rounds:
                 for subtask in round_item.subtasks:
                     if subtask.assignee_type == "human" and subtask.status == TaskStatus.RUNNING:
-                        if assignee_user_id and subtask.assignee_user_id != assignee_user_id:
+                        if effective_assignee_user_id and subtask.assignee_user_id != effective_assignee_user_id:
                             continue
                         subtasks.append(subtask)
         return subtasks
 
-    def submit_subtask_result(self, subtask_id: str, payload: ExecutionResultCreate, resume_flow: bool = True) -> Task:
+    def submit_subtask_result(
+        self,
+        subtask_id: str,
+        payload: ExecutionResultCreate,
+        resume_flow: bool = True,
+        current_user: User | None = None,
+    ) -> Task:
         task, round_index, subtask = self._find_subtask(subtask_id)
+        if current_user and current_user.role != UserRole.ADMIN and subtask.assignee_user_id != current_user.id:
+            raise PermissionDeniedError(subtask_id)
         subtask.output = payload.output or payload.result_status.value
         subtask.result_metadata = payload.metadata
         subtask.status = TaskStatus.FAILED if payload.result_status == ResultStatus.FAILED else TaskStatus.SUCCEEDED

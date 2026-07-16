@@ -14,6 +14,9 @@ from app.core.models import (
     SubTask,
     Task,
     TaskRound,
+    User,
+    UserCreate,
+    UserUpdate,
     WorkflowCreate,
     WorkflowTemplate,
     new_id,
@@ -103,6 +106,78 @@ class WorkflowRegistry:
         )
 
 
+def default_admin_user() -> User:
+    now = utc_now()
+    return User(
+        id="root",
+        name="管理员",
+        phone="",
+        email="",
+        role="admin",
+        department="平台",
+        position="系统管理员",
+        status="active",
+        remark="默认管理员",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+class UserRegistry:
+    def __init__(self, file_path: Path) -> None:
+        self.file_path = file_path
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.file_path.exists():
+            self._write([default_admin_user()])
+        elif not self.list_users():
+            self._write([default_admin_user()])
+        elif self.get_user("root") is None:
+            self._write([default_admin_user(), *self.list_users()])
+
+    def list_users(self) -> list[User]:
+        raw_users = json.loads(self.file_path.read_text())
+        return [User.model_validate(raw_user) for raw_user in raw_users]
+
+    def get_user(self, user_id: str) -> User | None:
+        return next((user for user in self.list_users() if user.id == user_id), None)
+
+    def create_user(self, payload: UserCreate) -> User:
+        users = self.list_users()
+        user = User(id=new_id("user"), created_at=utc_now(), updated_at=utc_now(), **payload.model_dump())
+        users.append(user)
+        self._write(users)
+        return user
+
+    def update_user(self, user_id: str, payload: UserUpdate) -> User | None:
+        users = self.list_users()
+        for index, user in enumerate(users):
+            if user.id != user_id:
+                continue
+            changes = payload.model_dump(exclude_unset=True)
+            updated = user.model_copy(update={**changes, "updated_at": utc_now()})
+            users[index] = updated
+            self._write(users)
+            return updated
+        return None
+
+    def delete_user(self, user_id: str) -> bool:
+        users = self.list_users()
+        next_users = [user for user in users if user.id != user_id]
+        if len(next_users) == len(users):
+            return False
+        self._write(next_users)
+        return True
+
+    def _write(self, users: list[User]) -> None:
+        self.file_path.write_text(
+            json.dumps(
+                [item.model_dump(mode="json") for item in users],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+
+
 class InMemoryTaskStore:
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
@@ -150,6 +225,8 @@ task_requests_table = Table(
     Column("source_type", String(32), nullable=True),
     Column("content", Text, nullable=True),
     Column("metadata_json", Text, nullable=True),
+    Column("created_by_user_id", String(64), nullable=True),
+    Column("created_by_user_name", String(255), nullable=True),
     Column("status", String(32), nullable=False, default="running"),
     Column("created_at", DateTime(timezone=True), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=True),
@@ -163,6 +240,8 @@ tasks_table = Table(
     Column("request_id", String(64), nullable=True),
     Column("title", String(255), nullable=True),
     Column("description", Text, nullable=True),
+    Column("created_by_user_id", String(64), nullable=True),
+    Column("created_by_user_name", String(255), nullable=True),
     Column("status", String(32), nullable=False, default="running"),
     Column("current_node", String(64), nullable=True),
     Column("assigned_agent_id", String(64), nullable=True),
@@ -274,6 +353,22 @@ workflow_templates_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=True),
 )
 
+users_table = Table(
+    "users",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("phone", String(64), nullable=True),
+    Column("email", String(255), nullable=True),
+    Column("role", String(32), nullable=False, default="user"),
+    Column("department", String(255), nullable=True),
+    Column("position", String(255), nullable=True),
+    Column("status", String(32), nullable=False, default="active"),
+    Column("remark", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=True),
+    Column("updated_at", DateTime(timezone=True), nullable=True),
+)
+
 
 def _create_engine(database_url: str) -> Engine:
     return create_engine(database_url, future=True)
@@ -339,6 +434,74 @@ class DatabaseAgentRegistry:
         return agent
 
 
+class DatabaseUserRegistry:
+    def __init__(self, database_url: str) -> None:
+        self.engine = _create_engine(database_url)
+        metadata.create_all(self.engine)
+        self._ensure_default_admin()
+
+    def list_users(self) -> list[User]:
+        with self.engine.begin() as connection:
+            rows = connection.execute(select(users_table)).mappings().all()
+        return [self._row_to_user(row) for row in rows]
+
+    def get_user(self, user_id: str) -> User | None:
+        with self.engine.begin() as connection:
+            row = connection.execute(select(users_table).where(users_table.c.id == user_id)).mappings().first()
+        return self._row_to_user(row) if row else None
+
+    def create_user(self, payload: UserCreate) -> User:
+        now = utc_now()
+        user = User(id=new_id("user"), created_at=now, updated_at=now, **payload.model_dump())
+        with self.engine.begin() as connection:
+            connection.execute(users_table.insert().values(**self._user_values(user)))
+        return user
+
+    def update_user(self, user_id: str, payload: UserUpdate) -> User | None:
+        existing = self.get_user(user_id)
+        if existing is None:
+            return None
+        changes = payload.model_dump(exclude_unset=True)
+        updated = existing.model_copy(update={**changes, "updated_at": utc_now()})
+        with self.engine.begin() as connection:
+            connection.execute(users_table.update().where(users_table.c.id == user_id).values(**self._user_values(updated)))
+        return updated
+
+    def delete_user(self, user_id: str) -> bool:
+        if self.get_user(user_id) is None:
+            return False
+        with self.engine.begin() as connection:
+            connection.execute(delete(users_table).where(users_table.c.id == user_id))
+        return True
+
+    def _ensure_default_admin(self) -> None:
+        if self.get_user("root") is not None:
+            return
+        admin = default_admin_user()
+        with self.engine.begin() as connection:
+            connection.execute(users_table.insert().values(**self._user_values(admin)))
+
+    @staticmethod
+    def _user_values(user: User) -> dict:
+        return {
+            "id": user.id,
+            "name": user.name,
+            "phone": user.phone,
+            "email": user.email,
+            "role": user.role.value if hasattr(user.role, "value") else user.role,
+            "department": user.department,
+            "position": user.position,
+            "status": user.status,
+            "remark": user.remark,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+        }
+
+    @staticmethod
+    def _row_to_user(row) -> User:
+        return User.model_validate(dict(row))
+
+
 class DatabaseTaskStore:
     def __init__(self, database_url: str) -> None:
         self.engine = _create_engine(database_url)
@@ -347,6 +510,10 @@ class DatabaseTaskStore:
         _ensure_column(self.engine, "subtasks", "assignee_user_id", "VARCHAR(64) NULL")
         _ensure_column(self.engine, "subtasks", "assignee_user_name", "VARCHAR(255) NULL")
         _ensure_column(self.engine, "subtasks", "assignee_role", "VARCHAR(128) NULL")
+        _ensure_column(self.engine, "tasks", "created_by_user_id", "VARCHAR(64) NULL")
+        _ensure_column(self.engine, "tasks", "created_by_user_name", "VARCHAR(255) NULL")
+        _ensure_column(self.engine, "task_requests", "created_by_user_id", "VARCHAR(64) NULL")
+        _ensure_column(self.engine, "task_requests", "created_by_user_name", "VARCHAR(255) NULL")
 
     def save(self, task: Task) -> Task:
         task.updated_at = utc_now()
@@ -403,6 +570,8 @@ class DatabaseTaskStore:
             "request_id": task.request_id,
             "title": task.title,
             "description": task.description,
+            "created_by_user_id": task.created_by_user_id,
+            "created_by_user_name": task.created_by_user_name,
             "status": task.task_status.value,
             "current_node": task.current_node.value,
             "assigned_agent_id": task.assigned_agent_id,
@@ -427,6 +596,8 @@ class DatabaseTaskStore:
             "source_type": task.source_type.value,
             "content": task.content,
             "metadata_json": _json_dump(task.request_metadata),
+            "created_by_user_id": task.created_by_user_id,
+            "created_by_user_name": task.created_by_user_name,
             "status": task.task_status.value,
             "created_at": task.created_at,
             "updated_at": task.updated_at,

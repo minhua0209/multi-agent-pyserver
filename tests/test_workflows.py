@@ -145,6 +145,82 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
     assert "quote approved" in resumed["context"]["summary"]
 
 
+def test_human_subtask_permissions_follow_assigned_user(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    assignee = client.post(
+        "/api/v1/users",
+        json={"name": "张三", "phone": "13800000001", "email": "zhangsan@example.com", "role": "user"},
+    ).json()
+    other_user = client.post(
+        "/api/v1/users",
+        json={"name": "李四", "phone": "13800000002", "email": "lisi@example.com", "role": "user"},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Assigned Human Review",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "review",
+                        "type": "human",
+                        "title": "人工确认",
+                        "config": {
+                            "assignee_user_id": assignee["id"],
+                            "assignee_user_name": assignee["name"],
+                            "assignee_role": assignee["role"],
+                            "handoff_instruction": "请确认交付结果是否通过。",
+                        },
+                    },
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "review"},
+                    {"from": "review", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        headers={"X-User-Id": other_user["id"]},
+        json={
+            "source_type": "business_system",
+            "title": "人工确认任务",
+            "content": "Run assigned workflow",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        headers={"X-User-Id": other_user["id"]},
+        json={"title": "人工确认任务", "description": "Run assigned workflow"},
+    ).json()
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+
+    assignee_queue = client.get("/api/v1/subtasks/human", headers={"X-User-Id": assignee["id"]}).json()
+    other_queue = client.get("/api/v1/subtasks/human", headers={"X-User-Id": other_user["id"]}).json()
+    assert [item["id"] for item in assignee_queue] == [human_subtask["id"]]
+    assert other_queue == []
+
+    forbidden = client.post(
+        f"/api/v1/subtasks/{human_subtask['id']}/result",
+        headers={"X-User-Id": other_user["id"]},
+        json={"result_status": "succeeded", "output": "不该被接受", "should_complete": True},
+    )
+    assert forbidden.status_code == 403
+
+    allowed = client.post(
+        f"/api/v1/subtasks/{human_subtask['id']}/result",
+        headers={"X-User-Id": assignee["id"]},
+        json={"result_status": "succeeded", "output": "确认通过", "should_complete": True},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["task_status"] == "succeeded"
+
+
 def test_workflow_template_request_skips_intent_fallback_when_system_fallback_disabled(
     tmp_path: Path,
     monkeypatch,

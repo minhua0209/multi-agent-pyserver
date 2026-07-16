@@ -32,7 +32,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { useCallback, useMemo, useState } from "react"
 
-import { Agent, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
+import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
 import { defaultWorkflowNodePositions, removeWorkflowNode } from "./workflowCanvas"
 import { capabilityLabel } from "./workflowLabels"
 import {
@@ -47,6 +47,7 @@ import {
 
 interface WorkflowBuilderPageProps {
   agents: Agent[]
+  users?: UserOption[]
   workflows: WorkflowTemplate[]
   onWorkflowSaved: (workflow: WorkflowTemplate) => void
   setToast: (value: string) => void
@@ -129,6 +130,7 @@ function emptyWorkflowDefinition(): { nodes: WorkflowNode[]; edges: WorkflowEdge
 
 export function WorkflowBuilderPage({
   agents,
+  users = [],
   workflows,
   onWorkflowSaved,
   setToast,
@@ -165,7 +167,8 @@ export function WorkflowBuilderPage({
   const canDeleteActiveNode = Boolean(activeNode && activeNode.id !== "start" && activeNode.id !== "end")
   const filteredAgents = availableAgents.filter((agent) => agentMatchesCapability(agent, capabilityFilter))
   const handleNodeConfigChange = useCallback((nodeId: string, patch: Record<string, unknown>) => {
-    setCanvasNodes((current) => applyNodeConfig({ nodes: current, edges: [] }, nodeId, patch).nodes)
+    const normalizedPatch = normalizeNodePatch(patch, users)
+    setCanvasNodes((current) => applyNodeConfig({ nodes: current, edges: [] }, nodeId, normalizedPatch).nodes)
     setFlowNodes((current) =>
       current.map((node) =>
         node.id === nodeId
@@ -173,14 +176,14 @@ export function WorkflowBuilderPage({
               ...node,
               data: {
                 ...node.data,
-                ...flowDataPatch(patch),
+                ...flowDataPatch(normalizedPatch),
               },
             }
           : node,
       ),
     )
     setActiveNodeId(nodeId)
-  }, [setFlowNodes])
+  }, [setFlowNodes, users])
   const handleNodeEditStart = useCallback((nodeId: string) => {
     setActiveNodeId(nodeId)
     setHoveredNodeId("")
@@ -196,6 +199,7 @@ export function WorkflowBuilderPage({
           onConfigChange: handleNodeConfigChange,
           onEditStart: handleNodeEditStart,
           onEditEnd: () => setEditingNodeId(""),
+          userOptions: users,
         },
         className: node.id === hoveredNodeId || node.id === editingNodeId ? "workflow-flow-node-hovered" : undefined,
         zIndex: node.id === hoveredNodeId || node.id === editingNodeId ? 1000 : undefined,
@@ -206,7 +210,14 @@ export function WorkflowBuilderPage({
   function flowDataPatch(patch: Record<string, unknown>): Partial<WorkflowReactFlowNode["data"]> {
     return {
       ...(patch.execution_instruction !== undefined ? { instruction: String(patch.execution_instruction || "") } : {}),
-      ...(patch.assignee !== undefined ? { assignee: String(patch.assignee || "") } : {}),
+      ...(patch.assignee_user_id !== undefined ? { assigneeUserId: String(patch.assignee_user_id || "") } : {}),
+      ...(patch.assignee_user_name !== undefined
+        ? {
+            assigneeUserName: String(patch.assignee_user_name || ""),
+            assignee: String(patch.assignee_user_name || ""),
+          }
+        : {}),
+      ...(patch.assignee_role !== undefined ? { assigneeRole: String(patch.assignee_role || "") } : {}),
       ...(patch.handoff_instruction !== undefined ? { handoffInstruction: String(patch.handoff_instruction || "") } : {}),
       ...(patch.condition_description !== undefined ? { conditionDescription: String(patch.condition_description || "") } : {}),
       ...(patch.condition_content !== undefined ? { conditionContent: String(patch.condition_content || "") } : {}),
@@ -279,7 +290,9 @@ export function WorkflowBuilderPage({
         context_inputs: ["context.summary", "subtask.output"],
         context_outputs: ["result_metadata.decision", "human_comment"],
         required_metadata: ["decision"],
-        assignee: "",
+        assignee_user_id: "",
+        assignee_user_name: "",
+        assignee_role: "",
         handoff_instruction: "",
       },
     }
@@ -635,7 +648,7 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
             <strong>{data.title || data.id}</strong>
           </span>
           <small>{data.description || "-"}</small>
-          {data.kind === "human" && data.assignee && <small className="workflow-node-instruction">人员：{data.assignee}</small>}
+          {data.kind === "human" && (data.assigneeUserName || data.assignee) && <small className="workflow-node-instruction">人员：{data.assigneeUserName || data.assignee}</small>}
           {data.kind === "human" && data.handoffInstruction && <small className="workflow-node-instruction">{data.handoffInstruction}</small>}
           {data.kind === "agent" && data.instruction && <small className="workflow-node-instruction">{data.instruction}</small>}
         </>
@@ -660,6 +673,19 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
                   onKeyDown={(event) => event.stopPropagation()}
                   placeholder={field.placeholder}
                 />
+              ) : field.inputType === "user_select" ? (
+                <select
+                  value={field.value}
+                  onChange={(event) => data.onConfigChange?.(data.id, { [field.key]: event.target.value })}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <option value="">{field.placeholder}</option>
+                  {(data.userOptions || []).map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
               ) : (
                 <input
                   value={field.value}
@@ -709,6 +735,17 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
       {showSourceHandle && <Handle type="source" position={Position.Right} />}
     </div>
   )
+}
+
+function normalizeNodePatch(patch: Record<string, unknown>, users: UserOption[]): Record<string, unknown> {
+  if (patch.assignee_user_id === undefined) return patch
+  const userId = String(patch.assignee_user_id || "")
+  const user = users.find((item) => item.id === userId)
+  return {
+    ...patch,
+    assignee_user_name: user?.name || "",
+    assignee_role: user?.role || "",
+  }
 }
 
 function makeFlowEdge(source: string, target: string): WorkflowReactFlowEdge {

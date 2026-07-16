@@ -61,6 +61,8 @@ export interface Task {
   description?: string
   content?: string
   source_type?: string
+  created_by_user_id?: string
+  created_by_user_name?: string
   task_status?: TaskStatus
   status?: TaskStatus
   current_node?: string
@@ -148,8 +150,64 @@ export interface AgentCreatePayload {
   metadata?: Record<string, string>
 }
 
+export type UserRole = "admin" | "user"
+
+export interface User {
+  id: string
+  name: string
+  phone?: string
+  email?: string
+  role: UserRole
+  department?: string
+  position?: string
+  status?: string
+  remark?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface UserOption {
+  id: string
+  name: string
+  role: UserRole
+}
+
+export interface UserCreatePayload {
+  name: string
+  phone?: string
+  email?: string
+  role?: UserRole
+  department?: string
+  position?: string
+  status?: string
+  remark?: string
+}
+
+export type UserUpdatePayload = Partial<UserCreatePayload>
+
 const configuredBaseUrl = (import.meta as ImportMeta & { env?: { VITE_TASKHUB_API_BASE_URL?: string } }).env?.VITE_TASKHUB_API_BASE_URL
 const apiBaseUrl = (configuredBaseUrl || "").replace(/\/+$/, "")
+const currentUserStorageKey = "taskhub_current_user_id"
+let activeUserId = readStoredUserId()
+
+function readStoredUserId() {
+  if (typeof globalThis.localStorage === "undefined") return ""
+  return globalThis.localStorage.getItem(currentUserStorageKey) || ""
+}
+
+export function setCurrentUserId(userId: string) {
+  activeUserId = userId
+  if (typeof globalThis.localStorage === "undefined") return
+  if (userId) {
+    globalThis.localStorage.setItem(currentUserStorageKey, userId)
+  } else {
+    globalThis.localStorage.removeItem(currentUserStorageKey)
+  }
+}
+
+export function getCurrentUserId() {
+  return activeUserId || readStoredUserId()
+}
 
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text()
@@ -165,10 +223,12 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const userId = getCurrentUserId()
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
     headers: {
       Accept: "application/json",
+      ...(userId ? { "X-User-Id": userId } : {}),
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
@@ -270,6 +330,18 @@ export function createHumanNode(assigneeUserName: string, name: string) {
   })
 }
 
+export function createHumanNodeForUser(user: UserOption, name: string) {
+  return request<SimpleAgentResponse>("/api/v1/agents/human-node", {
+    method: "POST",
+    body: JSON.stringify({
+      assignee_user_id: user.id,
+      assignee_user_name: user.name,
+      assignee_role: user.role,
+      name,
+    }),
+  })
+}
+
 export function createAgent(payload: AgentCreatePayload) {
   return request<Agent>("/api/v1/agents", {
     method: "POST",
@@ -285,5 +357,37 @@ export function createWorkflow(payload: WorkflowCreatePayload) {
   return request<WorkflowTemplate>("/api/v1/workflows", {
     method: "POST",
     body: JSON.stringify(payload),
+  })
+}
+
+export function getCurrentUser() {
+  return request<User>("/api/v1/users/current")
+}
+
+export function listUsers() {
+  return request<User[]>("/api/v1/users")
+}
+
+export function listAssignableUsers() {
+  return request<UserOption[]>("/api/v1/users/assignable")
+}
+
+export function createUser(payload: UserCreatePayload) {
+  return request<User>("/api/v1/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateUser(userId: string, payload: UserUpdatePayload) {
+  return request<User>(`/api/v1/users/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteUser(userId: string) {
+  return request<void>(`/api/v1/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
   })
 }

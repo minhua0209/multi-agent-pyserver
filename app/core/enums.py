@@ -31,3 +31,8 @@ class ResultStatus(StrEnum):
     FAILED = "failed"
     BLOCKED = "blocked"
     PARTIAL = "partial"
+
+
+class UserRole(StrEnum):
+    ADMIN = "admin"
+    USER = "user"

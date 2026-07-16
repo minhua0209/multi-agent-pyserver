@@ -71,14 +71,18 @@ describe("workflowReactFlow helpers", () => {
       },
       "review",
       {
-        assignee: "张三",
+        assignee_user_id: "user_001",
+        assignee_user_name: "张三",
+        assignee_role: "user",
         handoff_instruction: "请重点确认风险说明。",
       },
     )
 
     expect(definition.nodes.find((node) => node.id === "review")?.config).toMatchObject({
       required_metadata: ["decision"],
-      assignee: "张三",
+      assignee_user_id: "user_001",
+      assignee_user_name: "张三",
+      assignee_role: "user",
       handoff_instruction: "请重点确认风险说明。",
     })
 
@@ -120,7 +124,12 @@ describe("workflowReactFlow helpers", () => {
           id: "review",
           type: "human",
           title: "人工确认",
-          config: { assignee: "张三", handoff_instruction: "请确认是否通过。" },
+          config: {
+            assignee_user_id: "user_001",
+            assignee_user_name: "张三",
+            assignee_role: "user",
+            handoff_instruction: "请确认是否通过。",
+          },
         },
         {
           id: "judge",
@@ -139,6 +148,7 @@ describe("workflowReactFlow helpers", () => {
       { label: "类型", value: "人工" },
       { label: "节点", value: "review" },
       { label: "人员", value: "张三" },
+      { label: "角色", value: "user" },
       { label: "交代", value: "请确认是否通过。" },
     ])
     expect(workflowNodeDetailItems(result.nodes[1].data)).toContainEqual({
@@ -158,7 +168,12 @@ describe("workflowReactFlow helpers", () => {
           id: "review",
           type: "human",
           title: "人工确认",
-          config: { assignee: "李四", handoff_instruction: "确认金额和风险。" },
+          config: {
+            assignee_user_id: "user_002",
+            assignee_user_name: "李四",
+            assignee_role: "user",
+            handoff_instruction: "确认金额和风险。",
+          },
         },
         {
           id: "judge",
@@ -176,11 +191,11 @@ describe("workflowReactFlow helpers", () => {
 
     expect(workflowNodeInlineEditFields(result.nodes[0].data)).toEqual([
       {
-        key: "assignee",
+        key: "assignee_user_id",
         label: "指定人员",
-        inputType: "input",
-        value: "李四",
-        placeholder: "人员姓名、角色或用户 ID",
+        inputType: "user_select",
+        value: "user_002",
+        placeholder: "请选择人员姓名",
       },
       {
         key: "handoff_instruction",

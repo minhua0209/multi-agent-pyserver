@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.core.enums import CurrentNode, ResultStatus, SourceType, TaskStatus
+from app.core.enums import CurrentNode, ResultStatus, SourceType, TaskStatus, UserRole
 
 
 def new_id(prefix: str) -> str:
@@ -41,6 +41,7 @@ class SimpleAgentCreate(BaseModel):
 
 class HumanNodeCreate(BaseModel):
     name: str = Field(min_length=1)
+    assignee_user_id: str = ""
     assignee_user_name: str = Field(min_length=1)
     assignee_role: str = "approver"
 
@@ -115,6 +116,40 @@ class TaskRequestCreate(BaseModel):
     title: str = Field(default="", max_length=50)
     content: str = Field(min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserCreate(BaseModel):
+    name: str = Field(min_length=1)
+    phone: str = ""
+    email: str = ""
+    role: UserRole = UserRole.USER
+    department: str = ""
+    position: str = ""
+    status: str = "active"
+    remark: str = ""
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    role: UserRole | None = None
+    department: str | None = None
+    position: str | None = None
+    status: str | None = None
+    remark: str | None = None
+
+
+class User(UserCreate):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserOption(BaseModel):
+    id: str
+    name: str
+    role: UserRole
 
 
 class TaskDraft(BaseModel):
@@ -211,6 +246,8 @@ class Task(BaseModel):
     source_type: SourceType
     content: str
     request_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_by_user_id: str = ""
+    created_by_user_name: str = ""
     task_status: TaskStatus
     current_node: CurrentNode
     draft: TaskDraft | None = None

@@ -178,6 +178,10 @@ button {
   min-width: 220px;
 }
 
+.user-switcher {
+  min-width: 132px;
+}
+
 .content {
   overflow: auto;
   padding: 24px;
@@ -1752,6 +1756,7 @@ tr.selected td {
 }
 
 .workflow-inline-field input,
+.workflow-inline-field select,
 .workflow-inline-field textarea {
   width: 100%;
   min-width: 0;
@@ -1772,9 +1777,21 @@ tr.selected td {
 }
 
 .workflow-inline-field input:focus,
+.workflow-inline-field select:focus,
 .workflow-inline-field textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px oklch(0.84 0.05 218 / 0.42);
+}
+
+.form-grid.two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.user-form {
+  display: grid;
+  gap: 12px;
 }
 
 .workflow-inline-actions {

@@ -6,7 +6,7 @@
 - Base URL：`http://127.0.0.1:8000`
 - 接口前缀：`/api/v1`
 - 数据格式：`Content-Type: application/json`
-- 当前鉴权：暂未接入
+- 当前鉴权：开发态通过请求头 `X-User-Id` 指定当前用户；不传时默认 `root` 管理员
 - OpenAPI 文档：
   - Swagger UI：`GET /docs`
   - OpenAPI JSON：`GET /openapi.json`
@@ -52,6 +52,86 @@
 | `failed` | 失败 |
 | `blocked` | 阻塞 |
 | `partial` | 部分完成 |
+
+### `user_role`
+
+| 值 | 含义 |
+| --- | --- |
+| `admin` | 管理员 |
+| `user` | 普通用户 |
+
+## 用户与权限
+
+### 获取当前用户
+
+`GET /api/v1/users/current`
+
+请求头：
+
+```http
+X-User-Id: user_xxx
+```
+
+响应示例：
+
+```json
+{
+  "id": "root",
+  "name": "管理员",
+  "phone": "",
+  "email": "",
+  "role": "admin",
+  "department": "平台",
+  "position": "系统管理员",
+  "status": "active",
+  "remark": "默认管理员",
+  "created_at": "2026-07-16T00:00:00Z",
+  "updated_at": "2026-07-16T00:00:00Z"
+}
+```
+
+### 用户管理
+
+管理员接口：
+
+- `GET /api/v1/users`
+- `POST /api/v1/users`
+- `PUT /api/v1/users/{user_id}`
+- `DELETE /api/v1/users/{user_id}`
+
+创建用户请求示例：
+
+```json
+{
+  "name": "张三",
+  "phone": "13800000001",
+  "email": "zhangsan@example.com",
+  "role": "user",
+  "department": "交付部",
+  "position": "交付经理",
+  "status": "active",
+  "remark": "负责客户交付确认"
+}
+```
+
+人工节点选人接口：
+
+- `GET /api/v1/users/assignable`
+
+返回启用用户的简要信息，供前端下拉框展示姓名：
+
+```json
+[
+  { "id": "root", "name": "管理员", "role": "admin" },
+  { "id": "user_xxx", "name": "张三", "role": "user" }
+]
+```
+
+权限规则：
+
+- 管理员可以查询和操作全部菜单、任务、用户和人工节点。
+- 普通用户只能查看自己发起的任务列表和任务详情。
+- 普通用户只能处理分配给自己的人工节点。
 
 ## 前端典型流程
 
