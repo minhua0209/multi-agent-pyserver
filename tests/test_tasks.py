@@ -29,6 +29,7 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
     assert task["description"] == "Create a quote for customer A"
     assert task["content"] == "Create a quote for customer A"
     assert task["draft"]["title"] == "Create a quote for customer A"
+    assert task["task_type"] == "auto_planning"
 
 
 def test_task_request_title_must_not_exceed_50_chars(tmp_path: Path) -> None:

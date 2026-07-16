@@ -1,4 +1,5 @@
 export type TaskStatus = "running" | "succeeded" | "failed"
+export type TaskType = "auto_planning" | "manual_orchestration"
 
 export interface AgentTool {
   name: string
@@ -60,7 +61,14 @@ export interface Task {
   title?: string
   description?: string
   content?: string
+  task_type?: TaskType
   source_type?: string
+  request_metadata?: Record<string, unknown> & {
+    execution_mode?: string
+    workflow_name?: string
+    workflow_description?: string
+    workflow_definition?: WorkflowDefinition
+  }
   created_by_user_id?: string
   created_by_user_name?: string
   task_status?: TaskStatus
@@ -262,6 +270,7 @@ export function buildTaskRequestPayload(
     source_type: sourceType,
     title,
     content,
+    task_type: metadata.execution_mode === "workflow_template" ? "manual_orchestration" : "auto_planning",
     metadata,
   }
 }

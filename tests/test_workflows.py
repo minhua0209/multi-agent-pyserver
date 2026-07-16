@@ -118,11 +118,14 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
         },
     ).json()["tasks"][0]
 
+    assert created["task_type"] == "manual_orchestration"
+
     paused = client.post(
         f"/api/v1/tasks/{created['id']}/confirm",
         json={"title": "Workflow quote", "description": "Create quote through workflow"},
     ).json()
 
+    assert paused["task_type"] == "manual_orchestration"
     assert paused["task_status"] == "running"
     assert paused["current_node"] == "human_execution"
     assert paused["request_metadata"]["workflow_id"] == workflow["id"]

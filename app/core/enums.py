@@ -13,6 +13,11 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskType(StrEnum):
+    AUTO_PLANNING = "auto_planning"
+    MANUAL_ORCHESTRATION = "manual_orchestration"
+
+
 class CurrentNode(StrEnum):
     INTENT_RECOGNITION = "intent_recognition"
     HUMAN_CONFIRMATION = "human_confirmation"

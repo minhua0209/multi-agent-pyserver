@@ -73,6 +73,7 @@ import {
   updateUser,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
+import { isManualWorkflowTask, taskTypeText } from "./taskType"
 import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 
@@ -130,6 +131,38 @@ function draftTaskListText(task: Task) {
 
 function taskStatus(task: Task) {
   return task.task_status || task.status || "running"
+}
+
+function taskTypeColor(task: Task) {
+  return isManualWorkflowTask(task) ? "purple" : "blue"
+}
+
+function workflowNodeKindText(type?: string) {
+  return { start: "开始", end: "完成", agent: "Agent", human: "人工", condition: "条件" }[type || ""] || type || "节点"
+}
+
+function workflowNodeStateText(state: string) {
+  return { pending: "未开始", running: "执行中", succeeded: "已完成", failed: "失败" }[state] || state
+}
+
+function workflowNodeStateColor(state: string) {
+  return { pending: "default", running: "processing", succeeded: "success", failed: "error" }[state] || "default"
+}
+
+function workflowSubtaskForNode(task: Task, nodeId: string) {
+  const prefix = `${task.id}_`
+  return (task.context?.rounds || [])
+    .flatMap((round) => round.subtasks || [])
+    .find((subtask) => {
+      const subtaskNodeId = subtask.id.startsWith(prefix) ? subtask.id.slice(prefix.length) : subtask.id
+      return subtaskNodeId === nodeId
+    })
+}
+
+function workflowNodeState(task: Task, node: WorkflowDefinition["nodes"][number]) {
+  if (node.type === "start") return "succeeded"
+  if (node.type === "end") return taskStatus(task) === "succeeded" ? "succeeded" : "pending"
+  return workflowSubtaskForNode(task, node.id)?.status || "pending"
 }
 
 function formatDate(value?: string) {
@@ -936,19 +969,82 @@ function TaskDetailModal({
               <h4>任务清单</h4>
               <div>{draftTaskListText(task)}</div>
             </section>
+            <section className="detail-text-block">
+              <h4>任务类型</h4>
+              <div><Tag color={taskTypeColor(task)}>{taskTypeText(task)}</Tag></div>
+            </section>
           </div>
-          <section className="execution-section">
-            <h4>执行轮次</h4>
-            {(task.context?.rounds || []).length ? (
-              <div className="modal-scroll execution-scroll">
-                <ExecutionGraph rounds={task.context?.rounds || []} onOpenHumanWorkbench={onOpenHumanWorkbench} />
-              </div>
-            ) : (
-              <EmptyState text="暂无执行轮次" />
-            )}
-          </section>
+          {isManualWorkflowTask(task) ? (
+            <section className="execution-section">
+              <h4>手动编排流程</h4>
+              {task.request_metadata?.workflow_definition ? (
+                <ManualWorkflowDetail task={task} definition={task.request_metadata.workflow_definition} />
+              ) : (
+                <EmptyState text="暂无手动编排流程" />
+              )}
+            </section>
+          ) : (
+            <section className="execution-section">
+              <h4>执行轮次</h4>
+              {(task.context?.rounds || []).length ? (
+                <div className="modal-scroll execution-scroll">
+                  <ExecutionGraph rounds={task.context?.rounds || []} onOpenHumanWorkbench={onOpenHumanWorkbench} />
+                </div>
+              ) : (
+                <EmptyState text="暂无执行轮次" />
+              )}
+            </section>
+          )}
         </div>
     </Modal>
+  )
+}
+
+function ManualWorkflowDetail({ task, definition }: { task: Task; definition: WorkflowDefinition }) {
+  const nodeTitleById = new Map(definition.nodes.map((node) => [node.id, node.title || node.id]))
+
+  return (
+    <div className="manual-workflow-detail">
+      <div className="manual-workflow-stats">
+        <Tag color="cyan">节点 {definition.nodes.length}</Tag>
+        <Tag color="geekblue">连线 {definition.edges.length}</Tag>
+        <span>{task.request_metadata?.workflow_name || task.title || "手动编排流程"}</span>
+      </div>
+      <div className="modal-scroll manual-workflow-scroll">
+        <div className="manual-workflow-nodes">
+          {definition.nodes.map((node) => {
+            const subtask = workflowSubtaskForNode(task, node.id)
+            const state = workflowNodeState(task, node)
+            return (
+              <article className={`manual-workflow-node ${state}`} key={node.id}>
+                <header>
+                  <strong>{node.title || node.id}</strong>
+                  <span>
+                    <Tag>{workflowNodeKindText(node.type)}</Tag>
+                    <Tag color={workflowNodeStateColor(state)}>{workflowNodeStateText(state)}</Tag>
+                  </span>
+                </header>
+                <p>{node.description || "暂无节点说明"}</p>
+                {subtask?.assignee_user_name && <small>处理人：{subtask.assignee_user_name}</small>}
+                {subtask?.output && <small>输出：{subtask.output}</small>}
+              </article>
+            )
+          })}
+        </div>
+        <div className="manual-workflow-edges">
+          <h5>流程连线</h5>
+          {definition.edges.length ? (
+            definition.edges.map((edge, index) => (
+              <span key={`${edge.from}-${edge.to}-${index}`}>
+                {nodeTitleById.get(edge.from) || edge.from} → {nodeTitleById.get(edge.to) || edge.to}
+              </span>
+            ))
+          ) : (
+            <span>暂无连线</span>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1466,6 +1562,12 @@ function TaskTable({ tasks, compact, onSelect, selectedTaskId }: { tasks: Task[]
         <TableCellTooltip text={taskTitle(task)} />
       ),
     },
+    ...(!compact ? [{
+      title: "任务类型",
+      dataIndex: "task_type",
+      width: 120,
+      render: (_: unknown, task: Task) => <Tag color={taskTypeColor(task)}>{taskTypeText(task)}</Tag>,
+    } as ColumnsType<Task>[number]] : []),
     ...(!compact ? [{
       title: "任务描述",
       dataIndex: "description",

@@ -748,7 +748,8 @@ tr.selected td {
   flex: 0 0 auto;
   min-height: 0;
   display: grid;
-  grid-template-rows: 130px 195px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 170px;
+  grid-template-rows: minmax(118px, 160px);
   gap: 12px;
   overflow: hidden;
 }
@@ -834,13 +835,140 @@ tr.selected td {
   padding: 12px;
 }
 
+.manual-workflow-detail {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid rgb(129 140 248 / 0.42);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(236 254 255 / 0.58));
+  overflow: hidden;
+}
+
+.manual-workflow-stats {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgb(199 210 254 / 0.66);
+  color: var(--text-muted);
+}
+
+.manual-workflow-stats span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manual-workflow-scroll {
+  padding: 12px;
+}
+
+.manual-workflow-nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.manual-workflow-node {
+  min-width: 0;
+  min-height: 132px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  border: 1px solid rgb(199 210 254 / 0.78);
+  border-left: 4px solid #94a3b8;
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.94);
+  padding: 12px;
+  box-shadow: 0 12px 28px rgb(79 70 229 / 0.1);
+}
+
+.manual-workflow-node.running {
+  border-left-color: var(--info);
+}
+
+.manual-workflow-node.succeeded {
+  border-left-color: var(--success);
+}
+
+.manual-workflow-node.failed {
+  border-left-color: var(--danger);
+}
+
+.manual-workflow-node header {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.manual-workflow-node strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manual-workflow-node header span {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.manual-workflow-node p,
+.manual-workflow-node small {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.manual-workflow-node small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.manual-workflow-edges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgb(199 210 254 / 0.66);
+}
+
+.manual-workflow-edges h5 {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.manual-workflow-edges span {
+  max-width: 100%;
+  border: 1px solid rgb(199 210 254 / 0.78);
+  border-radius: 999px;
+  background: rgb(238 242 255 / 0.76);
+  padding: 6px 10px;
+  color: #4338ca;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-height: 720px) {
   .task-detail-modal .ant-modal-content {
     min-height: 0;
   }
 
   .task-detail-summary {
-    grid-template-rows: 110px 165px;
+    grid-template-rows: minmax(104px, 135px);
     gap: 10px;
   }
 

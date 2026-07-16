@@ -7,6 +7,7 @@ from app.core.config import DEFAULT_DATABASE_URL
 from app.core.enums import CurrentNode, SourceType, TaskStatus
 from app.core.models import AgentCreate, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
 from app.main import create_app
+from app.services import storage as storage_module
 from app.services.storage import DatabaseAgentRegistry, DatabaseTaskStore
 
 
@@ -49,6 +50,26 @@ def test_database_task_store_persists_tasks_across_instances(tmp_path: Path) -> 
     reloaded_store = DatabaseTaskStore(database_url)
     assert reloaded_store.get(saved.id) == saved
     assert reloaded_store.list() == [saved]
+
+
+def test_database_task_store_uses_mysql_safe_task_type_migration(tmp_path: Path, monkeypatch) -> None:
+    captured_columns = []
+    original_ensure_column = storage_module._ensure_column
+
+    def _capture_column(engine, table_name: str, column_name: str, definition: str) -> None:
+        captured_columns.append((table_name, column_name, definition))
+        original_ensure_column(engine, table_name, column_name, definition)
+
+    monkeypatch.setattr(storage_module, "_ensure_column", _capture_column)
+
+    DatabaseTaskStore(f"sqlite:///{tmp_path / 'taskhub.db'}")
+
+    task_type_definition = next(
+        definition
+        for table_name, column_name, definition in captured_columns
+        if table_name == "tasks" and column_name == "task_type"
+    )
+    assert task_type_definition == "VARCHAR(32) NOT NULL DEFAULT 'auto_planning'"
 
 
 def test_create_app_can_use_database_storage(tmp_path: Path) -> None:

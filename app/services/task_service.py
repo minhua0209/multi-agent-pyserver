@@ -1,6 +1,6 @@
 from threading import Thread
 
-from app.core.enums import CurrentNode, ResultStatus, TaskStatus, UserRole
+from app.core.enums import CurrentNode, ResultStatus, TaskStatus, TaskType, UserRole
 from app.core.config import require_system_mock_fallback_enabled
 from app.core.model_client import recognize_tasks_with_model
 from app.core.mock_llm import (
@@ -64,7 +64,8 @@ class TaskService:
     def create_request(self, payload: TaskRequestCreate, created_by: User | None = None) -> TaskRequestResponse:
         request_id = new_id("req")
         request_metadata = self._request_metadata_with_workflow_snapshot(payload.metadata)
-        if request_metadata.get("execution_mode") == "workflow_template":
+        task_type = self._task_type_for_request(payload, request_metadata)
+        if task_type == TaskType.MANUAL_ORCHESTRATION:
             draft = self._workflow_template_draft(payload, request_metadata)
         else:
             agents = self.agent_registry.list_processing_agents()
@@ -79,6 +80,7 @@ class TaskService:
             source_type=payload.source_type,
             description=payload.content,
             content=payload.content,
+            task_type=task_type,
             request_metadata=request_metadata,
             created_by_user_id=created_by.id if created_by else "root",
             created_by_user_name=created_by.name if created_by else "管理员",
@@ -91,7 +93,7 @@ class TaskService:
             updated_at=utc_now(),
         )
         task.events.append(self._event("task_created", f"Main task created from request {request_id}"))
-        if request_metadata.get("execution_mode") == "workflow_template":
+        if task_type == TaskType.MANUAL_ORCHESTRATION:
             task.events.append(self._event("workflow_template_selected", "Workflow template created a main task draft"))
         else:
             task.events.append(self._event("intent_recognized", "Intent recognition created a main task draft"))
@@ -222,7 +224,15 @@ class TaskService:
         return self.store.save(self.task_graph.run(task))
 
     def _is_workflow_template_task(self, task: Task) -> bool:
-        return task.request_metadata.get("execution_mode") == "workflow_template"
+        return task.task_type == TaskType.MANUAL_ORCHESTRATION or task.request_metadata.get("execution_mode") == "workflow_template"
+
+    @staticmethod
+    def _task_type_for_request(payload: TaskRequestCreate, request_metadata: dict) -> TaskType:
+        if request_metadata.get("execution_mode") == "workflow_template":
+            return TaskType.MANUAL_ORCHESTRATION
+        if payload.task_type:
+            return payload.task_type
+        return TaskType.AUTO_PLANNING
 
     def _get_task_workflow(self, task: Task):
         workflow_definition = task.request_metadata.get("workflow_definition")

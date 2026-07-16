@@ -242,6 +242,7 @@ tasks_table = Table(
     Column("description", Text, nullable=True),
     Column("created_by_user_id", String(64), nullable=True),
     Column("created_by_user_name", String(255), nullable=True),
+    Column("task_type", String(32), nullable=False, default="auto_planning"),
     Column("status", String(32), nullable=False, default="running"),
     Column("current_node", String(64), nullable=True),
     Column("assigned_agent_id", String(64), nullable=True),
@@ -507,6 +508,7 @@ class DatabaseTaskStore:
         self.engine = _create_engine(database_url)
         metadata.create_all(self.engine)
         _ensure_column(self.engine, "subtasks", "result_metadata_json", "TEXT NULL")
+        _ensure_column(self.engine, "tasks", "task_type", "VARCHAR(32) NOT NULL DEFAULT 'auto_planning'")
         _ensure_column(self.engine, "subtasks", "assignee_user_id", "VARCHAR(64) NULL")
         _ensure_column(self.engine, "subtasks", "assignee_user_name", "VARCHAR(255) NULL")
         _ensure_column(self.engine, "subtasks", "assignee_role", "VARCHAR(128) NULL")
@@ -572,6 +574,7 @@ class DatabaseTaskStore:
             "description": task.description,
             "created_by_user_id": task.created_by_user_id,
             "created_by_user_name": task.created_by_user_name,
+            "task_type": task.task_type.value,
             "status": task.task_status.value,
             "current_node": task.current_node.value,
             "assigned_agent_id": task.assigned_agent_id,

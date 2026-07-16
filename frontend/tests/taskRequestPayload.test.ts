@@ -8,6 +8,7 @@ describe("buildTaskRequestPayload", () => {
       source_type: "business_system",
       title: "任务名称",
       content: "任务诉求",
+      task_type: "auto_planning",
       metadata: {},
     })
   })
@@ -17,6 +18,7 @@ describe("buildTaskRequestPayload", () => {
       source_type: "business_system",
       title: "任务名称",
       content: "任务诉求",
+      task_type: "manual_orchestration",
       metadata: {
         execution_mode: "workflow_template",
         workflow_id: "workflow_1",
@@ -38,6 +40,7 @@ describe("buildTaskRequestPayload", () => {
       source_type: "business_system",
       title: "任务名称",
       content: "任务诉求",
+      task_type: "manual_orchestration",
       metadata: {
         execution_mode: "workflow_template",
         workflow_name: "客户交付 Workflow",

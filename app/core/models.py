@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.core.enums import CurrentNode, ResultStatus, SourceType, TaskStatus, UserRole
+from app.core.enums import CurrentNode, ResultStatus, SourceType, TaskStatus, TaskType, UserRole
 
 
 def new_id(prefix: str) -> str:
@@ -115,6 +115,7 @@ class TaskRequestCreate(BaseModel):
     source_type: SourceType
     title: str = Field(default="", max_length=50)
     content: str = Field(min_length=1)
+    task_type: TaskType | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -245,6 +246,7 @@ class Task(BaseModel):
     request_id: str | None = None
     source_type: SourceType
     content: str
+    task_type: TaskType = TaskType.AUTO_PLANNING
     request_metadata: dict[str, Any] = Field(default_factory=dict)
     created_by_user_id: str = ""
     created_by_user_name: str = ""
@@ -262,3 +264,9 @@ class Task(BaseModel):
     events: list[Event] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def infer_task_type_from_legacy_metadata(self) -> "Task":
+        if self.request_metadata.get("execution_mode") == "workflow_template":
+            self.task_type = TaskType.MANUAL_ORCHESTRATION
+        return self
