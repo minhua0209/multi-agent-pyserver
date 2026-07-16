@@ -94,11 +94,15 @@ export function workflowToReactFlow(
   definition: WorkflowDefinition,
   positions: WorkflowNodePositions = defaultWorkflowNodePositions,
 ): { nodes: WorkflowReactFlowNode[]; edges: WorkflowReactFlowEdge[] } {
+  const resolvedPositions = resolveNodePositions(definition, positions)
   return {
     nodes: definition.nodes.map((node) => ({
       id: node.id,
       type: "workflowNode",
-      position: nodePosition(node.id, positions),
+      position: nodePosition(node.id, resolvedPositions),
+      style: {
+        width: node.type === "condition" ? 180 : 224,
+      },
       data: {
         id: node.id,
         title: node.title || node.id,
@@ -156,6 +160,55 @@ export function applyNodeConfig(
 function nodePosition(nodeId: string, positions: WorkflowNodePositions): XYPosition {
   const position = positions[nodeId] || defaultWorkflowNodePositions[nodeId] || { left: 0, top: 0 }
   return { x: position.left, y: position.top }
+}
+
+function resolveNodePositions(definition: WorkflowDefinition, positions: WorkflowNodePositions): WorkflowNodePositions {
+  const resolved: WorkflowNodePositions = { ...positions }
+  const nodesWithoutPosition = definition.nodes.filter((node) => !resolved[node.id] && !defaultWorkflowNodePositions[node.id])
+  if (!nodesWithoutPosition.length) return resolved
+
+  const incoming = new Map<string, string[]>()
+  const outgoing = new Map<string, string[]>()
+  definition.nodes.forEach((node) => {
+    incoming.set(node.id, [])
+    outgoing.set(node.id, [])
+  })
+  definition.edges.forEach((edge) => {
+    incoming.get(edge.to)?.push(edge.from)
+    outgoing.get(edge.from)?.push(edge.to)
+  })
+
+  const depth = new Map<string, number>()
+  const queue = definition.nodes.filter((node) => node.id === "start" || !incoming.get(node.id)?.length).map((node) => node.id)
+  queue.forEach((nodeId) => depth.set(nodeId, nodeId === "start" ? 0 : 1))
+  while (queue.length) {
+    const nodeId = queue.shift()!
+    const nextDepth = (depth.get(nodeId) || 0) + 1
+    for (const target of outgoing.get(nodeId) || []) {
+      if (depth.has(target)) continue
+      depth.set(target, nextDepth)
+      queue.push(target)
+    }
+  }
+
+  const grouped = new Map<number, WorkflowNode[]>()
+  definition.nodes.forEach((node, index) => {
+    if (resolved[node.id] || defaultWorkflowNodePositions[node.id]) return
+    const nodeDepth = depth.get(node.id) ?? index + 1
+    const group = grouped.get(nodeDepth) || []
+    group.push(node)
+    grouped.set(nodeDepth, group)
+  })
+
+  grouped.forEach((nodes, nodeDepth) => {
+    nodes.forEach((node, index) => {
+      resolved[node.id] = {
+        left: 46 + nodeDepth * 230,
+        top: 90 + index * 150,
+      }
+    })
+  })
+  return resolved
 }
 
 function workflowEdgeToReactFlow(edge: WorkflowEdge): WorkflowReactFlowEdge {

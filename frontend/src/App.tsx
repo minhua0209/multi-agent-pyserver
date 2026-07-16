@@ -39,7 +39,6 @@ import {
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import {
   Agent,
-  SimpleAgentResponse,
   SubTask,
   Task,
   TaskRound,
@@ -47,6 +46,8 @@ import {
   WorkflowTemplate,
   cancelTask,
   confirmTask,
+  createAgent,
+  createHumanNode,
   createSimpleAgent,
   createTaskRequest,
   getTask,
@@ -74,7 +75,7 @@ const navGroups = [
   {
     label: "管理治理",
     items: [
-      { id: "agents", text: "Agent 管理", icon: Bot },
+      { id: "agents", text: "流程节点管理", icon: Bot },
       { id: "audit", text: "审计记录", icon: FileText },
       { id: "governance", text: "平台治理", icon: ShieldCheck },
     ],
@@ -234,7 +235,7 @@ export default function App() {
             <Input
               className="global-search"
               prefix={<Search size={16} />}
-              placeholder="搜索任务、Agent、执行节点"
+              placeholder="搜索任务、流程节点、执行节点"
               readOnly
             />
             <Flex align="center" gap={12}>
@@ -310,7 +311,7 @@ function Overview({
         <Metric label="执行完成" value={succeeded} tone="success" />
         <Metric label="执行失败" value={failed} tone="danger" />
         <Metric label="人工待处理" value={humanSubtasks.length} tone="warning" />
-        <Metric label="处理 Agent" value={agents.filter((agent) => agent.agent_type !== "condition").length} tone="info" />
+        <Metric label="流程节点" value={agents.length} tone="info" />
       </div>
       <div className="grid two">
         <Panel title="节点态势">
@@ -941,21 +942,44 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
 }
 
 function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgents: (agents: Agent[] | ((current: Agent[]) => Agent[])) => void; setToast: (value: string) => void }) {
-  const [ability, setAbility] = useState("向指定目录写入文章或者报告总结")
-  const [name, setName] = useState("报告写入助手")
-  const [result, setResult] = useState<SimpleAgentResponse | null>(null)
+  const [nodeType, setNodeType] = useState("processing")
+  const [description, setDescription] = useState("向指定目录写入文章或者报告总结")
+  const [humanAssigneeName, setHumanAssigneeName] = useState("王大锤")
+  const [name, setName] = useState("报告写入节点")
+  const [result, setResult] = useState<{ status: string; message: string; agent?: Agent | null; guidance?: string[] } | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setSubmitting(true)
     try {
-      const response = await createSimpleAgent(ability, name)
-      setResult(response)
-      if (response.agent) {
-        setAgents((current) => [response.agent!, ...current])
-        setToast("Agent 已创建")
+      if (nodeType === "processing") {
+        const response = await createSimpleAgent(description, name)
+        setResult(response)
+        if (response.agent) {
+          setAgents((current) => [response.agent!, ...current])
+          setToast("Agent 节点已创建")
+        }
+        return
       }
+      if (nodeType === "human") {
+        const response = await createHumanNode(humanAssigneeName.trim(), name.trim())
+        setResult(response)
+        if (response.agent) {
+          setAgents((current) => [response.agent!, ...current])
+          setToast("人工节点已创建")
+        }
+        return
+      }
+      const response = await createAgent({
+        name: name.trim(),
+        description: description.trim(),
+        agent_type: "condition",
+        capabilities: ["condition_judge"],
+      })
+      setResult({ status: "created", message: "判断节点已创建", agent: response })
+      setAgents((current) => [response, ...current])
+      setToast("判断节点已创建")
     } finally {
       setSubmitting(false)
     }
@@ -963,33 +987,72 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
 
   return (
     <div className="page active">
-      <PageHeader title="Agent 管理" description="通过一句诉求创建具体能力 Agent，并查看能力标签和工具定义。" />
+      <PageHeader title="流程节点管理" description="创建和维护流程画布可用的 Agent 节点、人工节点和判断节点。" />
       <div className="grid two">
-        <Card className="form-panel" title="极简创建 Agent" size="small">
+        <Card className="form-panel" title="创建流程节点" size="small">
         <form onSubmit={submit}>
           <label className="field">
-            <span>Agent 名称</span>
-            <Input value={name} onChange={(event) => setName(event.target.value)} />
+            <span>节点类型</span>
+            <Select
+              value={nodeType}
+              options={[
+                { value: "processing", label: "Agent 节点" },
+                { value: "human", label: "人工节点" },
+                { value: "condition", label: "判断节点" },
+              ]}
+              onChange={setNodeType}
+            />
           </label>
           <label className="field">
-            <span>能力诉求</span>
-            <Input.TextArea rows={6} value={ability} onChange={(event) => setAbility(event.target.value)} />
+            <span>节点名称</span>
+            <Input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
-          <Button type="primary" htmlType="submit" icon={<Bot size={16} />} loading={submitting} disabled={!ability.trim()}>
-            极简创建 Agent
+          {nodeType === "human" ? (
+            <label className="field">
+              <span>审批人姓名</span>
+              <Input
+                value={humanAssigneeName}
+                onChange={(event) => setHumanAssigneeName(event.target.value)}
+                placeholder="请输入审批人姓名，例如：王大锤"
+              />
+            </label>
+          ) : (
+            <label className="field">
+              <span>{nodeType === "condition" ? "判断逻辑" : "节点说明"}</span>
+              <Input.TextArea
+                rows={6}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder={nodeType === "condition" ? "请描述判断条件和输出规则" : "请描述节点能力"}
+              />
+            </label>
+          )}
+          <Button
+            type="primary"
+            htmlType="submit"
+            icon={<Bot size={16} />}
+            loading={submitting}
+            disabled={!name.trim() || (nodeType === "human" && !humanAssigneeName.trim())}
+          >
+            创建流程节点
           </Button>
           {result && (
             <AntAlert
               className="agent-result"
-              type={result.status === "created" ? "success" : "warning"}
+              type={result.agent ? "success" : "warning"}
               showIcon
-              message={result.status}
-              description={<>{result.message}{result.guidance?.map((item) => <p key={item}>{item}</p>)}</>}
+              message={result.agent ? "节点已创建" : "节点未创建"}
+              description={
+                <>
+                  {result.agent ? `${result.agent.name} 已作为${nodeTypeLabel(result.agent.agent_type)}保存` : result.message}
+                  {result.guidance?.map((item) => <p key={item}>{item}</p>)}
+                </>
+              }
             />
           )}
         </form>
         </Card>
-        <Panel title="已注册 Agent">
+        <Panel title="已注册流程节点">
           <List
             dataSource={agents}
             renderItem={(agent) => (
@@ -1000,6 +1063,7 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
                     <div>
                       <Typography.Paragraph ellipsis={{ rows: 2 }}>{agent.description}</Typography.Paragraph>
                       <Flex wrap gap={6}>
+                        <Tag color={nodeTypeColor(agent.agent_type)}>{nodeTypeLabel(agent.agent_type)}</Tag>
                         {(agent.capabilities || []).slice(0, 4).map((capability) => <Tag key={capability}>{capability}</Tag>)}
                         <Tag color="blue">{(agent.tools || []).map((tool) => tool.type).join("、") || "无工具"}</Tag>
                       </Flex>
@@ -1013,6 +1077,14 @@ function AgentsPage({ agents, setAgents, setToast }: { agents: Agent[]; setAgent
       </div>
     </div>
   )
+}
+
+function nodeTypeLabel(type?: string) {
+  return { processing: "Agent 节点", human: "人工节点", condition: "判断节点" }[type || "processing"] || type || "Agent 节点"
+}
+
+function nodeTypeColor(type?: string) {
+  return { processing: "blue", human: "green", condition: "purple" }[type || "processing"] || "default"
 }
 
 function AuditPage({ events }: { events: Array<Record<string, unknown>> }) {

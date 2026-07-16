@@ -7,8 +7,8 @@ router = APIRouter(prefix="/api/v1/subtasks", tags=["subtasks"])
 
 
 @router.get("/human", response_model=list[SubTask])
-def list_human_subtasks(request: Request) -> list[SubTask]:
-    return request.app.state.task_service.list_human_subtasks()
+def list_human_subtasks(request: Request, assignee_user_id: str | None = None) -> list[SubTask]:
+    return request.app.state.task_service.list_human_subtasks(assignee_user_id=assignee_user_id)
 
 
 @router.post("/{subtask_id}/result", response_model=Task)

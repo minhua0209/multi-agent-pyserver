@@ -80,6 +80,53 @@ def test_unconfirmed_task_can_be_cancelled_and_removed_from_task_list(tmp_path: 
     assert client.get("/api/v1/tasks").json() == []
 
 
+def test_no_workflow_human_subtask_defaults_to_root_assignee(tmp_path: Path, monkeypatch) -> None:
+    from app.core.models import RoundPlan, SubTask, new_id
+
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    def _plan(task, _agents):
+        if task.loop_count > 0:
+            return RoundPlan(should_continue=False, reason="done")
+        return RoundPlan(
+            should_continue=True,
+            execution_mode="sequential",
+            reason="needs human approval",
+            subtasks=[
+                SubTask(
+                    id=new_id("subtask"),
+                    title="人工审核",
+                    description="需要人工审核当前任务",
+                    assignee_type="human",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "人工审核任务",
+            "content": "请人工审核方案",
+        },
+    ).json()["tasks"][0]
+
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "人工审核任务", "description": "请人工审核方案"},
+    ).json()
+
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["assignee_user_id"] == "root"
+    assert human_subtask["assignee_user_name"] == "管理员"
+    assert human_subtask["assignee_role"] == "admin"
+
+    assert client.get("/api/v1/subtasks/human?assignee_user_id=root").json()[0]["id"] == human_subtask["id"]
+    assert client.get("/api/v1/subtasks/human?assignee_user_id=user_001").json() == []
+
+
 def test_task_request_does_not_use_intent_mock_when_system_fallback_disabled(
     tmp_path: Path,
     monkeypatch,

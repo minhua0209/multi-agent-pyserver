@@ -26,6 +26,7 @@ class AgentCreate(BaseModel):
     output_schema: dict = Field(default_factory=dict)
     execution_config: "AgentExecutionConfig" = Field(default_factory=lambda: AgentExecutionConfig())
     tools: list["AgentTool"] = Field(default_factory=list)
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class Agent(AgentCreate):
@@ -36,6 +37,12 @@ class Agent(AgentCreate):
 class SimpleAgentCreate(BaseModel):
     ability: str = Field(min_length=1)
     name: str = ""
+
+
+class HumanNodeCreate(BaseModel):
+    name: str = Field(min_length=1)
+    assignee_user_name: str = Field(min_length=1)
+    assignee_role: str = "approver"
 
 
 class MissingTool(BaseModel):
@@ -164,6 +171,9 @@ class SubTask(BaseModel):
     description: str
     assigned_agent_id: str | None = None
     assignee_type: str = "agent"
+    assignee_user_id: str = ""
+    assignee_user_name: str = ""
+    assignee_role: str = ""
     current_node: CurrentNode | None = None
     status: TaskStatus = TaskStatus.RUNNING
     tool_calls: list[ToolCall] = Field(default_factory=list)

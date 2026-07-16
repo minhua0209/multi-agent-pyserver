@@ -148,12 +148,14 @@ class TaskService:
             raise TaskCannotBeCancelledError(task_id)
         self.store.delete(task_id)
 
-    def list_human_subtasks(self) -> list[SubTask]:
+    def list_human_subtasks(self, assignee_user_id: str | None = None) -> list[SubTask]:
         subtasks = []
         for task in self.store.list():
             for round_item in task.context.rounds:
                 for subtask in round_item.subtasks:
                     if subtask.assignee_type == "human" and subtask.status == TaskStatus.RUNNING:
+                        if assignee_user_id and subtask.assignee_user_id != assignee_user_id:
+                            continue
                         subtasks.append(subtask)
         return subtasks
 

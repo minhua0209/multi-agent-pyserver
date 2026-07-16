@@ -63,16 +63,26 @@ class WorkflowTemplateRunner:
 
     @staticmethod
     def _node_to_subtask(task: Task, node: WorkflowNode) -> SubTask:
+        assignee = WorkflowTemplateRunner._human_assignee_from_config(node.config) if node.type == "human" else {}
         subtask = SubTask(
             id=f"{task.id}_{node.id}",
             title=node.title or node.id,
             description=node.description or node.title or node.id,
             assigned_agent_id=node.agent_id,
             assignee_type=node.type if node.type in {"human", "condition"} else "agent",
+            **assignee,
         )
         if node.type == "condition":
             subtask.result_metadata = {"config": node.config}
         return subtask
+
+    @staticmethod
+    def _human_assignee_from_config(config: dict) -> dict:
+        return {
+            "assignee_user_id": str(config.get("assignee_user_id") or "root"),
+            "assignee_user_name": str(config.get("assignee_user_name") or "管理员"),
+            "assignee_role": str(config.get("assignee_role") or "admin"),
+        }
 
     @staticmethod
     def _completed_node_ids(task: Task) -> set[str]:

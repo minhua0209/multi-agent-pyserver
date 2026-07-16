@@ -312,6 +312,8 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
         "你是多轮任务分发 agent。你需要读取主任务当前上下文，判断下一轮是否还有待执行子任务。"
         "如果前置结果不足，先创建获取前置信息的子任务；如果已有足够上下文，再创建后续子任务。"
         "每轮可以返回多个可并发执行的子任务，也可以返回一个需要同步执行的子任务。"
+        "如果子任务需要人工处理，必须尽量根据任务上下文推断审核人，并填写 assignee_user_id、assignee_user_name、assignee_role；"
+        "如果无法判断审核人，这三个字段可以留空，系统会交给 root 管理员。"
         "当没有待执行子任务时，should_continue=false，并给出 final_output。"
         "所有面向用户或存储展示的文本必须使用中文，包括 reason、final_output、subtasks.title、subtasks.description。"
         "如果输入上下文或 agent 描述中含有英文，也要用中文概括，不要原样输出英文长句。"
@@ -319,7 +321,8 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
         '格式: {"should_continue": true|false, "execution_mode": "parallel|sequential", '
         '"reason": "...", "final_output": "...", '
         '"subtasks": [{"title": "...", "description": "...", '
-        '"assignee_type": "agent|human", "assigned_agent_id": "agent_id 或 null"}]}'
+        '"assignee_type": "agent|human", "assigned_agent_id": "agent_id 或 null", '
+        '"assignee_user_id": "审核人ID或空", "assignee_user_name": "审核人姓名或空", "assignee_role": "审核角色或空"}]}'
     )
     agents_payload = [
         {
@@ -366,6 +369,9 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
                 description=description,
                 assignee_type="human" if item.get("assignee_type") == "human" else "agent",
                 assigned_agent_id=_valid_agent_id(item.get("assigned_agent_id"), agents),
+                assignee_user_id=_optional_string(item.get("assignee_user_id")) or "",
+                assignee_user_name=_optional_string(item.get("assignee_user_name")) or "",
+                assignee_role=_optional_string(item.get("assignee_role")) or "",
             )
         )
     return RoundPlan(

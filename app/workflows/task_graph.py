@@ -138,6 +138,7 @@ class TaskGraphRunner:
         agent_subtasks = []
         for subtask in state["round_plan"].subtasks:
             if subtask.assignee_type == "human":
+                self._ensure_human_assignee(subtask)
                 subtask.status = TaskStatus.RUNNING
                 subtask.current_node = CurrentNode.HUMAN_EXECUTION
                 paused = True
@@ -345,3 +346,9 @@ class TaskGraphRunner:
     @staticmethod
     def _event(event_type: str, message: str) -> Event:
         return Event(type=event_type, message=message, created_at=utc_now())
+
+    @staticmethod
+    def _ensure_human_assignee(subtask: SubTask) -> None:
+        subtask.assignee_user_id = subtask.assignee_user_id or "root"
+        subtask.assignee_user_name = subtask.assignee_user_name or "管理员"
+        subtask.assignee_role = subtask.assignee_role or "admin"

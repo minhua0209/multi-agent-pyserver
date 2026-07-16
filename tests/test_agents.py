@@ -144,6 +144,91 @@ def test_create_agent_accepts_agent_type(tmp_path: Path) -> None:
     assert body["agent_type"] == "condition"
 
 
+def test_create_human_agent_persists_default_assignee_metadata(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "报价人工审批节点",
+            "description": "负责报价类人工审批",
+            "agent_type": "human",
+            "capabilities": ["quote_approval"],
+            "metadata": {
+                "assignee_user_id": "user_001",
+                "assignee_user_name": "张三",
+                "assignee_role": "quote_approver",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["agent_type"] == "human"
+    assert body["metadata"]["assignee_user_id"] == "user_001"
+    assert body["metadata"]["assignee_user_name"] == "张三"
+
+
+def test_create_human_node_persists_explicit_assignee_name(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/human-node",
+        json={
+            "name": "报价审批节点",
+            "assignee_user_name": "王大锤",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "created"
+    assert body["agent"]["agent_type"] == "human"
+    assert body["agent"]["description"] == "人工审批节点，审批人：王大锤"
+    assert body["agent"]["metadata"]["assignee_user_id"] == "王大锤"
+    assert body["agent"]["metadata"]["assignee_user_name"] == "王大锤"
+    assert body["agent"]["metadata"]["assignee_role"] == "approver"
+    assert client.get("/api/v1/agents").json()[0]["metadata"]["assignee_user_name"] == "王大锤"
+
+
+def test_create_human_node_accepts_custom_assignee_role(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/human-node",
+        json={
+            "name": "通用审批节点",
+            "assignee_user_name": "王大锤",
+            "assignee_role": "quote_approver",
+        },
+    )
+
+    assert response.status_code == 201
+    metadata = response.json()["agent"]["metadata"]
+    assert metadata["assignee_user_id"] == "王大锤"
+    assert metadata["assignee_user_name"] == "王大锤"
+    assert metadata["assignee_role"] == "quote_approver"
+
+
+def test_create_human_node_rejects_when_assignee_name_missing(tmp_path: Path) -> None:
+    data_file = tmp_path / "agents.json"
+    client = TestClient(create_app(agent_file=data_file))
+
+    response = client.post(
+        "/api/v1/agents/human-node",
+        json={
+            "name": "通用审批节点",
+            "assignee_user_name": "",
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/v1/agents").json() == []
+
+
 def test_create_agent_accepts_execution_config_and_io_schema(tmp_path: Path) -> None:
     data_file = tmp_path / "agents.json"
     client = TestClient(create_app(agent_file=data_file))

@@ -87,6 +87,11 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
                         "type": "human",
                         "title": "Approve quote",
                         "description": "Approve quote draft",
+                        "config": {
+                            "assignee_user_id": "user_001",
+                            "assignee_user_name": "张三",
+                            "assignee_role": "quote_approver",
+                        },
                     },
                     {"id": "end", "type": "end"},
                 ],
@@ -125,6 +130,9 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
     assert paused["context"]["rounds"][0]["subtasks"][0]["status"] == "succeeded"
     assert paused["context"]["rounds"][1]["subtasks"][0]["id"].endswith("_approve_quote")
     assert paused["context"]["rounds"][1]["subtasks"][0]["status"] == "running"
+    assert paused["context"]["rounds"][1]["subtasks"][0]["assignee_user_id"] == "user_001"
+    assert paused["context"]["rounds"][1]["subtasks"][0]["assignee_user_name"] == "张三"
+    assert paused["context"]["rounds"][1]["subtasks"][0]["assignee_role"] == "quote_approver"
 
     resumed = client.post(
         f"/api/v1/subtasks/{paused['context']['rounds'][1]['subtasks'][0]['id']}/result",

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, Response, status
 
-from app.core.models import Agent, AgentCreate, SimpleAgentCreate, SimpleAgentCreateResponse, Task
+from app.core.models import Agent, AgentCreate, HumanNodeCreate, SimpleAgentCreate, SimpleAgentCreateResponse, Task
 from app.services.agent_profile_builder import AgentProfileBuilder
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
@@ -32,6 +32,28 @@ def create_simple_agent(payload: SimpleAgentCreate, request: Request, response: 
         matched_tools=result.matched_tools,
         missing_tools=result.missing_tools,
         guidance=result.guidance,
+    )
+
+
+@router.post("/human-node", response_model=SimpleAgentCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_human_node(payload: HumanNodeCreate, request: Request) -> SimpleAgentCreateResponse:
+    assignee_name = payload.assignee_user_name.strip()
+    agent_create = AgentCreate(
+        name=payload.name.strip(),
+        description=f"人工审批节点，审批人：{assignee_name}",
+        agent_type="human",
+        capabilities=["human_approval"],
+        metadata={
+            "assignee_user_id": assignee_name,
+            "assignee_user_name": assignee_name,
+            "assignee_role": payload.assignee_role.strip() or "approver",
+        },
+    )
+    agent = request.app.state.agent_registry.create_agent(agent_create)
+    return SimpleAgentCreateResponse(
+        status="created",
+        message="人工节点已创建。",
+        agent=agent,
     )
 
 

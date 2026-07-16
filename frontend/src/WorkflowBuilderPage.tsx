@@ -3,7 +3,9 @@ import {
   Bot,
   CheckCircle2,
   GitBranch,
+  ListFilter,
   PanelRight,
+  PanelRightClose,
   Pencil,
   Plus,
   Save,
@@ -28,11 +30,10 @@ import {
   useNodesState,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 
 import { Agent, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
 import { defaultWorkflowNodePositions, removeWorkflowNode } from "./workflowCanvas"
-import { AgentSummary, buildWorkflowDefinition } from "./workflowBuilder"
 import { capabilityLabel } from "./workflowLabels"
 import {
   WorkflowReactFlowEdge,
@@ -66,15 +67,6 @@ function agentMatchesCapability(agent: Agent, capability: string) {
     .some((value) => String(value).toLowerCase().includes(search))
 }
 
-function toAgentSummary(agent: Agent): AgentSummary {
-  return {
-    id: agent.id,
-    name: agent.name,
-    description: agent.description,
-    capabilities: agent.capabilities || [],
-  }
-}
-
 function nodeIcon(type: string, id: string) {
   if (type === "start") return <Sparkles size={16} />
   if (type === "human") return <UserCheck size={16} />
@@ -92,6 +84,34 @@ function nodeKindText(type: string) {
 
 const nodeTypes = { workflowNode: WorkflowCanvasNode }
 
+function emptyWorkflowDefinition(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
+  return {
+    nodes: [
+      {
+        id: "start",
+        type: "start",
+        title: "开始",
+        description: "读取任务诉求并初始化 workflow 上下文。",
+        config: {
+          context_inputs: ["task.content", "source_type", "request_metadata"],
+          context_outputs: ["context.summary"],
+        },
+      },
+      {
+        id: "end",
+        type: "end",
+        title: "完成",
+        description: "汇总上下文并生成最终输出。",
+        config: {
+          context_inputs: ["context.summary", "subtask.output"],
+          context_outputs: ["final_output"],
+        },
+      },
+    ],
+    edges: [],
+  }
+}
+
 export function WorkflowBuilderPage({
   agents,
   workflows,
@@ -102,29 +122,21 @@ export function WorkflowBuilderPage({
   onSubmitTask,
 }: WorkflowBuilderPageProps) {
   const availableAgents = useMemo(() => processingAgents(agents), [agents])
-  const [workflowName, setWorkflowName] = useState("客户交付 Workflow")
-  const [workflowDescription, setWorkflowDescription] = useState("并行分析客户需求、风险和数据证据，人工确认后按条件完成或返工。")
+  const [workflowName, setWorkflowName] = useState("")
+  const [workflowDescription, setWorkflowDescription] = useState("")
   const [capabilityFilter, setCapabilityFilter] = useState("all")
-  const [canvasNodes, setCanvasNodes] = useState<WorkflowNode[]>([])
-  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowReactFlowNode>([])
-  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<WorkflowReactFlowEdge>([])
+  const initialDefinition = useMemo(() => emptyWorkflowDefinition(), [])
+  const initialFlow = useMemo(() => workflowToReactFlow(initialDefinition, defaultWorkflowNodePositions), [initialDefinition])
+  const [canvasNodes, setCanvasNodes] = useState<WorkflowNode[]>(initialDefinition.nodes)
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowReactFlowNode>(initialFlow.nodes)
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<WorkflowReactFlowEdge>(initialFlow.edges)
   const [activeNodeId, setActiveNodeId] = useState("start")
   const [hoveredNodeId, setHoveredNodeId] = useState("")
   const [editingNodeId, setEditingNodeId] = useState("")
+  const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false)
+  const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
-
-  useEffect(() => {
-    if (canvasNodes.length > 0) return
-    const initialDefinition = buildWorkflowDefinition(
-      availableAgents.slice(0, 3).map(toAgentSummary),
-      availableAgents[3] ? toAgentSummary(availableAgents[3]) : undefined,
-    )
-    setCanvasNodes(initialDefinition.nodes)
-    const flow = workflowToReactFlow(initialDefinition, defaultWorkflowNodePositions)
-    setFlowNodes(flow.nodes)
-    setFlowEdges(flow.edges)
-  }, [availableAgents, canvasNodes.length])
 
   const capabilityOptions = useMemo(() => {
     const capabilities = new Set<string>()
@@ -278,6 +290,30 @@ export function WorkflowBuilderPage({
     setToast("条件节点已加入画布")
   }
 
+  function loadEmptyCanvas() {
+    const nextDefinition = emptyWorkflowDefinition()
+    const flow = workflowToReactFlow(nextDefinition, defaultWorkflowNodePositions)
+    setWorkflowName("")
+    setWorkflowDescription("")
+    setCanvasNodes(nextDefinition.nodes)
+    setFlowNodes(flow.nodes)
+    setFlowEdges(flow.edges)
+    setActiveNodeId("start")
+    setMessage("已创建新画布")
+  }
+
+  function loadWorkflowTemplate(template: WorkflowTemplate) {
+    const flow = workflowToReactFlow(template.definition, defaultWorkflowNodePositions)
+    setWorkflowName(template.name || "")
+    setWorkflowDescription(template.description || "")
+    setCanvasNodes(template.definition.nodes || [])
+    setFlowNodes(flow.nodes)
+    setFlowEdges(flow.edges)
+    setActiveNodeId(template.definition.nodes?.[0]?.id || "start")
+    setMessage(`已加载模板：${template.name}`)
+    setToast(`${template.name} 已渲染到画布`)
+  }
+
   function deleteActiveNode() {
     if (!activeNode || !canDeleteActiveNode) return
     const result = removeWorkflowNode(canvasNodes, definition.edges, activeNode.id)
@@ -288,16 +324,6 @@ export function WorkflowBuilderPage({
     setEditingNodeId("")
     setMessage(`${activeNode.title || activeNode.id} 已删除`)
     setToast(`${activeNode.title || activeNode.id} 已从画布删除`)
-  }
-
-  function updateActiveNodeConfig(patch: Record<string, unknown>) {
-    if (!activeNode) return
-    handleNodeConfigChange(activeNode.id, patch)
-  }
-
-  function updateActiveInstruction(value: string) {
-    if (!activeNode || activeNode.type !== "agent") return
-    updateActiveNodeConfig({ execution_instruction: value })
   }
 
   const onConnect = useCallback(
@@ -351,6 +377,11 @@ export function WorkflowBuilderPage({
   }
 
   const summaryText = `画布节点 ${definition.nodes.length} 个，连线 ${definition.edges.length} 条；选中节点后新增会自动从当前节点连接。`
+  const layoutClassName = [
+    "workflow-layout",
+    nodeDrawerOpen ? "" : "workflow-layout-node-collapsed",
+    templateDrawerOpen ? "" : "workflow-layout-template-collapsed",
+  ].filter(Boolean).join(" ")
 
   return (
     <div className={modal ? "workflow-page workflow-page-modal" : "page active workflow-page"}>
@@ -368,62 +399,13 @@ export function WorkflowBuilderPage({
         </button>
       </PageTitle>
 
-      <div className="workflow-layout">
-        <section className="panel workflow-agent-panel">
-          <div className="panel-title">
-            <span className="nav-text">
-              <Bot size={16} />
-              Agent 节点列表
-            </span>
-            <span className="muted">{availableAgents.length} 个可选</span>
-          </div>
-          <label className="field">
-            <span>筛选能力</span>
-            <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
-              {capabilityOptions.map((capability) => (
-                <option key={capability} value={capability}>
-                  {capabilityLabel(capability)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="workflow-agent-list">
-            {!filteredAgents.length && <EmptyPanel text="暂无可选 Agent，可先到 Agent 管理创建" />}
-            {filteredAgents.map((agent) => {
-              const isOnCanvas = canvasNodes.some((node) => node.agent_id === agent.id)
-              return (
-                <div className={isOnCanvas ? "workflow-agent-card active" : "workflow-agent-card"} key={agent.id}>
-                  <div className="workflow-agent-head">
-                    <span className="workflow-agent-name">
-                      <span className="workflow-icon success"><Bot size={16} /></span>
-                      <span>{agent.name}</span>
-                    </span>
-                    <span className={isOnCanvas ? "tag workflow-agent-status-tag active" : "tag workflow-agent-status-tag"}>
-                      {isOnCanvas ? "已在画布" : agent.agent_type || "processing"}
-                    </span>
-                  </div>
-                  <p>{agent.description || "暂无描述"}</p>
-                  <div className="tag-row">
-                    {(agent.capabilities || []).slice(0, 4).map((capability) => <span className="tag" key={capability}>{capability}</span>)}
-                  </div>
-                  <div className="workflow-card-actions">
-                    <button className="btn btn-small" type="button" onClick={() => addAgentNode(agent)}>
-                      <Plus size={14} />
-                      加入画布
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
-
+      <div className={layoutClassName}>
         <section className="panel workflow-canvas-panel">
           <div className="workflow-canvas-header">
             <div>
               <label className="field compact-field">
                 <span>Workflow 名称</span>
-                <input className="input" value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} />
+                <input className="input" value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} placeholder="请输入 Workflow 名称" />
               </label>
               <p className="muted">{summaryText}</p>
             </div>
@@ -450,9 +432,109 @@ export function WorkflowBuilderPage({
           </div>
           <label className="field compact-field">
             <span>描述</span>
-            <input className="input" value={workflowDescription} onChange={(event) => setWorkflowDescription(event.target.value)} />
+            <input className="input" value={workflowDescription} onChange={(event) => setWorkflowDescription(event.target.value)} placeholder="请输入 Workflow 描述" />
           </label>
           <div className="workflow-canvas" aria-label="Workflow 自由画布">
+            <aside className="workflow-left-drawers">
+              <section className="panel workflow-agent-panel workflow-drawer-panel">
+                <div className="panel-title">
+                  <span className="nav-text">
+                    <Bot size={16} />
+                    可编排节点
+                  </span>
+                  <button className="btn btn-small btn-icon" type="button" onClick={() => setNodeDrawerOpen((value) => !value)} title={nodeDrawerOpen ? "收起可编排节点" : "展开可编排节点"}>
+                    {nodeDrawerOpen ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
+                  </button>
+                </div>
+                {nodeDrawerOpen && (
+                  <>
+                    <p className="muted drawer-summary">{availableAgents.length} 个可选节点</p>
+                    <label className="field">
+                      <span>筛选能力</span>
+                      <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
+                        {capabilityOptions.map((capability) => (
+                          <option key={capability} value={capability}>
+                            {capabilityLabel(capability)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="workflow-agent-list">
+                      {!filteredAgents.length && <EmptyPanel text="暂无可选节点，可先到流程节点管理创建" />}
+                      {filteredAgents.map((agent) => {
+                        const isOnCanvas = canvasNodes.some((node) => node.agent_id === agent.id)
+                        return (
+                          <div className={isOnCanvas ? "workflow-agent-card active" : "workflow-agent-card"} key={agent.id}>
+                            <div className="workflow-agent-head">
+                              <span className="workflow-agent-name">
+                                <span className="workflow-icon success"><Bot size={16} /></span>
+                                <span>{agent.name}</span>
+                              </span>
+                              <span className={isOnCanvas ? "tag workflow-agent-status-tag active" : "tag workflow-agent-status-tag"}>
+                                {isOnCanvas ? "已在画布" : agent.agent_type || "processing"}
+                              </span>
+                            </div>
+                            <p>{agent.description || "暂无描述"}</p>
+                            <div className="tag-row">
+                              {(agent.capabilities || []).slice(0, 4).map((capability) => <span className="tag" key={capability}>{capabilityLabel(capability)}</span>)}
+                            </div>
+                            <div className="workflow-card-actions">
+                              <button className="btn btn-small" type="button" onClick={() => addAgentNode(agent)}>
+                                <Plus size={14} />
+                                加入画布
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </section>
+
+              <section className="panel workflow-template-panel workflow-drawer-panel">
+                <div className="panel-title">
+                  <span className="nav-text">
+                    <ListFilter size={16} />
+                    流程模板
+                  </span>
+                  <button className="btn btn-small btn-icon" type="button" onClick={() => setTemplateDrawerOpen((value) => !value)} title={templateDrawerOpen ? "收起流程模板" : "展开流程模板"}>
+                    {templateDrawerOpen ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
+                  </button>
+                </div>
+                {templateDrawerOpen && (
+                  <div className="workflow-agent-list">
+                    <button className="btn btn-small workflow-new-canvas-button" type="button" onClick={loadEmptyCanvas}>
+                      <Sparkles size={14} />
+                      新建空白画布
+                    </button>
+                    {!workflows.length && <EmptyPanel text="暂无已保存流程模板" />}
+                    {workflows.map((workflow) => (
+                      <div className="workflow-agent-card workflow-template-card" key={workflow.id}>
+                        <div className="workflow-agent-head">
+                          <span className="workflow-agent-name">
+                            <span className="workflow-icon violet"><GitBranch size={16} /></span>
+                            <span>{workflow.name}</span>
+                          </span>
+                          <span className="tag">{workflow.status || "active"}</span>
+                        </div>
+                        <p>{workflow.description || "暂无描述"}</p>
+                        <div className="tag-row">
+                          <span className="tag">nodes={workflow.definition.nodes.length}</span>
+                          <span className="tag">edges={workflow.definition.edges.length}</span>
+                        </div>
+                        <div className="workflow-card-actions">
+                          <button className="btn btn-small" type="button" onClick={() => loadWorkflowTemplate(workflow)}>
+                            <Plus size={14} />
+                            渲染到画布
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </aside>
             <ReactFlow
               nodes={visibleFlowNodes}
               edges={flowEdges}
@@ -472,75 +554,11 @@ export function WorkflowBuilderPage({
               <Controls />
             </ReactFlow>
           </div>
+          <div className="workflow-save-summary">
+            <span>nodes={definition.nodes.length}，edges={definition.edges.length}，templates={workflows.length}</span>
+            {message && <span className={message.includes("失败") || message.includes("Workflow not found") ? "danger-text" : "muted"}>{message}</span>}
+          </div>
         </section>
-        {activeNode?.type === "agent" && (
-          <section className="workflow-node-config-panel">
-            <strong>选中 Agent 执行交代</strong>
-            <label className="field compact-field">
-              <span>执行交代</span>
-              <textarea
-                className="textarea"
-                value={String(activeNode.config?.execution_instruction || "")}
-                onChange={(event) => updateActiveInstruction(event.target.value)}
-                placeholder="给该 Agent 的执行要求，例如重点检查字段、输出格式、注意事项"
-              />
-            </label>
-          </section>
-        )}
-        {activeNode?.type === "human" && (
-          <section className="workflow-node-config-panel">
-            <strong>人工确认配置</strong>
-            <div className="workflow-config-grid">
-              <label className="field compact-field">
-                <span>指定人员</span>
-                <input
-                  className="input"
-                  value={String(activeNode.config?.assignee || "")}
-                  onChange={(event) => updateActiveNodeConfig({ assignee: event.target.value })}
-                  placeholder="人员姓名、角色或用户 ID"
-                />
-              </label>
-              <label className="field compact-field">
-                <span>人工交代</span>
-                <textarea
-                  className="textarea"
-                  value={String(activeNode.config?.handoff_instruction || "")}
-                  onChange={(event) => updateActiveNodeConfig({ handoff_instruction: event.target.value })}
-                  placeholder="给人工确认人的处理要求、注意事项或输出格式"
-                />
-              </label>
-            </div>
-          </section>
-        )}
-        {activeNode?.type === "condition" && (
-          <section className="workflow-node-config-panel">
-            <strong>条件节点配置</strong>
-            <div className="workflow-config-grid">
-              <label className="field compact-field">
-                <span>条件描述</span>
-                <input
-                  className="input"
-                  value={String(activeNode.config?.condition_description || "")}
-                  onChange={(event) => updateActiveNodeConfig({ condition_description: event.target.value })}
-                  placeholder="例如：人工通过后完成，否则返工"
-                />
-              </label>
-              <label className="field compact-field">
-                <span>条件内容</span>
-                <textarea
-                  className="textarea"
-                  value={String(activeNode.config?.condition_content || "")}
-                  onChange={(event) => updateActiveNodeConfig({ condition_content: event.target.value })}
-                  placeholder="例如：decision=approved -> 完成；decision=rejected -> 返工"
-                />
-              </label>
-            </div>
-          </section>
-        )}
-        <div className="workflow-save-summary">
-          <span>nodes={definition.nodes.length}，edges={definition.edges.length}，templates={workflows.length}</span>
-          {message && <span className={message.includes("失败") || message.includes("Workflow not found") ? "danger-text" : "muted"}>{message}</span>}
-        </div>
       </div>
     </div>
   )

@@ -14,6 +14,7 @@ export interface Agent {
   description?: string
   agent_type?: string
   capabilities?: string[]
+  metadata?: Record<string, string>
   tools?: AgentTool[]
   created_at?: string
 }
@@ -36,6 +37,9 @@ export interface SubTask {
   current_node?: string
   assignee_type?: string
   assigned_agent_id?: string
+  assignee_user_id?: string
+  assignee_user_name?: string
+  assignee_role?: string
   output?: string
   error_message?: string
   tool_results?: Array<Record<string, unknown>>
@@ -128,12 +132,20 @@ export interface WorkflowTaskMetadata {
 }
 
 export interface SimpleAgentResponse {
-  status: "created" | "ready" | "needs_split" | "tool_missing"
+  status: "created" | "ready" | "needs_split" | "tool_missing" | "assignee_missing"
   message: string
   agent: Agent | null
   matched_tools: string[]
   missing_tools: Array<{ type: string; reason: string; suggested_action?: string }>
   guidance: string[]
+}
+
+export interface AgentCreatePayload {
+  name: string
+  description?: string
+  agent_type?: string
+  capabilities?: string[]
+  metadata?: Record<string, string>
 }
 
 const configuredBaseUrl = (import.meta as ImportMeta & { env?: { VITE_TASKHUB_API_BASE_URL?: string } }).env?.VITE_TASKHUB_API_BASE_URL
@@ -219,8 +231,9 @@ export function cancelTask(taskId: string) {
   })
 }
 
-export function listHumanSubtasks() {
-  return request<SubTask[]>("/api/v1/subtasks/human")
+export function listHumanSubtasks(assigneeUserId = "") {
+  const query = assigneeUserId ? `?assignee_user_id=${encodeURIComponent(assigneeUserId)}` : ""
+  return request<SubTask[]>(`/api/v1/subtasks/human${query}`)
 }
 
 export function submitHumanSubtaskResult(
@@ -247,6 +260,20 @@ export function createSimpleAgent(ability: string, name?: string) {
   return request<SimpleAgentResponse>("/api/v1/agents/simple", {
     method: "POST",
     body: JSON.stringify({ ability, name }),
+  })
+}
+
+export function createHumanNode(assigneeUserName: string, name: string) {
+  return request<SimpleAgentResponse>("/api/v1/agents/human-node", {
+    method: "POST",
+    body: JSON.stringify({ assignee_user_name: assigneeUserName, name }),
+  })
+}
+
+export function createAgent(payload: AgentCreatePayload) {
+  return request<Agent>("/api/v1/agents", {
+    method: "POST",
+    body: JSON.stringify(payload),
   })
 }
 

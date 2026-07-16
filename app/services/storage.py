@@ -137,6 +137,7 @@ agents_table = Table(
     Column("output_schema_json", Text, nullable=True),
     Column("execution_config_json", Text, nullable=True),
     Column("tools_json", Text, nullable=True),
+    Column("metadata_json", Text, nullable=True),
     Column("status", String(32), nullable=False, default="active"),
     Column("created_at", DateTime(timezone=True), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=True),
@@ -202,6 +203,9 @@ subtasks_table = Table(
     Column("current_node", String(64), nullable=True),
     Column("assigned_agent_id", String(64), nullable=True),
     Column("assignee_type", String(32), nullable=False, default="agent"),
+    Column("assignee_user_id", String(64), nullable=True),
+    Column("assignee_user_name", String(255), nullable=True),
+    Column("assignee_role", String(128), nullable=True),
     Column("retry_count", Integer, nullable=False, default=0),
     Column("max_retry_count", Integer, nullable=False, default=3),
     Column("output", Text, nullable=True),
@@ -301,6 +305,7 @@ class DatabaseAgentRegistry:
         self.engine = _create_engine(database_url)
         metadata.create_all(self.engine)
         _ensure_column(self.engine, "agents", "agent_type", "VARCHAR(64) NOT NULL DEFAULT 'processing'")
+        _ensure_column(self.engine, "agents", "metadata_json", "TEXT NULL")
 
     def list_agents(self) -> list[Agent]:
         with self.engine.begin() as connection:
@@ -325,6 +330,7 @@ class DatabaseAgentRegistry:
                     output_schema_json=_json_dump(agent.output_schema),
                     execution_config_json=agent.execution_config.model_dump_json(),
                     tools_json=_json_dump([tool.model_dump(mode="json") for tool in agent.tools]),
+                    metadata_json=_json_dump(agent.metadata),
                     status="active",
                     created_at=agent.created_at,
                     updated_at=agent.created_at,
@@ -338,6 +344,9 @@ class DatabaseTaskStore:
         self.engine = _create_engine(database_url)
         metadata.create_all(self.engine)
         _ensure_column(self.engine, "subtasks", "result_metadata_json", "TEXT NULL")
+        _ensure_column(self.engine, "subtasks", "assignee_user_id", "VARCHAR(64) NULL")
+        _ensure_column(self.engine, "subtasks", "assignee_user_name", "VARCHAR(255) NULL")
+        _ensure_column(self.engine, "subtasks", "assignee_role", "VARCHAR(128) NULL")
 
     def save(self, task: Task) -> Task:
         task.updated_at = utc_now()
@@ -539,6 +548,9 @@ class DatabaseTaskStore:
             "current_node": subtask.current_node.value if subtask.current_node else "subtask_execution",
             "assigned_agent_id": subtask.assigned_agent_id,
             "assignee_type": subtask.assignee_type,
+            "assignee_user_id": subtask.assignee_user_id,
+            "assignee_user_name": subtask.assignee_user_name,
+            "assignee_role": subtask.assignee_role,
             "retry_count": 0,
             "max_retry_count": 3,
             "output": subtask.output,
