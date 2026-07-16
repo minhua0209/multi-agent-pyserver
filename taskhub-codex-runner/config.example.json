@@ -1,0 +1,14 @@
+{
+  "server_url": "http://127.0.0.1:8000",
+  "user_id": "王大锤",
+  "runner_id": "local-codex-runner",
+  "codex_command": "codex exec",
+  "poll_interval_seconds": 5,
+  "codex_timeout_seconds": 300,
+  "once": false,
+  "dry_run": false,
+  "auto_submit": true,
+  "auto_install_skill": true,
+  "auto_update_skill": false,
+  "codex_skill_name": "taskhub-codex"
+}

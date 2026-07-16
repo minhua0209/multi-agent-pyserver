@@ -8,9 +8,9 @@ from app.core.config import require_system_mock_fallback_enabled
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
 from app.core.model_client import execute_subtask_with_tools_model
-from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, utc_now
+from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, User, utc_now
 from app.planners.factory import get_task_planner
-from app.services.storage import AgentRegistry
+from app.services.storage import AgentRegistry, UserRegistry
 from app.services.tool_executor import ToolExecutor
 
 
@@ -47,8 +47,9 @@ def plan_next_round_with_model(task: Task, agents: list) -> RoundPlan | None:
 class TaskGraphRunner:
     max_parallel_agent_subtasks = 4
 
-    def __init__(self, agent_registry: AgentRegistry) -> None:
+    def __init__(self, agent_registry: AgentRegistry, user_registry: UserRegistry | None = None) -> None:
         self.agent_registry = agent_registry
+        self.user_registry = user_registry
         self.tool_executor = ToolExecutor()
         self.graph = self._build_graph()
 
@@ -138,7 +139,7 @@ class TaskGraphRunner:
         agent_subtasks = []
         for subtask in state["round_plan"].subtasks:
             if subtask.assignee_type == "human":
-                self._ensure_human_assignee(subtask)
+                self._ensure_human_assignee(subtask, task)
                 subtask.status = TaskStatus.RUNNING
                 subtask.current_node = CurrentNode.HUMAN_EXECUTION
                 paused = True
@@ -158,6 +159,16 @@ class TaskGraphRunner:
 
         for subtask, agent, outcome in outcomes:
             self._apply_subtask_outcome(task, subtask, agent, outcome)
+        failed_subtasks = [subtask for subtask in state["round_plan"].subtasks if subtask.status == TaskStatus.FAILED]
+        if failed_subtasks:
+            failure_message = self._format_failure_summary(failed_subtasks)
+            self._append_pending_round(task, state["round_plan"])
+            task.task_status = TaskStatus.FAILED
+            task.current_node = CurrentNode.SUBTASK_EXECUTION
+            task.final_output = failure_message
+            task.events.append(self._event("task_failed", failure_message))
+            task.updated_at = utc_now()
+            return {"task": task, "round_plan": state["round_plan"], "round_outputs": [], "paused": False}
         outputs = [
             self._format_completed_subtask_context(subtask)
             for subtask in state["round_plan"].subtasks
@@ -191,6 +202,8 @@ class TaskGraphRunner:
             task.events.append(self._event("subtask_failed", f"{subtask.title}: {subtask.output}"))
 
     def _route_after_subtask(self, state: TaskGraphState) -> RouteAfterSubTask:
+        if state["task"].task_status == TaskStatus.FAILED:
+            return "end"
         if state["paused"]:
             return "end"
         return "context_update"
@@ -347,8 +360,47 @@ class TaskGraphRunner:
     def _event(event_type: str, message: str) -> Event:
         return Event(type=event_type, message=message, created_at=utc_now())
 
-    @staticmethod
-    def _ensure_human_assignee(subtask: SubTask) -> None:
+    def _ensure_human_assignee(self, subtask: SubTask, task: Task | None = None) -> None:
+        if self.user_registry is not None:
+            inferred = self._infer_user_assignee_from_text(subtask, task)
+            if inferred:
+                subtask.assignee_user_id = inferred.id
+                subtask.assignee_user_name = inferred.name
+                subtask.assignee_role = subtask.assignee_role or "approver"
+                return
+            self._assign_root_user(subtask)
+            return
+
+        if subtask.assignee_user_id and subtask.assignee_user_name:
+            subtask.assignee_role = subtask.assignee_role or "approver"
+            return
+
         subtask.assignee_user_id = subtask.assignee_user_id or "root"
         subtask.assignee_user_name = subtask.assignee_user_name or "管理员"
         subtask.assignee_role = subtask.assignee_role or "admin"
+
+    def _infer_user_assignee_from_text(self, subtask: SubTask, task: Task | None) -> User | None:
+        if self.user_registry is None:
+            return None
+        text_parts = [subtask.title, subtask.description]
+        if task:
+            text_parts.extend([task.title or "", task.description or "", task.content])
+        haystack = "\n".join(part for part in text_parts if part)
+        candidates = [user for user in self.user_registry.list_users() if user.id != "root" and user.name]
+        candidates.sort(key=lambda user: len(user.name), reverse=True)
+        for user in candidates:
+            if user.name in haystack:
+                return user
+        return None
+
+    def _assign_root_user(self, subtask: SubTask) -> None:
+        root_user = self.user_registry.get_user("root") if self.user_registry is not None else None
+        subtask.assignee_user_id = root_user.id if root_user else "root"
+        subtask.assignee_user_name = root_user.name if root_user else "管理员"
+        subtask.assignee_role = subtask.assignee_role or "admin"
+
+    @staticmethod
+    def _format_failure_summary(failed_subtasks: list[SubTask]) -> str:
+        return "\n".join(
+            f"{subtask.title}: {subtask.output or '子任务执行失败'}" for subtask in failed_subtasks
+        )

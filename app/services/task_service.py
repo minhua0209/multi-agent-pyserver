@@ -21,7 +21,7 @@ from app.core.models import (
     new_id,
     utc_now,
 )
-from app.services.storage import AgentRegistry, InMemoryTaskStore, WorkflowRegistry
+from app.services.storage import AgentRegistry, InMemoryTaskStore, UserRegistry, WorkflowRegistry
 from app.workflows.task_graph import TaskGraphRunner
 from app.workflows.template_runner import WorkflowTemplateRunner
 
@@ -52,11 +52,13 @@ class TaskService:
         store: InMemoryTaskStore,
         agent_registry: AgentRegistry,
         workflow_registry: WorkflowRegistry | None = None,
+        user_registry: UserRegistry | None = None,
     ) -> None:
         self.store = store
         self.agent_registry = agent_registry
         self.workflow_registry = workflow_registry
-        self.task_graph = TaskGraphRunner(agent_registry)
+        self.user_registry = user_registry
+        self.task_graph = TaskGraphRunner(agent_registry, user_registry)
         self.workflow_runner = WorkflowTemplateRunner(agent_registry)
 
     def create_request(self, payload: TaskRequestCreate, created_by: User | None = None) -> TaskRequestResponse:

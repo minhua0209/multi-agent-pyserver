@@ -59,7 +59,12 @@ def create_app(
         app.state.workflow_registry = WorkflowRegistry(workflow_registry_file)
         user_registry_file = user_file or (registry_file.parent / "users.json")
         app.state.user_registry = UserRegistry(user_registry_file)
-    app.state.task_service = TaskService(app.state.task_store, app.state.agent_registry, app.state.workflow_registry)
+    app.state.task_service = TaskService(
+        app.state.task_store,
+        app.state.agent_registry,
+        app.state.workflow_registry,
+        app.state.user_registry,
+    )
     app.include_router(agents_router)
     app.include_router(tasks_router)
     app.include_router(subtasks_router)

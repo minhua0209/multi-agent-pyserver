@@ -171,6 +171,156 @@ def test_no_workflow_human_subtask_defaults_to_root_assignee(tmp_path: Path, mon
     assert client.get("/api/v1/subtasks/human?assignee_user_id=user_001").json() == []
 
 
+def test_no_workflow_human_subtask_infers_registered_assignee(tmp_path: Path, monkeypatch) -> None:
+    from app.core.models import RoundPlan, SubTask, new_id
+
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    user = client.post("/api/v1/users", json={"name": "王大锤"}).json()
+
+    def _plan(task, _agents):
+        if task.loop_count > 0:
+            return RoundPlan(should_continue=False, reason="done")
+        return RoundPlan(
+            should_continue=True,
+            execution_mode="sequential",
+            reason="needs human approval",
+            subtasks=[
+                SubTask(
+                    id=new_id("subtask"),
+                    title="王大锤确认方案",
+                    description="需要王大锤确认当前方案是否可行",
+                    assignee_type="human",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "客户B交付方案评审",
+            "content": "整理方案后需要王大锤确认",
+        },
+    ).json()["tasks"][0]
+
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "客户B交付方案评审", "description": "整理方案后需要王大锤确认"},
+    ).json()
+
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["assignee_user_id"] == user["id"]
+    assert human_subtask["assignee_user_name"] == "王大锤"
+    assert human_subtask["assignee_role"] == "approver"
+    assert client.get(f"/api/v1/subtasks/human?assignee_user_id={user['id']}").json()[0]["id"] == human_subtask["id"]
+
+
+def test_no_workflow_human_subtask_ignores_missing_model_assignee_and_uses_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.core.models import RoundPlan, SubTask, new_id
+
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+
+    def _plan(task, _agents):
+        if task.loop_count > 0:
+            return RoundPlan(should_continue=False, reason="done")
+        return RoundPlan(
+            should_continue=True,
+            execution_mode="sequential",
+            reason="needs human approval",
+            subtasks=[
+                SubTask(
+                    id=new_id("subtask"),
+                    title="人工确认方案",
+                    description="请不存在的人确认当前方案",
+                    assignee_type="human",
+                    assignee_user_id="missing_user",
+                    assignee_user_name="不存在的人",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "客户B交付方案评审",
+            "content": "整理方案后需要不存在的人确认",
+        },
+    ).json()["tasks"][0]
+
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "客户B交付方案评审", "description": "整理方案后需要不存在的人确认"},
+    ).json()
+
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["assignee_user_id"] == "root"
+    assert human_subtask["assignee_user_name"] == "管理员"
+
+
+def test_agent_subtask_failure_stops_whole_task(tmp_path: Path, monkeypatch) -> None:
+    from app.core.models import RoundPlan, SubTask
+
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    agent = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Requirement Agent",
+            "description": "Handles requirement query",
+            "capabilities": ["requirements"],
+        },
+    ).json()
+
+    def _plan(task, _agents):
+        if task.loop_count > 0:
+            raise AssertionError("planner must not run again after a failed subtask")
+        return RoundPlan(
+            should_continue=True,
+            execution_mode="parallel",
+            reason="collect prerequisite information",
+            subtasks=[
+                SubTask(
+                    id="subtask_failure_stop",
+                    title="查询客户需求",
+                    description="查询客户需求和预算",
+                    assigned_agent_id=agent["id"],
+                )
+            ],
+        )
+
+    def _execute(task, subtask, agent, tool_results):
+        return [], ""
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "查询客户需求后生成方案"},
+    ).json()["tasks"][0]
+    result = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "客户方案", "description": "查询客户需求后生成方案"},
+    ).json()
+
+    assert result["task_status"] == "failed"
+    assert result["current_node"] == "subtask_execution"
+    assert result["loop_count"] == 1
+    assert len(result["context"]["rounds"]) == 1
+    failed_subtask = result["context"]["rounds"][0]["subtasks"][0]
+    assert failed_subtask["status"] == "failed"
+    assert failed_subtask["output"] == "Agent returned no output"
+    assert "查询客户需求: Agent returned no output" in result["final_output"]
+    assert [event["type"] for event in result["events"]][-2:] == ["subtask_failed", "task_failed"]
+
+
 def test_task_request_does_not_use_intent_mock_when_system_fallback_disabled(
     tmp_path: Path,
     monkeypatch,

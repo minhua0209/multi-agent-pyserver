@@ -980,6 +980,11 @@ tr.selected td {
   border-left-color: var(--danger);
 }
 
+.subtask-failure-tooltip .ant-tooltip-inner {
+  white-space: pre-line;
+  max-width: 420px;
+}
+
 .graph-subtask-node.running {
   border-left-color: var(--info);
 }

@@ -980,6 +980,7 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
               {(round.subtasks || []).map((subtask) => {
                 const isHumanNode = subtask.assignee_type === "human" || subtask.current_node === "human"
                 const canOpenHumanWorkbench = isHumanNode && (subtask.status || "running") === "running"
+                const failureReason = subtaskFailureReason(subtask)
                 const nodeContent = (
                   <>
                     <div className="subtask-node-title">{subtask.title || subtask.id}</div>
@@ -990,14 +991,17 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
                     {canOpenHumanWorkbench && <span className="subtask-node-action">点击处理</span>}
                   </>
                 )
-                return canOpenHumanWorkbench ? (
-                  <button type="button" className={`graph-subtask-node clickable ${subtask.status || "running"}`} key={subtask.id} onClick={onOpenHumanWorkbench}>
+                const renderedNode = canOpenHumanWorkbench ? (
+                  <button type="button" className={`graph-subtask-node clickable ${subtask.status || "running"}`} onClick={onOpenHumanWorkbench}>
                     {nodeContent}
                   </button>
                 ) : (
-                  <article className={`graph-subtask-node ${subtask.status || "running"}`} key={subtask.id}>
-                    {nodeContent}
-                  </article>
+                  <article className={`graph-subtask-node ${subtask.status || "running"}`}>{nodeContent}</article>
+                )
+                return (
+                  <Tooltip key={subtask.id} title={failureReason} placement="top" overlayClassName="subtask-failure-tooltip">
+                    {renderedNode}
+                  </Tooltip>
                 )
               })}
             </div>
@@ -1013,6 +1017,19 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
       </div>
     </div>
   )
+}
+
+function subtaskFailureReason(subtask: SubTask) {
+  if (subtask.status !== "failed") return ""
+  const failedTools = (subtask.tool_results || [])
+    .filter((result) => !result.success)
+    .map((result) => `${result.tool_name}: ${result.error || "工具执行失败"}`)
+  const lines = [
+    subtask.output ? `失败原因：${subtask.output}` : "",
+    failedTools.length ? `工具错误：${failedTools.join("；")}` : "",
+    subtask.description ? `子任务描述：${subtask.description}` : "",
+  ].filter(Boolean)
+  return lines.length ? lines.join("\n") : "子任务执行失败"
 }
 
 function AgentsPage({

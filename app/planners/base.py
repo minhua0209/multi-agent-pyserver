@@ -26,6 +26,9 @@ def round_plan_from_dict(data: dict, agents: list[Agent]) -> RoundPlan:
                 description=description,
                 assignee_type="human" if item.get("assignee_type") == "human" else "agent",
                 assigned_agent_id=_valid_agent_id(item.get("assigned_agent_id"), agents),
+                assignee_user_id=_optional_string(item.get("assignee_user_id")),
+                assignee_user_name=_optional_string(item.get("assignee_user_name")),
+                assignee_role=_optional_string(item.get("assignee_role")),
             )
         )
     return RoundPlan(
@@ -41,3 +44,9 @@ def _valid_agent_id(value, agents: list[Agent]) -> str | None:
     if not isinstance(value, str):
         return None
     return value if any(agent.id == value for agent in agents) else None
+
+
+def _optional_string(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()

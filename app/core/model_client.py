@@ -15,7 +15,7 @@ RESPONSES_API_KEY = os.getenv("MODEL_API_KEY", "")
 CHAT_COMPLETIONS_API_URL = RESPONSES_API_URL.replace("/v1/responses", "/v1/chat/completions")
 MODEL_NAME = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
 REQUEST_TIMEOUT_SECONDS = 60
-MAX_OUTPUT_TOKENS = 512
+MAX_OUTPUT_TOKENS = int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", "4096"))
 
 
 class ModelCallError(Exception):

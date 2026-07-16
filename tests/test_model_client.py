@@ -87,6 +87,32 @@ def test_responses_client_reads_api_key_from_runtime_environment(monkeypatch: py
     assert captured_headers["authorization"] == "Bearer runtime-test-key"
 
 
+def test_responses_client_uses_configured_max_output_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_payload: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        captured_payload.update(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("app.core.model_client.MAX_OUTPUT_TOKENS", 4096)
+    monkeypatch.setattr("app.core.model_client.request.urlopen", fake_urlopen)
+
+    client = OpenAIResponsesClient(url="http://model.test/v1/chat/completions", model="test-model")
+
+    assert client.create("system", "user") == "ok"
+    assert captured_payload["max_tokens"] == 4096
+
+
 def test_model_intent_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "app.core.model_client.default_client.create",

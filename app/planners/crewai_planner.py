@@ -46,7 +46,10 @@ class CrewAITaskPlanner:
                 '{"should_continue": true|false, "execution_mode": "parallel|sequential", '
                 '"reason": "...", "final_output": "...", '
                 '"subtasks": [{"title": "...", "description": "...", '
-                '"assignee_type": "agent|human", "assigned_agent_id": "agent_id or null"}]}. '
+                '"assignee_type": "agent|human", "assigned_agent_id": "agent_id or null", '
+                '"assignee_user_id": "human assignee id or empty", '
+                '"assignee_user_name": "human assignee name or empty", '
+                '"assignee_role": "human role or empty"}]}. '
                 "The values of reason, final_output, subtasks.title, and subtasks.description must be Chinese."
             ),
             agent=planner,
@@ -81,6 +84,7 @@ class CrewAITaskPlanner:
                     "Use parallel execution only for independent subtasks.",
                     "Use sequential execution when the next subtask depends on current context.",
                     "Preserve human nodes by returning assignee_type=human.",
+                    "For human subtasks, infer assignee_user_id and assignee_user_name from the task text when a reviewer name is mentioned.",
                     "Return should_continue=false when no remaining subtasks exist.",
                     "Write all user-facing text fields in Chinese: reason, final_output, subtasks.title, subtasks.description.",
                     "Do not output long English explanations even if prior context is English.",
