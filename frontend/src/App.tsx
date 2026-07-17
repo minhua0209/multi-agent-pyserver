@@ -40,8 +40,20 @@ import {
   Trash2,
   Users,
   Edit3,
+  GitBranch,
+  Sparkles,
+  UserCheck,
   XCircle,
 } from "lucide-react"
+import {
+  Background,
+  Controls,
+  Handle,
+  NodeProps,
+  Position,
+  ReactFlow,
+} from "@xyflow/react"
+import "@xyflow/react/dist/style.css"
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Agent,
@@ -77,8 +89,15 @@ import {
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
+import {
+  manualWorkflowFlowElements,
+  taskDetailSummaryBlocks,
+  taskDetailTypeBadge,
+  workflowNodeStateColor as detailWorkflowNodeStateColor,
+} from "./taskDetailView"
 import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
+import { WorkflowReactFlowNode } from "./workflowReactFlow"
 
 type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "users" | "audit" | "governance"
 
@@ -1086,6 +1105,8 @@ function TaskDetailModal({
   onClose: () => void
 }) {
   const attachments = taskAttachments(task)
+  const typeBadge = taskDetailTypeBadge(task)
+  const summaryBlocks = taskDetailSummaryBlocks(task)
 
   return (
     <Modal
@@ -1094,6 +1115,7 @@ function TaskDetailModal({
           <Tooltip title={taskTitle(task)}>
             <Typography.Text strong ellipsis>{taskTitle(task)}</Typography.Text>
           </Tooltip>
+          <Tag color={typeBadge.color}>{typeBadge.text}</Tag>
         </div>
       }
       open
@@ -1116,18 +1138,12 @@ function TaskDetailModal({
           <div className="task-detail-summary">
             {loading && <AntAlert type="info" showIcon message="正在加载最新详情" />}
             {error && <AntAlert type="error" showIcon message={error} />}
-            <section className="detail-text-block">
-              <h4>原始诉求</h4>
-              <div>{task.content || task.description || "-"}</div>
-            </section>
-            <section className="detail-text-block">
-              <h4>任务清单</h4>
-              <div>{draftTaskListText(task)}</div>
-            </section>
-            <section className="detail-text-block">
-              <h4>任务类型</h4>
-              <div><Tag color={taskTypeColor(task)}>{taskTypeText(task)}</Tag></div>
-            </section>
+            {summaryBlocks.map((block) => (
+              <section className="detail-text-block" key={block.key}>
+                <h4>{block.title}</h4>
+                <div>{block.text}</div>
+              </section>
+            ))}
           </div>
           <TaskResultDetail task={task} />
           {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
@@ -1281,8 +1297,10 @@ function TaskContextDetail({ task }: { task: Task }) {
   )
 }
 
+const taskDetailWorkflowNodeTypes = { workflowNode: TaskDetailWorkflowNode }
+
 function ManualWorkflowDetail({ task, definition }: { task: Task; definition: WorkflowDefinition }) {
-  const nodeTitleById = new Map(definition.nodes.map((node) => [node.id, node.title || node.id]))
+  const flow = useMemo(() => manualWorkflowFlowElements(task, definition), [task, definition])
 
   return (
     <div className="manual-workflow-detail">
@@ -1291,42 +1309,67 @@ function ManualWorkflowDetail({ task, definition }: { task: Task; definition: Wo
         <Tag color="geekblue">连线 {definition.edges.length}</Tag>
         <span>{task.request_metadata?.workflow_name || task.title || "手动编排流程"}</span>
       </div>
-      <div className="modal-scroll manual-workflow-scroll">
-        <div className="manual-workflow-nodes">
-          {definition.nodes.map((node) => {
-            const subtask = workflowSubtaskForNode(task, node.id)
-            const state = workflowNodeState(task, node)
-            return (
-              <article className={`manual-workflow-node ${state}`} key={node.id}>
-                <header>
-                  <strong>{node.title || node.id}</strong>
-                  <span>
-                    <Tag>{workflowNodeKindText(node.type)}</Tag>
-                    <Tag color={workflowNodeStateColor(state)}>{workflowNodeStateText(state)}</Tag>
-                  </span>
-                </header>
-                <p>{node.description || "暂无节点说明"}</p>
-                {subtask?.assignee_user_name && <small>处理人：{subtask.assignee_user_name}</small>}
-                {subtask?.output && <small>输出：{subtask.output}</small>}
-              </article>
-            )
-          })}
-        </div>
-        <div className="manual-workflow-edges">
-          <h5>流程连线</h5>
-          {definition.edges.length ? (
-            definition.edges.map((edge, index) => (
-              <span key={`${edge.from}-${edge.to}-${index}`}>
-                {nodeTitleById.get(edge.from) || edge.from} → {nodeTitleById.get(edge.to) || edge.to}
-              </span>
-            ))
-          ) : (
-            <span>暂无连线</span>
-          )}
-        </div>
+      <div className="manual-workflow-flow" aria-label="手动编排流程图">
+        <ReactFlow
+          nodes={flow.nodes}
+          edges={flow.edges}
+          nodeTypes={taskDetailWorkflowNodeTypes}
+          fitView
+          fitViewOptions={{ padding: 0.2 }}
+          minZoom={0.25}
+          maxZoom={1.6}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          panOnDrag
+          zoomOnScroll
+          zoomOnPinch
+          preventScrolling={false}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background color="#b7c4d6" gap={18} size={1.1} />
+          <Controls showInteractive={false} />
+        </ReactFlow>
       </div>
     </div>
   )
+}
+
+function TaskDetailWorkflowNode({ data }: NodeProps<WorkflowReactFlowNode>) {
+  const kind = String(data.kind || "")
+  const status = String(data.status || "pending")
+  const output = String(data.output || "")
+  const assignee = String(data.assigneeUserName || data.assignee || "")
+  return (
+    <div className={`task-detail-workflow-node ${kind} ${status}`}>
+      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <div className="task-detail-workflow-node-head">
+        <span className={kind === "human" ? "task-detail-workflow-icon warning" : kind === "end" ? "task-detail-workflow-icon success" : "task-detail-workflow-icon"}>
+          {taskDetailWorkflowNodeIcon(kind, String(data.id || ""))}
+        </span>
+        <div>
+          <strong>{String(data.title || data.id || "节点")}</strong>
+          <span>
+            <Tag>{String(data.kindText || "节点")}</Tag>
+            <Tag color={detailWorkflowNodeStateColor(status)}>{String(data.statusText || status)}</Tag>
+          </span>
+        </div>
+      </div>
+      <p>{String(data.description || "暂无节点说明")}</p>
+      {assignee && <small>处理人：{assignee}</small>}
+      {output && <small className="task-detail-workflow-output">输出：{output}</small>}
+      <Handle type="source" position={Position.Right} isConnectable={false} />
+    </div>
+  )
+}
+
+function taskDetailWorkflowNodeIcon(kind: string, id: string) {
+  if (kind === "start") return <Sparkles size={16} />
+  if (kind === "human") return <UserCheck size={16} />
+  if (kind === "condition") return <GitBranch size={16} />
+  if (kind === "end") return <CheckCircle2 size={16} />
+  if (id.includes("review")) return <ClipboardCheck size={16} />
+  return <Bot size={16} />
 }
 
 function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[]; onOpenHumanWorkbench: () => void }) {
