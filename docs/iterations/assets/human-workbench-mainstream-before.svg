@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
+  <rect width="960" height="520" fill="#f5f7ff"/>
+  <rect x="32" y="32" width="896" height="456" rx="16" fill="#fff" stroke="#c7d2fe"/>
+  <text x="64" y="82" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#111827">人工节点工作台</text>
+  <text x="64" y="116" font-family="Arial, sans-serif" font-size="16" fill="#64748b">优化前：队列、文档、上下文、处理意见层级接近普通表单。</text>
+  <rect x="64" y="154" width="300" height="284" rx="10" fill="#f8fafc" stroke="#dbe4ff"/>
+  <text x="86" y="194" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">人工节点队列</text>
+  <rect x="86" y="222" width="256" height="70" rx="8" fill="#eef2ff" stroke="#bfdbfe"/>
+  <text x="106" y="252" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#111827">人工确认</text>
+  <text x="106" y="278" font-family="Arial, sans-serif" font-size="14" fill="#64748b">所属任务：汇总报告</text>
+  <rect x="396" y="154" width="468" height="284" rx="10" fill="#fff" stroke="#dbe4ff"/>
+  <text x="420" y="194" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">人工处理</text>
+  <rect x="420" y="218" width="420" height="110" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+  <text x="442" y="248" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#155e75">待审核文档</text>
+  <text x="442" y="280" font-family="Arial, sans-serif" font-size="14" fill="#334155">用户故事拆解报告...</text>
+  <rect x="420" y="344" width="420" height="56" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="442" y="378" font-family="Arial, sans-serif" font-size="14" fill="#334155">子任务字段和上下文继续纵向堆叠</text>
+  <rect x="420" y="416" width="420" height="34" rx="8" fill="#fff" stroke="#dbe4ff"/>
+  <text x="442" y="438" font-family="Arial, sans-serif" font-size="13" fill="#94a3b8">处理意见与按钮跟随内容下沉</text>
+</svg>

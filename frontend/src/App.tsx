@@ -88,6 +88,7 @@ import {
   updateUser,
   uploadTaskAttachment,
 } from "./api/taskhub"
+import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
 import {
@@ -947,6 +948,10 @@ function ConfirmationPage({
   const active = humanSubtasks.find((subtask) => subtask.id === activeId) || humanSubtasks[0]
   const [opinion, setOpinion] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const upstreamOutputs = active?.upstream_outputs || []
+  const taskArtifacts = (active?.task_artifacts || []).map(displayValue).filter(Boolean)
+  const reviewDocument = humanReviewDocumentText(active)
+  const reviewSourceLabel = humanReviewDocumentSourceLabel(active)
 
   useEffect(() => {
     if (active) {
@@ -979,37 +984,94 @@ function ConfirmationPage({
       {!active ? (
         <EmptyState text="暂无待处理人工节点" />
       ) : (
-        <div className="grid two">
-          <Panel title="人工节点队列">
-            <List
-              dataSource={humanSubtasks}
-              renderItem={(subtask) => (
-                <List.Item
-                  className={subtask.id === active.id ? "list-item active" : "list-item"}
+        <div className="human-workbench">
+          <aside className="human-queue-panel">
+            <div className="human-queue-head">
+              <div>
+                <span>待审核队列</span>
+                <strong>{humanSubtasks.length}</strong>
+              </div>
+              <Tag color="processing">人工节点</Tag>
+            </div>
+            <div className="human-queue-list">
+              {humanSubtasks.map((subtask) => (
+                <button
+                  type="button"
+                  className={subtask.id === active.id ? "human-queue-card active" : "human-queue-card"}
+                  key={subtask.id}
                   onClick={() => setActiveId(subtask.id)}
                 >
-                  <List.Item.Meta
-                    title={subtask.title || subtask.description || subtask.id}
-                    description={subtask.current_node || subtask.assignee_type || "human"}
-                  />
-                  <Tag color={statusColor(subtask.status)}>{statusText(subtask.status)}</Tag>
-                </List.Item>
-              )}
-            />
-          </Panel>
-          <Panel title="人工处理">
-            <Descriptions bordered size="small" column={1} className="human-subtask-detail">
-              <Descriptions.Item label="子任务名称">{active.title || active.id}</Descriptions.Item>
-              <Descriptions.Item label="子任务描述">{active.description || "-"}</Descriptions.Item>
-              <Descriptions.Item label="任务 ID">{active.task_id || "-"}</Descriptions.Item>
-              <Descriptions.Item label="处理节点">{active.current_node || "human"}</Descriptions.Item>
-              <Descriptions.Item label="状态"><Tag color={statusColor(active.status)}>{statusText(active.status)}</Tag></Descriptions.Item>
-            </Descriptions>
-            <label className="field">
+                  <span className="human-queue-card-head">
+                    <span>{subtask.title || subtask.description || subtask.id}</span>
+                    <Tag color={statusColor(subtask.status)}>{statusText(subtask.status)}</Tag>
+                  </span>
+                  <span className="human-queue-task">{subtask.task_title || "未命名任务"}</span>
+                  <span className="human-queue-meta">
+                    <UserCheck size={13} />
+                    {subtask.assignee_user_name || "未指定人员"} · {humanReviewDocumentSourceLabel(subtask)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+          <section className="human-review-panel">
+            <div className="human-review-hero">
+              <div>
+                <span className="human-review-eyebrow"><ClipboardCheck size={15} /> 当前审核</span>
+                <h3>{active.task_title || active.title || "人工确认"}</h3>
+                <p>{active.task_content || active.task_description || active.description || "暂无原始诉求"}</p>
+              </div>
+              <div className="human-review-status">
+                <Tag color={statusColor(active.status)}>{statusText(active.status)}</Tag>
+                <Tag color="blue">{active.assignee_user_name || "管理员"}</Tag>
+              </div>
+            </div>
+            <section className="human-review-document">
+              <header>
+                <div>
+                  <FileText size={16} />
+                  <strong>待审核文档</strong>
+                </div>
+                <Tag color={upstreamOutputs.length ? "cyan" : reviewDocument ? "blue" : "default"}>{reviewSourceLabel}</Tag>
+              </header>
+              <pre className={reviewDocument ? "" : "empty"}>{reviewDocument || "暂无待审核文档"}</pre>
+            </section>
+            <div className="human-review-support">
+              <section className="human-subtask-card">
+                <div>
+                  <ListChecks size={16} />
+                  <strong>审核节点</strong>
+                </div>
+                <Descriptions bordered size="small" column={1} className="human-subtask-detail">
+                  <Descriptions.Item label="子任务名称">{active.title || active.id}</Descriptions.Item>
+                  <Descriptions.Item label="子任务描述">{active.description || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="任务 ID">{active.task_id || "-"}</Descriptions.Item>
+                  <Descriptions.Item label="处理节点">{active.current_node || "human"}</Descriptions.Item>
+                </Descriptions>
+              </section>
+              <section className="human-context-panel">
+                <header>
+                  <div>
+                    <FileText size={15} />
+                    <strong>辅助上下文</strong>
+                  </div>
+                  <Tag color="geekblue">{upstreamOutputs.length} 个上游产出</Tag>
+                </header>
+                <p>{active.task_context_summary || "暂无上下文汇总"}</p>
+                {!!taskArtifacts.length && (
+                  <div className="human-context-artifacts">
+                    {taskArtifacts.map((artifact, index) => (
+                      <Tag key={`${artifact}-${index}`} color="geekblue">{artifact}</Tag>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+            <label className="field human-review-opinion">
               <span>处理意见</span>
               <Input.TextArea rows={5} value={opinion} onChange={(event) => setOpinion(event.target.value)} placeholder="填写人工判断、补充信息或驳回原因" />
             </label>
-            <div className="form-actions">
+            <div className="human-review-actions">
               <Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => void submit("approved")} loading={submitting}>
                 确认通过
               </Button>
@@ -1017,7 +1079,7 @@ function ConfirmationPage({
                 驳回
               </Button>
             </div>
-          </Panel>
+          </section>
         </div>
       )}
     </div>

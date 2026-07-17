@@ -114,6 +114,8 @@ class TaskGraphRunner:
         if plan is None:
             require_system_mock_fallback_enabled("round_dispatch")
             plan = mock_round_plan(task, agents)
+        if self._should_create_draft_human_gate(task, plan):
+            plan = self._draft_human_gate_plan(task, plan)
         if plan.should_continue and plan.subtasks:
             task.loop_count += 1
             task.events.append(
@@ -121,6 +123,32 @@ class TaskGraphRunner:
             )
         task.updated_at = utc_now()
         return {"task": task, "round_plan": plan, "round_outputs": [], "paused": False}
+
+    @staticmethod
+    def _should_create_draft_human_gate(task: Task, plan: RoundPlan) -> bool:
+        if task.loop_count > 0 or task.context.rounds:
+            return False
+        if plan.should_continue or plan.subtasks:
+            return False
+        return bool(task.draft and task.draft.suggested_assignee_type == "human")
+
+    @staticmethod
+    def _draft_human_gate_plan(task: Task, plan: RoundPlan) -> RoundPlan:
+        title = task.draft.title if task.draft else task.title or "人工审核"
+        description = task.draft.description if task.draft else task.description or task.content
+        return RoundPlan(
+            should_continue=True,
+            execution_mode="sequential",
+            reason=plan.reason or "意图识别要求人工审核",
+            subtasks=[
+                SubTask(
+                    id=f"{task.id}_human_review",
+                    title=title or "人工审核",
+                    description=description or "请人工审核任务结果。",
+                    assignee_type="human",
+                )
+            ],
+        )
 
     def _route_after_plan(self, state: TaskGraphState) -> RouteAfterPlan:
         task = state["task"]

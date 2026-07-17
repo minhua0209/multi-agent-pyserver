@@ -65,6 +65,29 @@ def test_task_request_uses_manual_task_name_for_task_title(tmp_path: Path) -> No
     assert task["draft"]["title"] == "分析客户需求并生成交付报告"
 
 
+def test_confirm_task_replaces_title_and_description_with_confirmed_values(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "原始任务名",
+            "content": "原始任务诉求",
+        },
+    ).json()["tasks"][0]
+
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "确认后的任务名",
+            "description": "确认后的任务描述，包含人工审核要求",
+        },
+    ).json()
+
+    assert confirmed["title"] == "确认后的任务名"
+    assert confirmed["description"] == "确认后的任务描述，包含人工审核要求"
+
+
 def test_task_list_and_detail_are_scoped_to_normal_user(tmp_path: Path) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
     alice = client.post(
@@ -539,7 +562,7 @@ def test_confirm_task_can_return_before_automatic_flow_when_async_requested(
     assert task["task_status"] == "running"
     assert task["current_node"] == "dispatch_decision"
     assert task["title"] == "Create a quote for customer A"
-    assert task["description"] == "Create a quote for customer A"
+    assert task["description"] == "Prepare and send quote for customer A"
     assert scheduled_task_ids == [created["id"]]
     assert [event["type"] for event in task["events"]][-2:] == [
         "human_confirmed",
@@ -767,6 +790,12 @@ def test_human_subtask_pauses_round_until_result_is_submitted(tmp_path: Path, mo
     human_tasks = client.get("/api/v1/subtasks/human").json()
     assert len(human_tasks) == 1
     assert human_tasks[0]["id"] == "subtask_human_parallel"
+    assert human_tasks[0]["task_id"] == created["id"]
+    assert human_tasks[0]["task_title"] == "Prepare quote"
+    assert human_tasks[0]["task_description"] == "Prepare quote and approve discount"
+    assert human_tasks[0]["task_content"] == "Prepare quote and approve discount"
+    assert human_tasks[0]["task_context_summary"] == ""
+    assert human_tasks[0]["upstream_outputs"] == ["Prepare quote: agent quote draft ready"]
 
 
 def test_confirmed_task_default_human_assignee_is_used_for_later_human_subtasks(
@@ -825,6 +854,67 @@ def test_confirmed_task_default_human_assignee_is_used_for_later_human_subtasks(
     assert human_subtask["assignee_user_name"] == "李晨"
     assert human_subtask["assignee_role"] == "user"
     assert client.get(f"/api/v1/subtasks/human?assignee_user_id={reviewer['id']}").json()[0]["id"] == "subtask_default_assignee"
+
+
+def test_human_intent_pauses_for_default_assignee_when_planner_returns_no_subtasks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.core.models import RoundPlan
+
+    monkeypatch.setattr(
+        "app.services.task_service.recognize_tasks_with_model",
+        lambda _content, _agents: [
+            {
+                "title": "审核热点信息内容",
+                "description": "对热点信息统计结果进行人工审核。",
+                "confidence": 0.94,
+                "suggested_assignee_type": "human",
+                "suggested_agent_id": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.workflows.task_graph.plan_next_round_with_model",
+        lambda _task, _agents: RoundPlan(
+            should_continue=False,
+            reason="没有可用 Agent",
+            final_output="缺少热点数据抓取能力",
+        ),
+    )
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    reviewer = client.post(
+        "/api/v1/users",
+        json={"name": "李晨", "role": "user", "department": "研发部", "position": "研发经理"},
+    ).json()
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "热点信息统计",
+            "content": "统计今年后半年的热点信息，我要审核下内容后，再发给李晨",
+        },
+    ).json()["tasks"][0]
+
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "热点信息统计",
+            "description": "审核热点信息内容：对热点信息统计结果进行人工审核。",
+            "default_assignee_user_id": reviewer["id"],
+            "default_assignee_user_name": reviewer["name"],
+            "default_assignee_role": reviewer["role"],
+        },
+    ).json()
+
+    assert paused["task_status"] == "running"
+    assert paused["current_node"] == "human_execution"
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["assignee_type"] == "human"
+    assert human_subtask["title"] == "审核热点信息内容"
+    assert human_subtask["assignee_user_id"] == reviewer["id"]
+    assert human_subtask["assignee_user_name"] == "李晨"
+    assert client.get(f"/api/v1/subtasks/human?assignee_user_id={reviewer['id']}").json()[0]["id"] == human_subtask["id"]
 
 
 def test_human_subtask_result_resumes_task_flow(tmp_path: Path, monkeypatch) -> None:

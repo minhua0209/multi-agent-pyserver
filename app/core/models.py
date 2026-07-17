@@ -228,6 +228,13 @@ class SubTask(BaseModel):
     id: str
     title: str
     description: str
+    task_id: str = ""
+    task_title: str = ""
+    task_description: str = ""
+    task_content: str = ""
+    task_context_summary: str = ""
+    task_artifacts: list[str] = Field(default_factory=list)
+    upstream_outputs: list[str] = Field(default_factory=list)
     assigned_agent_id: str | None = None
     assignee_type: str = "agent"
     assignee_user_id: str = ""

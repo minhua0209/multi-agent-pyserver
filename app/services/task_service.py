@@ -15,6 +15,7 @@ from app.core.models import (
     TaskConfirm,
     TaskContext,
     TaskDraft,
+    TaskRound,
     TaskRequestCreate,
     TaskRequestResponse,
     User,
@@ -123,8 +124,8 @@ class TaskService:
 
     def confirm_task_details(self, task_id: str, payload: TaskConfirm) -> Task:
         task = self._get_existing(task_id)
-        task.title = task.title or payload.title
-        task.description = task.description or payload.description
+        task.title = payload.title.strip() or task.title
+        task.description = payload.description.strip() or task.description
         task.request_metadata = self._metadata_with_default_human_assignee(task.request_metadata, payload)
         task.events.append(self._event("human_confirmed", "Human confirmed task details"))
         if not self._dependencies_satisfied(task):
@@ -210,7 +211,7 @@ class TaskService:
                     if subtask.assignee_type == "human" and subtask.status == TaskStatus.RUNNING:
                         if effective_assignee_user_id and subtask.assignee_user_id != effective_assignee_user_id:
                             continue
-                        subtasks.append(subtask)
+                        subtasks.append(self._human_subtask_view(task, round_item, subtask))
         return subtasks
 
     def submit_subtask_result(
@@ -244,6 +245,34 @@ class TaskService:
         if self._is_workflow_template_task(task):
             return self.store.save(self.workflow_runner.run(task, self._get_task_workflow(task)))
         return self.store.save(self.task_graph.run(task))
+
+    @staticmethod
+    def _human_subtask_view(task: Task, current_round: TaskRound, subtask: SubTask) -> SubTask:
+        task_title = task.title or (task.draft.title if task.draft else "") or task.id
+        return subtask.model_copy(
+            update={
+                "task_id": task.id,
+                "task_title": task_title,
+                "task_description": task.description,
+                "task_content": task.content,
+                "task_context_summary": task.context.summary,
+                "task_artifacts": task.context.artifacts,
+                "upstream_outputs": TaskService._human_subtask_upstream_outputs(task, current_round, subtask),
+            }
+        )
+
+    @staticmethod
+    def _human_subtask_upstream_outputs(task: Task, current_round: TaskRound, active_subtask: SubTask) -> list[str]:
+        outputs: list[str] = []
+        for round_item in task.context.rounds:
+            for candidate in round_item.subtasks:
+                if candidate.id == active_subtask.id:
+                    continue
+                if candidate.status == TaskStatus.SUCCEEDED and candidate.output:
+                    outputs.append(f"{candidate.title}: {candidate.output}")
+            if round_item.round_index == current_round.round_index:
+                break
+        return outputs
 
     def _is_workflow_template_task(self, task: Task) -> bool:
         return task.task_type == TaskType.MANUAL_ORCHESTRATION or task.request_metadata.get("execution_mode") == "workflow_template"

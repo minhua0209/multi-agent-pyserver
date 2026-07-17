@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
+  <rect width="960" height="520" fill="#f5f7ff"/>
+  <rect x="32" y="32" width="896" height="456" rx="16" fill="#fff" stroke="#c7d2fe"/>
+  <text x="64" y="82" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#111827">人工节点工作台</text>
+  <text x="64" y="116" font-family="Arial, sans-serif" font-size="16" fill="#64748b">优化后：按主流审核台组织为待办队列、当前审核、文档预览、辅助信息、固定操作。</text>
+  <rect x="64" y="154" width="278" height="284" rx="10" fill="#f8fafc" stroke="#dbe4ff"/>
+  <rect x="64" y="154" width="278" height="52" rx="10" fill="#eef2ff" stroke="#dbe4ff"/>
+  <text x="86" y="186" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#1f2937">待审核队列 1</text>
+  <rect x="86" y="222" width="234" height="76" rx="8" fill="#ecfeff" stroke="#22d3ee"/>
+  <text x="104" y="252" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#111827">人工确认</text>
+  <text x="104" y="278" font-family="Arial, sans-serif" font-size="13" fill="#475569">李晨 · 上游产出</text>
+  <rect x="370" y="154" width="526" height="76" rx="10" fill="#fff" stroke="#c7d2fe"/>
+  <text x="394" y="184" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#155e75">当前审核</text>
+  <text x="394" y="212" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#111827">汇总报告</text>
+  <rect x="370" y="246" width="526" height="138" rx="10" fill="#ecfeff" stroke="#22d3ee"/>
+  <text x="394" y="276" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#155e75">待审核文档</text>
+  <rect x="394" y="292" width="478" height="70" rx="6" fill="#fff" stroke="#bae6fd"/>
+  <text x="414" y="322" font-family="Arial, sans-serif" font-size="14" fill="#111827">用户故事拆解 Agent：## 用户故事拆解报告</text>
+  <text x="414" y="348" font-family="Arial, sans-serif" font-size="14" fill="#334155">结论、风险、下一步建议...</text>
+  <rect x="370" y="400" width="252" height="48" rx="8" fill="#fff" stroke="#dbe4ff"/>
+  <text x="394" y="430" font-family="Arial, sans-serif" font-size="14" fill="#1e3a8a">审核节点</text>
+  <rect x="644" y="400" width="252" height="48" rx="8" fill="#fff" stroke="#dbe4ff"/>
+  <text x="668" y="430" font-family="Arial, sans-serif" font-size="14" fill="#1e3a8a">辅助上下文</text>
+</svg>

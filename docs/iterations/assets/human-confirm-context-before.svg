@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
+  <rect width="960" height="520" fill="#f6f8ff"/>
+  <rect x="32" y="32" width="896" height="456" rx="16" fill="#fff" stroke="#c7d2fe"/>
+  <text x="64" y="82" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#111827">人工节点工作台</text>
+  <text x="64" y="116" font-family="Arial, sans-serif" font-size="16" fill="#64748b">修改前：只能看到子任务信息，缺少主任务诉求和上游输出。</text>
+  <rect x="64" y="154" width="300" height="284" rx="10" fill="#f8fafc" stroke="#dbe4ff"/>
+  <text x="86" y="194" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">人工节点队列</text>
+  <rect x="86" y="222" width="256" height="70" rx="8" fill="#eef6ff" stroke="#bfdbfe"/>
+  <text x="106" y="252" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#111827">人工审核</text>
+  <text x="106" y="278" font-family="Arial, sans-serif" font-size="14" fill="#64748b">human_execution</text>
+  <rect x="396" y="154" width="468" height="284" rx="10" fill="#fff" stroke="#dbe4ff"/>
+  <text x="420" y="194" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#1f2937">人工处理</text>
+  <rect x="420" y="222" width="420" height="116" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="442" y="252" font-family="Arial, sans-serif" font-size="15" fill="#334155">子任务名称：人工审核</text>
+  <text x="442" y="282" font-family="Arial, sans-serif" font-size="15" fill="#334155">子任务描述：请确认内容是否通过</text>
+  <text x="442" y="312" font-family="Arial, sans-serif" font-size="15" fill="#334155">任务 ID：-</text>
+  <rect x="420" y="360" width="420" height="50" rx="8" fill="#fff" stroke="#dbe4ff"/>
+  <text x="442" y="391" font-family="Arial, sans-serif" font-size="15" fill="#94a3b8">处理意见输入框</text>
+</svg>

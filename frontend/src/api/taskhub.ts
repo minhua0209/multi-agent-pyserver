@@ -32,6 +32,12 @@ export interface TaskEvent {
 export interface SubTask {
   id: string
   task_id?: string
+  task_title?: string
+  task_description?: string
+  task_content?: string
+  task_context_summary?: string
+  task_artifacts?: unknown[]
+  upstream_outputs?: string[]
   title?: string
   description?: string
   status?: TaskStatus

@@ -343,6 +343,7 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
                 "title": task.title,
                 "description": task.description,
                 "content": task.content,
+                "draft": task.draft.model_dump(mode="json") if task.draft else None,
                 "request_metadata": task.request_metadata,
                 "loop_count": task.loop_count,
                 "max_loop_count": task.max_loop_count,
