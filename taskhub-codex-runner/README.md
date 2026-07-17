@@ -29,6 +29,38 @@ cp config.example.json config.json
 ./start_runner.sh http://192.168.170.18:8000 王大锤
 ```
 
+启动 Web 控制台：
+
+```bash
+./start_runner.sh http://192.168.170.18:8000 王大锤 --ui
+```
+
+控制台地址：
+
+```text
+http://127.0.0.1:8787
+```
+
+后台运行 Web 控制台：
+
+```bash
+./start_runner.sh http://192.168.170.18:8000 王大锤 --ui --background
+```
+
+后台运行状态和停止：
+
+```bash
+./start_runner.sh status
+./start_runner.sh stop
+```
+
+后台运行文件固定写入 runner 目录下：
+
+```text
+taskhub-codex-runner/runtime/runner.pid
+taskhub-codex-runner/runtime/runner.log
+```
+
 只安装 Skill：
 
 ```bash
@@ -70,10 +102,28 @@ TASKHUB_SERVER_URL=http://192.168.170.18:8000 \
 python taskhub_codex_runner.py --once
 ```
 
-Skill 不应该自行猜测任务中心地址。Runner 启动或安装 Skill 时，会把启动参数持久化到已安装 Skill 目录：
+Skill 不应该自行猜测任务中心地址，也不应该保存 TaskHub 的真实 `server_url`。Runner 启动或安装 Skill 时，会把 Codex 需要知道的最小信息写入已安装 Skill 目录：
 
 ```text
 ~/.codex/skills/taskhub-codex/taskhub_runtime.json
+```
+
+内容示例：
+
+```json
+{
+  "user_id": "王大锤",
+  "runner_id": "local-codex-runner",
+  "runner_cli_path": "/当前机器/当前项目/taskhub-codex-runner/runner_cli.py"
+}
+```
+
+`runner_cli_path` 是 runner 启动或安装 Skill 时动态写入的当前机器真实路径。项目移动后，重新启动 runner 或重新安装 Skill 即可刷新该路径。
+
+TaskHub 真实地址写入 runner 自己的本地运行配置：
+
+```text
+taskhub-codex-runner/runtime/runner_runtime.json
 ```
 
 内容示例：
@@ -86,7 +136,7 @@ Skill 不应该自行猜测任务中心地址。Runner 启动或安装 Skill 时
 }
 ```
 
-其他 Codex 会话访问任务中心时，应优先读取这个文件里的 `server_url`，不能依赖 runner 进程内的环境变量。
+其他 Codex 会话访问任务中心时，应优先读取 Skill runtime 里的 `runner_cli_path`，通过 runner CLI 间接访问 TaskHub。CLI 会读取 runner 自己的 `runner_runtime.json`，因此 Skill 不需要知道 TaskHub 地址，也不需要访问宿主机上的 runner HTTP 端口。
 
 默认启动时会检查并安装项目内置 Skill：
 
@@ -106,6 +156,82 @@ python taskhub_codex_runner.py --config config.json --once --dry-run
 ```
 
 如果想人工确认 Codex 结果后再提交，可以把配置中的 `auto_submit` 改为 `false`。脚本会打印待提交 payload。
+
+如果使用 `--ui`，Codex 无法自动处理的人工节点不会再要求在终端输入，而是挂到 Web 控制台里。控制台可以查看 Codex 建议，并手动选择“通过并回填”或“驳回并回填”。
+
+## Runner CLI
+
+Codex Skill 默认通过 runner CLI 调用任务中心能力。这样可以避免 Codex 沙箱访问不到宿主机 `127.0.0.1` runner 进程的问题。
+
+发布任务：
+
+```bash
+python3 "{runner_cli_path}" publish-task \
+  --title "50字以内任务名称" \
+  --content "用户的完整任务诉求"
+```
+
+复杂 payload 可以写入文件：
+
+```bash
+python3 "{runner_cli_path}" publish-task --payload-file /tmp/taskhub-payload.json
+```
+
+确认任务：
+
+```bash
+python3 "{runner_cli_path}" confirm-task \
+  --task-id task_xxx \
+  --title "确认后的任务清单标题" \
+  --description "确认后的任务清单明细" \
+  --execution-mode async
+```
+
+查询和取消：
+
+```bash
+python3 "{runner_cli_path}" list-tasks
+python3 "{runner_cli_path}" get-task --task-id task_xxx
+python3 "{runner_cli_path}" cancel-task --task-id task_xxx
+```
+
+CLI 输出 JSON。发布任务成功时会输出适合 Codex 展示的任务清单：
+
+```json
+{
+  "ok": true,
+  "request_id": "req_xxx",
+  "tasks": [
+    {
+      "task_id": "task_xxx",
+      "submitted_title": "用户提交标题",
+      "draft_title": "识别出的任务清单",
+      "draft_description": "- 查询客户需求\n- 管理员确认"
+    }
+  ]
+}
+```
+
+如果 TaskHub 返回错误，CLI 会输出：
+
+```json
+{
+  "ok": false,
+  "error": "TaskHub API failed..."
+}
+```
+
+Skill 看到 `ok=false` 后必须直接停止，不改写诉求、不重试。
+
+## 本地 HTTP 控制台代理
+
+Web 控制台仍保留本地 HTTP 发布代理，主要用于调试或页面调用：
+
+```http
+POST http://127.0.0.1:8787/api/tasks/requests
+```
+
+Codex Skill 默认不依赖这个 HTTP 代理。
 
 ## Codex 输出格式
 

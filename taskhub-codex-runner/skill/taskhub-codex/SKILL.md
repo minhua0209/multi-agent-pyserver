@@ -14,19 +14,25 @@ TaskHub has two integration modes:
 
 ## Configuration
 
-The TaskHub base URL is supplied by the local runner startup command. Do not hard-code or guess it in Codex.
+The TaskHub base URL is supplied to the local runner startup command. Codex should not hard-code, guess, or directly call the TaskHub URL for normal Skill operations.
 
-The runner persists the latest startup values into `taskhub_runtime.json` in this skill directory. Before calling TaskHub APIs, read that file and use:
+The runner persists the latest startup values into `taskhub_runtime.json` in this skill directory. Before calling TaskHub through the Skill, read that file and use:
 
 ```json
 {
-  "server_url": "http://192.168.170.18:8000",
   "user_id": "王大锤",
-  "runner_id": "local-codex-runner"
+  "runner_id": "local-codex-runner",
+  "runner_cli_path": "/current/machine/current/project/taskhub-codex-runner/runner_cli.py"
 }
 ```
 
-Use `server_url` from `taskhub_runtime.json` as the TaskHub base URL. This is required because a separate Codex session does not inherit environment variables from the runner process.
+Use `runner_cli_path` as the only normal integration point. The runner writes the current machine's real CLI path into this file when started or when the Skill is installed, so Codex does not need to guess the project location or rely on `PATH`. The CLI reads the runner-owned local config at `taskhub-codex-runner/runtime/runner_runtime.json`, calls TaskHub, and prints JSON to stdout. This avoids exposing TaskHub `server_url` to the Skill and avoids relying on Codex being able to reach the host runner process or `127.0.0.1` ports from its sandbox.
+
+If `runner_cli_path` is missing or the file does not exist, ask the user to restart the runner or reinstall the Skill:
+
+```bash
+taskhub-codex-runner/start_runner.sh http://<taskhub-host>:8000 <user_id> --install-skill --update-skill
+```
 
 If `taskhub_runtime.json` is missing, ask the user to restart the runner with an explicit TaskHub URL and skill update enabled.
 
@@ -36,15 +42,11 @@ Example runner startup:
 taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 王大锤
 ```
 
-`127.0.0.1` is valid only when the runner/Codex process and TaskHub service share the same host network.
+Recommended runner startup with local web console and publish proxy:
 
-Before publishing or confirming tasks, verify connectivity with:
-
-```http
-GET {server_url}/api/v1/tasks
+```bash
+taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 王大锤 --ui --background
 ```
-
-If the request fails, ask the user to restart the runner with a reachable TaskHub URL.
 
 The runner may also set environment variables for its own process, but independent Codex sessions should prefer `taskhub_runtime.json`.
 
@@ -59,21 +61,18 @@ TASKHUB_CODEX_COMMAND="codex exec"
 
 ## Publish A Task
 
-When the user asks Codex to publish a task to TaskHub, call:
+When the user asks Codex to publish a task to TaskHub, call `runner_cli_path`:
 
-```http
-POST /api/v1/tasks/requests
+```bash
+python3 "{runner_cli_path}" publish-task \
+  --title "50字以内任务名称" \
+  --content "用户的完整任务诉求"
 ```
 
-Payload shape:
+For complex JSON payloads, write a temporary JSON file and call:
 
-```json
-{
-  "source_type": "business_system",
-  "title": "50字以内任务名称",
-  "content": "用户的完整任务诉求",
-  "metadata": {}
-}
+```bash
+python3 "{runner_cli_path}" publish-task --payload-file /tmp/taskhub-payload.json
 ```
 
 Rules:
@@ -81,7 +80,11 @@ Rules:
 - `title` must be 50 characters or fewer.
 - `content` should be the user's business goal, not an internal workflow script.
 - Preserve the user's original wording as much as possible. Do not rewrite a natural request into rigid round-by-round workflow instructions unless the user explicitly asks for that.
-- If `POST /api/v1/tasks/requests` returns a server error, do not keep changing the user's business request and retrying. Report the TaskHub server error and suggest checking backend intent-recognition/model logs.
+- If the CLI returns `{"ok": false, ...}` or exits non-zero, stop immediately.
+- Do not retry task creation.
+- Do not rewrite the user's request and submit again.
+- Do not submit another request with simplified wording.
+- Report the exact CLI `error` field to the user, and tell the user to check TaskHub backend logs or the TaskHub UI.
 - If the user selected a workflow template, include:
 
 ```json
@@ -101,14 +104,11 @@ Instead, show the returned draft task list to the user and ask for confirmation 
 
 Important field mapping:
 
-- Display `task.draft.title` as the recognized task-list title.
-- Display `task.draft.description` as the recognized task-list details.
-- Do not use top-level `task.title`, `task.description`, or `task.content` as the task-list display when `task.draft` exists.
-- Top-level `task.title` is the user-submitted request title, not the recognized task list.
-- Top-level `task.content` / `task.description` is the original request, not the recognized task list.
-- Only fall back to top-level fields if `task.draft` is missing.
+- Display CLI field `tasks[].draft_title` as the recognized task-list title.
+- Display CLI field `tasks[].draft_description` as the recognized task-list details.
+- Do not display `submitted_title` as the task-list title.
 - Never show the confirmation item as `ID / 名称 / 描述` when `draft` exists, because that usually leads to displaying the original user request instead of the recognized task list.
-- The confirmation text must include the literal task-list details from `task.draft.description`, including every bullet line returned by TaskHub.
+- The confirmation text must include the literal task-list details from `draft_description`, including every bullet line returned by TaskHub.
 
 Use this confirmation format:
 
@@ -116,10 +116,10 @@ Use this confirmation format:
 我已从任务中心识别出以下任务清单：
 
 任务 1
-任务ID：task_xxx
-任务清单标题：{task.draft.title}
+任务ID：{tasks[].task_id}
+任务清单标题：{tasks[].draft_title}
 任务清单明细：
-{task.draft.description}
+{tasks[].draft_description}
 
 请确认如何处理：
 1. 确认并执行
@@ -130,26 +130,20 @@ Use this confirmation format:
 
 If the user confirms, call:
 
-```http
-POST /api/v1/tasks/{task_id}/confirm
-```
-
-Payload:
-
-```json
-{
-  "title": "确认后的 task.draft.title",
-  "description": "确认后的 task.draft.description",
-  "execution_mode": "async"
-}
+```bash
+python3 "{runner_cli_path}" confirm-task \
+  --task-id task_xxx \
+  --title "确认后的 draft_title" \
+  --description "确认后的 draft_description" \
+  --execution-mode async
 ```
 
 If the user edits the task-list title or details, use the edited values in the confirm payload.
 
 If the user cancels, call:
 
-```http
-DELETE /api/v1/tasks/{task_id}
+```bash
+python3 "{runner_cli_path}" cancel-task --task-id task_xxx
 ```
 
 If multiple draft tasks are returned, show every draft and ask the user to confirm, edit, or cancel each one. Confirm only the tasks the user approved.
@@ -158,11 +152,11 @@ Never skip this confirmation step for normal task publishing. The Codex chat con
 
 ## Query Tasks
 
-Use:
+Use the runner CLI:
 
-```http
-GET /api/v1/tasks
-GET /api/v1/tasks/{task_id}
+```bash
+python3 "{runner_cli_path}" list-tasks
+python3 "{runner_cli_path}" get-task --task-id task_xxx
 ```
 
 Prefer summarizing:
@@ -187,19 +181,7 @@ TaskHub human node waits for assignee
 -> TaskHub resumes the workflow
 ```
 
-Poll human subtasks:
-
-```http
-GET /api/v1/subtasks/human?assignee_user_id=王大锤
-```
-
-Submit a human result:
-
-```http
-POST /api/v1/subtasks/{subtask_id}/result
-```
-
-Payload:
+The long-running runner process handles polling and result submission internally. It uses the TaskHub APIs with this result payload shape:
 
 ```json
 {

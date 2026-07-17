@@ -312,6 +312,10 @@ def execute_subtask_with_tools_model(
 def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | None:
     system_prompt = (
         "你是多轮任务分发 agent。你需要读取主任务当前上下文，判断下一轮是否还有待执行子任务。"
+        "如果任务中包含 draft 任务清单，draft 任务清单就是必须逐项完成的待办清单；"
+        "你必须对照 draft 任务清单和已执行轮次，继续生成尚未完成的子任务，不能因为只完成了前置查询就结束。"
+        "如果 draft 或原始诉求中出现必须人工确认、管理员确认、审批、先不要继续等要求，必须生成 assignee_type=human 的人工子任务；"
+        "未生成并完成对应人工确认前，不能执行依赖确认结果的后续子任务，也不能 should_continue=false。"
         "如果前置结果不足，先创建获取前置信息的子任务；如果已有足够上下文，再创建后续子任务。"
         "每轮可以返回多个可并发执行的子任务，也可以返回一个需要同步执行的子任务。"
         "如果子任务需要人工处理，必须尽量根据任务上下文推断审核人，并填写 assignee_user_id、assignee_user_name、assignee_role；"
@@ -347,6 +351,7 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
                 "request_metadata": task.request_metadata,
                 "loop_count": task.loop_count,
                 "max_loop_count": task.max_loop_count,
+                "draft": task.draft.model_dump(mode="json") if task.draft else None,
             },
             "context": task.context.model_dump(mode="json"),
             "available_agents": agents_payload,
@@ -390,6 +395,10 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
 def judge_completion_with_model(task: Task, execution_output: str) -> bool | None:
     system_prompt = (
         "你是任务完成度判断 agent。判断当前执行结果是否足以关闭任务。"
+        "如果任务中包含 draft 任务清单，必须逐项检查 draft 中列出的任务是否都已经由执行轮次覆盖。"
+        "如果 draft 或原始诉求中包含人工确认、管理员确认、审批、先不要继续等要求，"
+        "未完成人工确认并且未完成其后的依赖任务时，complete 必须为 false。"
+        "不能因为前置查询类子任务完成就关闭整个任务。"
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"complete": true|false, "reason": "..."}'
     )
@@ -402,6 +411,8 @@ def judge_completion_with_model(task: Task, execution_output: str) -> bool | Non
                 "content": task.content,
                 "loop_count": task.loop_count,
                 "max_loop_count": task.max_loop_count,
+                "draft": task.draft.model_dump(mode="json") if task.draft else None,
+                "rounds": [round_item.model_dump(mode="json") for round_item in task.context.rounds],
             },
             "execution_output": execution_output,
         },
