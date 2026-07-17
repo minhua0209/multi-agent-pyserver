@@ -90,7 +90,9 @@ import {
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
 import {
+  compactContextText,
   manualWorkflowFlowElements,
+  taskContextNodeView,
   taskDetailSummaryBlocks,
   taskDetailTypeBadge,
   workflowNodeStateColor as detailWorkflowNodeStateColor,
@@ -1235,8 +1237,11 @@ function TaskContextDetail({ task }: { task: Task }) {
         <Tag color="cyan">{rounds.length} 轮</Tag>
       </header>
       {summary ? (
-        <details className="context-summary-card" open>
-          <summary>当前上下文汇总</summary>
+        <details className="context-summary-card">
+          <summary>
+            <span>当前上下文汇总</span>
+            <small>{compactContextText(summary, 110)}</small>
+          </summary>
           <pre>{summary}</pre>
         </details>
       ) : (
@@ -1252,42 +1257,60 @@ function TaskContextDetail({ task }: { task: Task }) {
               </summary>
               {round.reason && <p className="context-round-reason">{round.reason}</p>}
               <div className="context-subtask-list">
-                {(round.subtasks || []).map((subtask) => (
-                  <article className="context-subtask-card" key={subtask.id}>
-                    <header>
-                      <strong>{subtask.title || subtask.id}</strong>
-                      <span>
-                        <Tag>{subtask.assignee_type === "human" ? "人工" : subtask.assignee_type === "condition" ? "条件" : "Agent"}</Tag>
-                        <Tag color={subtask.status === "succeeded" ? "green" : subtask.status === "failed" ? "red" : "blue"}>{statusText(subtask.status)}</Tag>
-                      </span>
-                    </header>
-                    <p>{subtask.description || "暂无节点说明"}</p>
-                    {(subtask.assignee_user_name || subtask.assigned_agent_id) && (
-                      <small>执行主体：{subtask.assignee_user_name || subtask.assigned_agent_id}</small>
-                    )}
-                    <pre className={subtask.output ? "" : "empty"}>{subtask.output || "暂无输出"}</pre>
-                    {!!subtask.tool_results?.length && (
-                      <details className="tool-result-detail">
-                        <summary>工具调用结果 {subtask.tool_results.length} 条</summary>
-                        {subtask.tool_results.map((result, index) => (
-                          <pre key={index}>{displayValue(result)}</pre>
-                        ))}
-                      </details>
-                    )}
-                  </article>
-                ))}
+                {(round.subtasks || []).map((subtask) => {
+                  const nodeView = taskContextNodeView(subtask)
+                  return (
+                    <details className="context-subtask-card" key={subtask.id}>
+                      <summary className="context-subtask-summary">
+                        <span className={`context-node-dot ${subtask.status || "running"}`} />
+                        <span className="context-node-main">
+                          <span className="context-node-title-row">
+                            <strong>{nodeView.title}</strong>
+                            <span className="context-node-tags">
+                              <Tag>{nodeView.typeText}</Tag>
+                              <Tag color={subtask.status === "succeeded" ? "green" : subtask.status === "failed" ? "red" : "blue"}>{statusText(subtask.status)}</Tag>
+                            </span>
+                          </span>
+                          <span className="context-node-preview">{nodeView.preview}</span>
+                        </span>
+                      </summary>
+                      <div className="context-subtask-detail">
+                        {nodeView.assigneeText && <small>执行主体：{nodeView.assigneeText}</small>}
+                        <section>
+                          <span>节点描述</span>
+                          <p>{subtask.description || "暂无节点说明"}</p>
+                        </section>
+                        <section>
+                          <span>节点输出</span>
+                          <pre className={subtask.output ? "" : "empty"}>{subtask.output || "暂无输出"}</pre>
+                        </section>
+                        {!!subtask.tool_results?.length && (
+                          <details className="tool-result-detail">
+                            <summary>工具调用结果 {subtask.tool_results.length} 条</summary>
+                            {subtask.tool_results.map((result, index) => (
+                              <pre key={index}>{displayValue(result)}</pre>
+                            ))}
+                          </details>
+                        )}
+                      </div>
+                    </details>
+                  )
+                })}
               </div>
               {(round.context_before || round.context_after) && (
-                <div className="round-context-diff">
-                  <details>
-                    <summary>执行前上下文</summary>
-                    <pre>{round.context_before || "空"}</pre>
-                  </details>
-                  <details>
-                    <summary>执行后上下文</summary>
-                    <pre>{round.context_after || "空"}</pre>
-                  </details>
-                </div>
+                <details className="round-context-panel">
+                  <summary>轮次上下文</summary>
+                  <div className="round-context-diff">
+                    <details>
+                      <summary>执行前上下文</summary>
+                      <pre>{round.context_before || "空"}</pre>
+                    </details>
+                    <details>
+                      <summary>执行后上下文</summary>
+                      <pre>{round.context_after || "空"}</pre>
+                    </details>
+                  </div>
+                </details>
               )}
             </details>
           ))}
@@ -1314,9 +1337,8 @@ function ManualWorkflowDetail({ task, definition }: { task: Task; definition: Wo
           nodes={flow.nodes}
           edges={flow.edges}
           nodeTypes={taskDetailWorkflowNodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.25}
+          defaultViewport={{ x: 20, y: 24, zoom: 0.88 }}
+          minZoom={0.45}
           maxZoom={1.6}
           nodesDraggable={false}
           nodesConnectable={false}

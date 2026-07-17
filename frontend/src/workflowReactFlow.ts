@@ -149,7 +149,7 @@ export function workflowToReactFlow(
       type: "workflowNode",
       position: nodePosition(node.id, resolvedPositions),
       style: {
-        width: node.type === "condition" ? 180 : 224,
+        width: node.type === "condition" ? 220 : 260,
       },
       data: {
         id: node.id,

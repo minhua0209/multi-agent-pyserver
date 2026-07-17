@@ -26,19 +26,19 @@ export interface WorkflowEdgePath {
 
 export const workflowCanvasSize: CanvasSize = { width: 2400, height: 1600 }
 
-export const workflowNodeSize: NodeSize = { width: 160, height: 104 }
+export const workflowNodeSize: NodeSize = { width: 260, height: 150 }
 
-export const workflowConditionNodeSize: NodeSize = { width: 136, height: 104 }
+export const workflowConditionNodeSize: NodeSize = { width: 220, height: 140 }
 
 export const defaultWorkflowNodePositions: WorkflowNodePositions = {
-  start: { left: 46, top: 268 },
-  parallel_agent_1: { left: 236, top: 82 },
-  parallel_agent_2: { left: 236, top: 242 },
-  parallel_agent_3: { left: 236, top: 402 },
-  review: { left: 520, top: 242 },
-  judge: { left: 682, top: 238 },
-  end: { left: 800, top: 92 },
-  revise: { left: 800, top: 392 },
+  start: { left: 80, top: 300 },
+  parallel_agent_1: { left: 420, top: 80 },
+  parallel_agent_2: { left: 420, top: 300 },
+  parallel_agent_3: { left: 420, top: 520 },
+  review: { left: 760, top: 300 },
+  judge: { left: 1100, top: 305 },
+  end: { left: 1420, top: 120 },
+  revise: { left: 1420, top: 500 },
 }
 
 interface EdgeSpec {

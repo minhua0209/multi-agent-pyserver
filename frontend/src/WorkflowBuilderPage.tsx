@@ -12,6 +12,8 @@ import {
   Sparkles,
   Trash2,
   UserCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react"
 import {
   Background,
@@ -43,6 +45,7 @@ import {
   workflowNodeInlineEditFields,
   workflowToReactFlow,
 } from "./workflowReactFlow"
+import { workflowResourcePanelClass, workflowResourceToggleLabel } from "./workflowResourcePanel"
 import { workflowTemplateCardView } from "./workflowTemplateCard"
 
 interface WorkflowBuilderPageProps {
@@ -100,6 +103,11 @@ function nodeKindText(type: string) {
 
 const nodeTypes = { workflowNode: WorkflowCanvasNode }
 
+const compactStarterNodePositions = {
+  start: { left: 80, top: 180 },
+  end: { left: 420, top: 180 },
+}
+
 function emptyWorkflowDefinition(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
     nodes: [
@@ -144,7 +152,7 @@ export function WorkflowBuilderPage({
   const [workflowDescription, setWorkflowDescription] = useState("")
   const [capabilityFilter, setCapabilityFilter] = useState("all")
   const initialDefinition = useMemo(() => emptyWorkflowDefinition(), [])
-  const initialFlow = useMemo(() => workflowToReactFlow(initialDefinition, defaultWorkflowNodePositions), [initialDefinition])
+  const initialFlow = useMemo(() => workflowToReactFlow(initialDefinition, compactStarterNodePositions), [initialDefinition])
   const [canvasNodes, setCanvasNodes] = useState<WorkflowNode[]>(initialDefinition.nodes)
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowReactFlowNode>(initialFlow.nodes)
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<WorkflowReactFlowEdge>(initialFlow.edges)
@@ -152,6 +160,7 @@ export function WorkflowBuilderPage({
   const [hoveredNodeId, setHoveredNodeId] = useState("")
   const [editingNodeId, setEditingNodeId] = useState("")
   const [activeResourcePanel, setActiveResourcePanel] = useState<"agents" | "templates">("agents")
+  const [resourcePanelCollapsed, setResourcePanelCollapsed] = useState(false)
   const [activeTemplateId, setActiveTemplateId] = useState("")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
@@ -325,7 +334,7 @@ export function WorkflowBuilderPage({
 
   function loadEmptyCanvas() {
     const nextDefinition = emptyWorkflowDefinition()
-    const flow = workflowToReactFlow(nextDefinition, defaultWorkflowNodePositions)
+    const flow = workflowToReactFlow(nextDefinition, compactStarterNodePositions)
     setWorkflowName("")
     setWorkflowDescription("")
     setCanvasNodes(nextDefinition.nodes)
@@ -462,8 +471,24 @@ export function WorkflowBuilderPage({
               )}
             </div>
           </div>
-          <div className="workflow-canvas" aria-label="Workflow 自由画布">
-            <aside className="workflow-left-drawers" aria-label="Workflow 资源侧栏">
+          <div className={resourcePanelCollapsed ? "workflow-canvas resource-collapsed" : "workflow-canvas"} aria-label="Workflow 自由画布">
+            <button
+              className={resourcePanelCollapsed ? "workflow-resource-toggle collapsed" : "workflow-resource-toggle"}
+              type="button"
+              onClick={() => setResourcePanelCollapsed((collapsed) => !collapsed)}
+              aria-expanded={!resourcePanelCollapsed}
+              aria-controls="workflow-resource-sidebar"
+              title={workflowResourceToggleLabel(resourcePanelCollapsed)}
+            >
+              {resourcePanelCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+              <span>{workflowResourceToggleLabel(resourcePanelCollapsed)}</span>
+            </button>
+            <aside
+              id="workflow-resource-sidebar"
+              className={workflowResourcePanelClass(resourcePanelCollapsed)}
+              aria-label="Workflow 资源侧栏"
+              aria-hidden={resourcePanelCollapsed}
+            >
               <div className="workflow-resource-tabs" role="tablist" aria-label="Workflow 资源类型">
                 <button
                   className={activeResourcePanel === "agents" ? "workflow-resource-tab active" : "workflow-resource-tab"}
@@ -591,8 +616,8 @@ export function WorkflowBuilderPage({
                 onNodeClick={(_event, node) => setActiveNodeId(node.id)}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId("")}
-                fitView
-                minZoom={0.2}
+                defaultViewport={{ x: 24, y: 28, zoom: 0.9 }}
+                minZoom={0.35}
                 maxZoom={1.8}
               >
                 <Background gap={18} />
@@ -652,8 +677,13 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
       {showTargetHandle && <Handle type="target" position={Position.Left} />}
       {data.kind === "condition" ? (
         <span className="workflow-condition-inner">
-          <span className="workflow-icon violet">{nodeIcon(String(data.kind), data.id)}</span>
-          <strong>{data.title || data.id}</strong>
+          <span className="workflow-node-head">
+            <span className="workflow-icon violet">{nodeIcon(String(data.kind), data.id)}</span>
+            <span className="workflow-node-title-group">
+              <strong>{data.title || data.id}</strong>
+              <span className="workflow-node-kind">{nodeKindText(String(data.kind))}</span>
+            </span>
+          </span>
           <small>{data.conditionDescription || "decision"}</small>
         </span>
       ) : (
@@ -662,7 +692,10 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
             <span className={data.kind === "human" ? "workflow-icon warning" : data.kind === "end" ? "workflow-icon success" : "workflow-icon"}>
               {nodeIcon(String(data.kind), data.id)}
             </span>
-            <strong>{data.title || data.id}</strong>
+            <span className="workflow-node-title-group">
+              <strong>{data.title || data.id}</strong>
+              <span className="workflow-node-kind">{nodeKindText(String(data.kind))}</span>
+            </span>
           </span>
           <small>{data.description || "-"}</small>
           {data.kind === "human" && (data.assigneeUserName || data.assignee) && <small className="workflow-node-instruction">人员：{data.assigneeUserName || data.assignee}</small>}
