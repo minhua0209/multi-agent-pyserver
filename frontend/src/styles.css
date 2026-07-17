@@ -864,6 +864,7 @@ tr.selected td {
 }
 
 .task-result-detail,
+.task-intervention-panel,
 .task-context-detail {
   flex: 0 0 auto;
   border: 1px solid rgb(129 140 248 / 0.42);
@@ -873,6 +874,7 @@ tr.selected td {
 }
 
 .task-result-detail > header,
+.task-intervention-panel > header,
 .task-context-detail > header {
   display: flex;
   align-items: center;
@@ -883,6 +885,7 @@ tr.selected td {
 }
 
 .task-result-detail > header > div,
+.task-intervention-panel > header > div,
 .task-context-detail > header > div {
   display: inline-flex;
   align-items: center;
@@ -891,8 +894,35 @@ tr.selected td {
 }
 
 .task-result-detail h4,
+.task-intervention-panel h4,
 .task-context-detail h4 {
   margin: 0;
+}
+
+.task-intervention-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.task-intervention-panel p {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.task-intervention-panel textarea {
+  width: calc(100% - 24px);
+  margin: 0 12px;
+}
+
+.task-intervention-panel .ant-alert {
+  margin: 0 12px;
+}
+
+.task-intervention-panel .form-actions {
+  padding: 0 12px;
 }
 
 .task-result-text {

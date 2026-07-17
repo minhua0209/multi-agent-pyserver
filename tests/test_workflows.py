@@ -633,3 +633,72 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
     assert "Make quote" in completed_titles
     assert "Revise solution" not in completed_titles
     assert resumed["task_status"] == "succeeded"
+
+
+def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    quote_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Quote Agent", "description": "Handles quotes", "capabilities": ["quote"]},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Condition Missing Route",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "approve", "type": "human", "title": "Approve"},
+                    {
+                        "id": "make_quote",
+                        "type": "agent",
+                        "agent_id": quote_agent["id"],
+                        "title": "Make quote",
+                    },
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "approve"},
+                    {
+                        "from": "approve",
+                        "to": "make_quote",
+                        "condition": {"field": "approval_result", "operator": "eq", "value": "approved"},
+                    },
+                    {"from": "make_quote", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Run conditional workflow without a rejected branch",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "Condition missing route", "description": "Run conditional workflow without a rejected branch"},
+    ).json()
+
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    resumed = client.post(
+        f"/api/v1/subtasks/{human_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "rejected",
+            "should_complete": False,
+            "metadata": {"approval_result": "rejected"},
+        },
+    ).json()
+
+    assert resumed["task_status"] == "running"
+    assert resumed["current_node"] == "human_intervention"
+    assert "没有可继续执行的节点" in resumed["final_output"]

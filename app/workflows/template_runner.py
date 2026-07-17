@@ -20,11 +20,9 @@ class WorkflowTemplateRunner:
             ready_nodes = self._ready_nodes(workflow, completed_node_ids, task)
             runnable_nodes = [node for node in ready_nodes if node.type in {"agent", "human", "condition"}]
             if not runnable_nodes:
-                task.task_status = TaskStatus.SUCCEEDED
-                task.current_node = CurrentNode.COMPLETION_JUDGE
-                task.final_output = task.context.summary
-                task.events.append(self.task_graph._event("workflow_completed", f"Workflow {workflow.id} completed"))
-                return task
+                if ready_nodes and all(node.type == "end" for node in ready_nodes):
+                    return self._complete_workflow(task, workflow)
+                return self._mark_workflow_blocked(task, workflow, completed_node_ids)
 
             plan = RoundPlan(
                 should_continue=True,
@@ -37,11 +35,7 @@ class WorkflowTemplateRunner:
                 return task
             completed_node_ids = self._completed_node_ids(task)
             if all(node.type == "end" for node in self._ready_nodes(workflow, completed_node_ids, task)):
-                task.task_status = TaskStatus.SUCCEEDED
-                task.current_node = CurrentNode.COMPLETION_JUDGE
-                task.final_output = task.context.summary
-                task.events.append(self.task_graph._event("workflow_completed", f"Workflow {workflow.id} completed"))
-                return task
+                return self._complete_workflow(task, workflow)
 
     def _run_round(self, task: Task, plan: RoundPlan) -> Task:
         runner = self.task_graph
@@ -60,6 +54,32 @@ class WorkflowTemplateRunner:
         if state["paused"]:
             return state["task"]
         return runner._context_update(state)["task"]
+
+    def _complete_workflow(self, task: Task, workflow: WorkflowTemplate) -> Task:
+        task.task_status = TaskStatus.SUCCEEDED
+        task.current_node = CurrentNode.COMPLETION_JUDGE
+        task.final_output = task.context.summary
+        task.events.append(self.task_graph._event("workflow_completed", f"Workflow {workflow.id} completed"))
+        return task
+
+    def _mark_workflow_blocked(
+        self,
+        task: Task,
+        workflow: WorkflowTemplate,
+        completed_node_ids: set[str],
+    ) -> Task:
+        pending_nodes = [
+            node.title or node.id
+            for node in workflow.definition.nodes
+            if node.type not in {"start"} and node.id not in completed_node_ids
+        ]
+        pending_text = "、".join(pending_nodes[:6]) if pending_nodes else "未知节点"
+        message = f"Workflow {workflow.id} 没有可继续执行的节点，且未到达完成节点。待处理节点：{pending_text}"
+        task.task_status = TaskStatus.RUNNING
+        task.current_node = CurrentNode.HUMAN_INTERVENTION
+        task.final_output = message
+        task.events.append(self.task_graph._event("workflow_blocked", message))
+        return task
 
     @staticmethod
     def _node_to_subtask(task: Task, node: WorkflowNode) -> SubTask:

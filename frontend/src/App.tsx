@@ -84,6 +84,7 @@ import {
   listWorkflows,
   setCurrentUserId,
   submitHumanSubtaskResult,
+  submitTaskResult,
   updateUser,
   uploadTaskAttachment,
 } from "./api/taskhub"
@@ -433,7 +434,10 @@ export default function App() {
             setToast("任务清单已取消")
           }} />}
           {page === "confirmation" && <ConfirmationPage humanSubtasks={humanSubtasks} refreshAll={refreshAll} />}
-          {page === "tasks" && <TasksPage tasks={tasks} setSelectedTaskId={setSelectedTaskId} onOpenHumanWorkbench={async () => {
+          {page === "tasks" && <TasksPage tasks={tasks} setSelectedTaskId={setSelectedTaskId} onTaskUpdated={(updated) => {
+            setTasks((current) => mergeTasks(current, [updated]))
+            setSelectedTaskId(updated.id)
+          }} onOpenHumanWorkbench={async () => {
             await refreshAll()
             setPage("confirmation")
           }} />}
@@ -1023,10 +1027,12 @@ function ConfirmationPage({
 function TasksPage({
   tasks,
   setSelectedTaskId,
+  onTaskUpdated,
   onOpenHumanWorkbench,
 }: {
   tasks: Task[]
   setSelectedTaskId: (id: string) => void
+  onTaskUpdated: (task: Task) => void
   onOpenHumanWorkbench: () => Promise<void>
 }) {
   const [detailTask, setDetailTask] = useState<Task | null>(null)
@@ -1078,6 +1084,10 @@ function TasksPage({
           task={detailTask}
           loading={detailLoading}
           error={detailError}
+          onTaskUpdated={(updated) => {
+            setDetailTask(updated)
+            onTaskUpdated(updated)
+          }}
           onOpenHumanWorkbench={() => {
             setDetailTask(null)
             setDetailError("")
@@ -1097,12 +1107,14 @@ function TaskDetailModal({
   task,
   loading,
   error,
+  onTaskUpdated,
   onOpenHumanWorkbench,
   onClose,
 }: {
   task: Task
   loading: boolean
   error: string
+  onTaskUpdated: (task: Task) => void
   onOpenHumanWorkbench: () => void
   onClose: () => void
 }) {
@@ -1148,6 +1160,7 @@ function TaskDetailModal({
             ))}
           </div>
           <TaskResultDetail task={task} />
+          <TaskInterventionPanel task={task} onTaskUpdated={onTaskUpdated} />
           {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
           {isManualWorkflowTask(task) ? (
             <section className="execution-section">
@@ -1173,6 +1186,66 @@ function TaskDetailModal({
           <TaskContextDetail task={task} />
         </div>
     </Modal>
+  )
+}
+
+function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpdated: (task: Task) => void }) {
+  const [output, setOutput] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState("")
+  const needsIntervention = taskStatus(task) === "running" && task.current_node === "human_intervention"
+
+  useEffect(() => {
+    if (needsIntervention) setOutput(task.final_output || "")
+  }, [needsIntervention, task.id, task.final_output])
+
+  if (!needsIntervention) return null
+
+  async function submit() {
+    const value = output.trim()
+    if (!value) {
+      setError("请填写处理结论")
+      return
+    }
+    setSubmitting(true)
+    setError("")
+    try {
+      const updated = await submitTaskResult(task.id, {
+        result_status: "succeeded",
+        output: value,
+        should_complete: true,
+      })
+      onTaskUpdated(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "提交处理结果失败")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="task-intervention-panel">
+      <header>
+        <div>
+          <ShieldCheck size={18} />
+          <h4>人工介入处理</h4>
+        </div>
+        <Tag color="orange">待处理</Tag>
+      </header>
+      <p>流程当前无法自动继续。请补充最终处理结论，提交后任务会进入完成状态并沉淀到产出成果。</p>
+      <Input.TextArea
+        rows={4}
+        value={output}
+        onChange={(event) => setOutput(event.target.value)}
+        placeholder="填写最终结论、处理结果或后续说明"
+      />
+      {error && <AntAlert type="error" showIcon message={error} />}
+      <div className="form-actions">
+        <Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => void submit()} loading={submitting}>
+          完成任务
+        </Button>
+      </div>
+    </section>
   )
 }
 

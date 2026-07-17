@@ -164,14 +164,17 @@ class TaskService:
         task = self._get_existing(task_id)
         task.events.append(self._event("execution_result_submitted", payload.output or payload.result_status.value))
         task.current_node = CurrentNode.COMPLETION_JUDGE
+        result_output = payload.output.strip() or task.final_output or task.context.summary or payload.result_status.value
         if payload.result_status == ResultStatus.FAILED:
             task.task_status = TaskStatus.FAILED
+            task.final_output = result_output
             task.events.append(self._event("completion_judged", "Execution result failed task"))
             saved = self.store.save(task)
             self._resume_unblocked_tasks()
             return saved
         if payload.should_complete:
             task.task_status = TaskStatus.SUCCEEDED
+            task.final_output = result_output
             task.events.append(self._event("completion_judged", "Execution result completed task"))
             saved = self.store.save(task)
             self._resume_unblocked_tasks()

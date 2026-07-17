@@ -5,6 +5,7 @@ import {
   confirmTask,
   listAssignableUsers,
   listTasks,
+  submitTaskResult,
   setCurrentUserId,
   uploadTaskAttachment,
   WorkflowTaskMetadata,
@@ -109,6 +110,25 @@ describe("taskhub api client", () => {
       default_assignee_user_id: "user_001",
       default_assignee_user_name: "李晨",
       default_assignee_role: "user",
+    })
+  })
+
+  it("submits task-level intervention result", async () => {
+    const fetchMock = vi.fn(async () => mockJsonResponse({ id: "task_001", task_status: "succeeded" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await submitTaskResult("task_001", {
+      result_status: "succeeded",
+      output: "人工补充最终结论",
+      should_complete: true,
+    })
+
+    const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/tasks/task_001/result", expect.any(Object))
+    expect(JSON.parse(String(options.body))).toEqual({
+      result_status: "succeeded",
+      output: "人工补充最终结论",
+      should_complete: true,
     })
   })
 })

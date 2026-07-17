@@ -368,6 +368,22 @@ export function submitHumanSubtaskResult(
   })
 }
 
+export function submitTaskResult(
+  taskId: string,
+  payload: {
+    result_status: "succeeded" | "failed" | "blocked" | "partial"
+    output: string
+    should_complete?: boolean
+    metadata?: Record<string, string>
+    execution_mode?: "sync" | "async"
+  },
+) {
+  return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/result`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function listAgents() {
   return request<Agent[]>("/api/v1/agents")
 }

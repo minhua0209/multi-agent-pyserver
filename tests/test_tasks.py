@@ -928,3 +928,28 @@ def test_human_subtask_result_can_resume_task_flow_async(tmp_path: Path, monkeyp
     assert "risk approved" in submitted["context"]["summary"]
     assert started == [created["id"]]
     assert client.get("/api/v1/subtasks/human").json() == []
+
+
+def test_task_level_result_completion_updates_final_output(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "人工介入闭环任务",
+            "content": "需要人工介入后给出最终结论",
+        },
+    ).json()["tasks"][0]
+
+    completed = client.post(
+        f"/api/v1/tasks/{created['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "人工介入后确认任务完成",
+            "should_complete": True,
+        },
+    ).json()
+
+    assert completed["task_status"] == "succeeded"
+    assert completed["current_node"] == "completion_judge"
+    assert completed["final_output"] == "人工介入后确认任务完成"
