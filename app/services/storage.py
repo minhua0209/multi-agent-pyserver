@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, delete, inspect, select, text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.engine import Engine
 
 from app.core.models import (
@@ -13,6 +14,7 @@ from app.core.models import (
     Event,
     SubTask,
     Task,
+    TaskAttachment,
     TaskRound,
     User,
     UserCreate,
@@ -178,6 +180,42 @@ class UserRegistry:
         )
 
 
+class TaskAttachmentStore:
+    def __init__(self, file_path: Path, upload_dir: Path | None = None) -> None:
+        self.file_path = file_path
+        self.upload_dir = upload_dir or file_path.parent / "task_attachments"
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        if not self.file_path.exists():
+            self.file_path.write_text("[]")
+
+    def save_file(self, stored_filename: str, data: bytes) -> None:
+        target_path = (self.upload_dir / stored_filename).resolve()
+        if self.upload_dir.resolve() != target_path.parent:
+            raise ValueError("Attachment file path must stay inside upload_dir")
+        target_path.write_bytes(data)
+
+    def save(self, attachment: TaskAttachment) -> TaskAttachment:
+        attachments = self.list_attachments()
+        attachments = [item for item in attachments if item.id != attachment.id]
+        attachments.append(attachment)
+        self.file_path.write_text(
+            json.dumps(
+                [item.model_dump(mode="json") for item in attachments],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return attachment
+
+    def get(self, attachment_id: str) -> TaskAttachment | None:
+        return next((attachment for attachment in self.list_attachments() if attachment.id == attachment_id), None)
+
+    def list_attachments(self) -> list[TaskAttachment]:
+        raw_attachments = json.loads(self.file_path.read_text())
+        return [TaskAttachment.model_validate(raw_attachment) for raw_attachment in raw_attachments]
+
+
 class InMemoryTaskStore:
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
@@ -198,6 +236,11 @@ class InMemoryTaskStore:
 
 
 metadata = MetaData()
+
+
+def large_text():
+    return Text().with_variant(LONGTEXT(), "mysql")
+
 
 agents_table = Table(
     "agents",
@@ -236,7 +279,7 @@ tasks_table = Table(
     "tasks",
     metadata,
     Column("id", String(64), primary_key=True),
-    Column("payload", Text, nullable=True),
+    Column("payload", large_text(), nullable=True),
     Column("request_id", String(64), nullable=True),
     Column("title", String(255), nullable=True),
     Column("description", Text, nullable=True),
@@ -248,9 +291,9 @@ tasks_table = Table(
     Column("assigned_agent_id", String(64), nullable=True),
     Column("loop_count", Integer, nullable=False, default=0),
     Column("max_loop_count", Integer, nullable=False, default=10),
-    Column("context_summary", Text, nullable=True),
-    Column("final_output", Text, nullable=True),
-    Column("draft_json", Text, nullable=True),
+    Column("context_summary", large_text(), nullable=True),
+    Column("final_output", large_text(), nullable=True),
+    Column("draft_json", large_text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=True),
 )
@@ -263,9 +306,9 @@ task_rounds_table = Table(
     Column("round_index", Integer, nullable=True),
     Column("execution_mode", String(32), nullable=True),
     Column("reason", Text, nullable=True),
-    Column("context_before", Text, nullable=True),
-    Column("context_after", Text, nullable=True),
-    Column("plan_json", Text, nullable=True),
+    Column("context_before", large_text(), nullable=True),
+    Column("context_after", large_text(), nullable=True),
+    Column("plan_json", large_text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=True),
 )
@@ -288,11 +331,11 @@ subtasks_table = Table(
     Column("assignee_role", String(128), nullable=True),
     Column("retry_count", Integer, nullable=False, default=0),
     Column("max_retry_count", Integer, nullable=False, default=3),
-    Column("output", Text, nullable=True),
-    Column("error_message", Text, nullable=True),
-    Column("result_metadata_json", Text, nullable=True),
-    Column("tool_calls_json", Text, nullable=True),
-    Column("tool_results_json", Text, nullable=True),
+    Column("output", large_text(), nullable=True),
+    Column("error_message", large_text(), nullable=True),
+    Column("result_metadata_json", large_text(), nullable=True),
+    Column("tool_calls_json", large_text(), nullable=True),
+    Column("tool_results_json", large_text(), nullable=True),
     Column("started_at", DateTime(timezone=True), nullable=True),
     Column("finished_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=True),
@@ -308,7 +351,7 @@ task_events_table = Table(
     Column("event_type", String(64), nullable=True),
     Column("node_name", String(64), nullable=True),
     Column("message", Text, nullable=True),
-    Column("payload_json", Text, nullable=True),
+    Column("payload_json", large_text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=True),
 )
 
@@ -321,7 +364,7 @@ task_snapshots_table = Table(
     Column("round_id", String(64), nullable=True),
     Column("snapshot_type", String(64), nullable=True),
     Column("node_name", String(64), nullable=True),
-    Column("snapshot_json", Text, nullable=True),
+    Column("snapshot_json", large_text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=True),
 )
 
@@ -336,8 +379,8 @@ tool_executions_table = Table(
     Column("tool_type", String(64), nullable=True),
     Column("arguments_json", Text, nullable=True),
     Column("success", Boolean, nullable=False, default=False),
-    Column("result_text", Text, nullable=True),
-    Column("error_message", Text, nullable=True),
+    Column("result_text", large_text(), nullable=True),
+    Column("error_message", large_text(), nullable=True),
     Column("started_at", DateTime(timezone=True), nullable=True),
     Column("finished_at", DateTime(timezone=True), nullable=True),
 )
@@ -370,6 +413,23 @@ users_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=True),
 )
 
+task_attachments_table = Table(
+    "task_attachments",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("payload", large_text(), nullable=True),
+    Column("filename", String(255), nullable=True),
+    Column("stored_filename", String(255), nullable=True),
+    Column("content_type", String(255), nullable=True),
+    Column("extension", String(32), nullable=True),
+    Column("size_bytes", Integer, nullable=False, default=0),
+    Column("status", String(32), nullable=False, default="parsed"),
+    Column("created_by_user_id", String(64), nullable=True),
+    Column("created_by_user_name", String(255), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=True),
+    Column("updated_at", DateTime(timezone=True), nullable=True),
+)
+
 
 def _create_engine(database_url: str) -> Engine:
     return create_engine(database_url, future=True)
@@ -394,6 +454,17 @@ def _ensure_column(engine: Engine, table_name: str, column_name: str, definition
         return
     with engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+
+def _ensure_mysql_longtext_columns(engine: Engine, table_name: str, column_names: list[str]) -> None:
+    if engine.dialect.name != "mysql":
+        return
+    inspector = inspect(engine)
+    existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    with engine.begin() as connection:
+        for column_name in column_names:
+            if column_name in existing_columns:
+                connection.execute(text(f"ALTER TABLE `{table_name}` MODIFY COLUMN `{column_name}` LONGTEXT NULL"))
 
 
 class DatabaseAgentRegistry:
@@ -503,6 +574,68 @@ class DatabaseUserRegistry:
         return User.model_validate(dict(row))
 
 
+class DatabaseTaskAttachmentStore:
+    def __init__(self, database_url: str, upload_dir: Path | None = None) -> None:
+        self.engine = _create_engine(database_url)
+        self.upload_dir = upload_dir or Path("./runtime/task_attachments")
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        metadata.create_all(self.engine)
+        _ensure_mysql_longtext_columns(self.engine, "task_attachments", ["payload"])
+
+    def save_file(self, stored_filename: str, data: bytes) -> None:
+        target_path = (self.upload_dir / stored_filename).resolve()
+        if self.upload_dir.resolve() != target_path.parent:
+            raise ValueError("Attachment file path must stay inside upload_dir")
+        target_path.write_bytes(data)
+
+    def save(self, attachment: TaskAttachment) -> TaskAttachment:
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(task_attachments_table.c.id).where(task_attachments_table.c.id == attachment.id)
+            ).first()
+            values = self._attachment_values(attachment)
+            if existing:
+                connection.execute(
+                    task_attachments_table.update()
+                    .where(task_attachments_table.c.id == attachment.id)
+                    .values(**values)
+                )
+            else:
+                connection.execute(task_attachments_table.insert().values(**values))
+        return attachment
+
+    def get(self, attachment_id: str) -> TaskAttachment | None:
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(task_attachments_table.c.payload).where(task_attachments_table.c.id == attachment_id)
+            ).first()
+        if row is None:
+            return None
+        return TaskAttachment.model_validate_json(row.payload)
+
+    def list_attachments(self) -> list[TaskAttachment]:
+        with self.engine.begin() as connection:
+            rows = connection.execute(select(task_attachments_table.c.payload)).all()
+        return [TaskAttachment.model_validate_json(row.payload) for row in rows]
+
+    @staticmethod
+    def _attachment_values(attachment: TaskAttachment) -> dict:
+        return {
+            "id": attachment.id,
+            "payload": attachment.model_dump_json(),
+            "filename": attachment.filename,
+            "stored_filename": attachment.stored_filename,
+            "content_type": attachment.content_type,
+            "extension": attachment.extension,
+            "size_bytes": attachment.size_bytes,
+            "status": attachment.status,
+            "created_by_user_id": attachment.created_by_user_id,
+            "created_by_user_name": attachment.created_by_user_name,
+            "created_at": attachment.created_at,
+            "updated_at": attachment.updated_at,
+        }
+
+
 class DatabaseTaskStore:
     def __init__(self, database_url: str) -> None:
         self.engine = _create_engine(database_url)
@@ -516,6 +649,16 @@ class DatabaseTaskStore:
         _ensure_column(self.engine, "tasks", "created_by_user_name", "VARCHAR(255) NULL")
         _ensure_column(self.engine, "task_requests", "created_by_user_id", "VARCHAR(64) NULL")
         _ensure_column(self.engine, "task_requests", "created_by_user_name", "VARCHAR(255) NULL")
+        _ensure_mysql_longtext_columns(self.engine, "tasks", ["payload", "context_summary", "final_output", "draft_json"])
+        _ensure_mysql_longtext_columns(self.engine, "task_rounds", ["context_before", "context_after", "plan_json"])
+        _ensure_mysql_longtext_columns(
+            self.engine,
+            "subtasks",
+            ["output", "error_message", "result_metadata_json", "tool_calls_json", "tool_results_json"],
+        )
+        _ensure_mysql_longtext_columns(self.engine, "task_events", ["payload_json"])
+        _ensure_mysql_longtext_columns(self.engine, "task_snapshots", ["snapshot_json"])
+        _ensure_mysql_longtext_columns(self.engine, "tool_executions", ["result_text", "error_message"])
 
     def save(self, task: Task) -> Task:
         task.updated_at = utc_now()

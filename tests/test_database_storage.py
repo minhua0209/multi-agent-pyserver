@@ -8,7 +8,7 @@ from app.core.enums import CurrentNode, SourceType, TaskStatus
 from app.core.models import AgentCreate, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
 from app.main import create_app
 from app.services import storage as storage_module
-from app.services.storage import DatabaseAgentRegistry, DatabaseTaskStore
+from app.services.storage import DatabaseAgentRegistry, DatabaseTaskAttachmentStore, DatabaseTaskStore
 
 
 def test_database_agent_registry_persists_agents_across_instances(tmp_path: Path) -> None:
@@ -70,6 +70,22 @@ def test_database_task_store_uses_mysql_safe_task_type_migration(tmp_path: Path,
         if table_name == "tasks" and column_name == "task_type"
     )
     assert task_type_definition == "VARCHAR(32) NOT NULL DEFAULT 'auto_planning'"
+
+
+def test_database_storage_marks_attachment_context_columns_as_longtext(tmp_path: Path, monkeypatch) -> None:
+    captured = []
+
+    def _capture_longtext_columns(engine, table_name: str, column_names: list[str]) -> None:
+        captured.append((table_name, column_names))
+
+    monkeypatch.setattr(storage_module, "_ensure_mysql_longtext_columns", _capture_longtext_columns)
+
+    DatabaseTaskStore(f"sqlite:///{tmp_path / 'taskhub.db'}")
+    DatabaseTaskAttachmentStore(f"sqlite:///{tmp_path / 'taskhub.db'}")
+
+    assert ("tasks", ["payload", "context_summary", "final_output", "draft_json"]) in captured
+    assert ("task_rounds", ["context_before", "context_after", "plan_json"]) in captured
+    assert ("task_attachments", ["payload"]) in captured
 
 
 def test_create_app_can_use_database_storage(tmp_path: Path) -> None:
@@ -138,11 +154,21 @@ def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
         def __init__(self, database_url):
             captured_urls.append(("workflow", database_url))
 
+    class FakeDatabaseUserRegistry:
+        def __init__(self, database_url):
+            captured_urls.append(("user", database_url))
+
+    class FakeDatabaseTaskAttachmentStore:
+        def __init__(self, database_url):
+            captured_urls.append(("attachment", database_url))
+
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DISABLE_DEFAULT_DATABASE_URL", raising=False)
     monkeypatch.setattr("app.main.DatabaseAgentRegistry", FakeDatabaseAgentRegistry)
     monkeypatch.setattr("app.main.DatabaseTaskStore", FakeDatabaseTaskStore)
     monkeypatch.setattr("app.main.DatabaseWorkflowRegistry", FakeDatabaseWorkflowRegistry)
+    monkeypatch.setattr("app.main.DatabaseUserRegistry", FakeDatabaseUserRegistry)
+    monkeypatch.setattr("app.main.DatabaseTaskAttachmentStore", FakeDatabaseTaskAttachmentStore)
 
     create_app()
 
@@ -150,6 +176,8 @@ def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
         ("agent", DEFAULT_DATABASE_URL),
         ("task", DEFAULT_DATABASE_URL),
         ("workflow", DEFAULT_DATABASE_URL),
+        ("user", DEFAULT_DATABASE_URL),
+        ("attachment", DEFAULT_DATABASE_URL),
     ]
 
 

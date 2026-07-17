@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from app.api.auth import current_user, ensure_task_access, filter_tasks_for_user
 from app.core.enums import CurrentNode
 from app.core.models import ExecutionResultCreate, Task, TaskConfirm, TaskRequestCreate, TaskRequestResponse
-from app.services.task_service import TaskCannotBeCancelledError, TaskNotFoundError, WorkflowNotFoundError
+from app.services.task_service import AttachmentNotFoundError, TaskCannotBeCancelledError, TaskNotFoundError, WorkflowNotFoundError
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -12,6 +12,8 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 def create_task_request(payload: TaskRequestCreate, request: Request) -> TaskRequestResponse:
     try:
         return request.app.state.task_service.create_request(payload, current_user(request))
+    except AttachmentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Attachment not found: {exc}") from exc
     except WorkflowNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
 

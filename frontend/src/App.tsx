@@ -36,6 +36,7 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Paperclip,
   Trash2,
   Users,
   Edit3,
@@ -46,6 +47,7 @@ import {
   Agent,
   SubTask,
   Task,
+  TaskAttachment,
   TaskRound,
   User,
   UserCreatePayload,
@@ -71,6 +73,7 @@ import {
   setCurrentUserId,
   submitHumanSubtaskResult,
   updateUser,
+  uploadTaskAttachment,
 } from "./api/taskhub"
 import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
@@ -131,6 +134,18 @@ function draftTaskListText(task: Task) {
 
 function taskStatus(task: Task) {
   return task.task_status || task.status || "running"
+}
+
+function taskAttachments(task: Task): TaskAttachment[] {
+  const attachments = task.request_metadata?.attachments
+  return Array.isArray(attachments) ? attachments : []
+}
+
+function formatFileSize(size?: number) {
+  const value = size || 0
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
 function taskTypeColor(task: Task) {
@@ -467,6 +482,11 @@ function PublishPage({
   const [workflowError, setWorkflowError] = useState("")
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false)
   const [workflowSubmitting, setWorkflowSubmitting] = useState(false)
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([])
+  const [attachmentUploading, setAttachmentUploading] = useState(false)
+  const [attachmentError, setAttachmentError] = useState("")
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null)
+  const attachmentIds = attachments.map((attachment) => attachment.id)
 
   useEffect(() => {
     let cancelled = false
@@ -495,7 +515,7 @@ function PublishPage({
     setDraftTasks([])
     setIntentModalOpen(true)
     try {
-      const response = await createTaskRequest(title.trim(), content, workflowId)
+      const response = await createTaskRequest(title.trim(), content, workflowId, "business_system", attachmentIds)
       onCreated(response.tasks || [])
       setDraftTasks(response.tasks || [])
     } catch (err) {
@@ -531,12 +551,18 @@ function PublishPage({
     setWorkflowSubmitting(true)
     setMessage("")
     try {
-      const response = await createTaskRequest(title.trim(), content.trim(), {
-        execution_mode: "workflow_template",
-        workflow_name: title.trim(),
-        workflow_description: content.trim(),
-        workflow_definition: definition,
-      })
+      const response = await createTaskRequest(
+        title.trim(),
+        content.trim(),
+        {
+          execution_mode: "workflow_template",
+          workflow_name: title.trim(),
+          workflow_description: content.trim(),
+          workflow_definition: definition,
+        },
+        "business_system",
+        attachmentIds,
+      )
       const created = response.tasks || []
       onCreated(created)
       const confirmed = []
@@ -602,6 +628,37 @@ function PublishPage({
     )
   }
 
+  async function handleAttachmentFiles(fileList: FileList | null) {
+    if (!fileList?.length) return
+    setAttachmentUploading(true)
+    setAttachmentError("")
+    const allowedExtensions = new Set([".docx", ".xlsx", ".txt", ".md", ".log"])
+    try {
+      for (const file of Array.from(fileList)) {
+        const extension = `.${file.name.split(".").pop()?.toLowerCase() || ""}`
+        if (!allowedExtensions.has(extension)) {
+          setAttachmentError("仅支持 .docx、.xlsx、.txt、.md、.log 文本附件")
+          continue
+        }
+        if (file.size > 10 * 1024 * 1024) {
+          setAttachmentError("单个附件不能超过 10MB")
+          continue
+        }
+        const uploaded = await uploadTaskAttachment(file)
+        setAttachments((current) => {
+          if (current.some((attachment) => attachment.id === uploaded.id)) return current
+          return [...current, uploaded]
+        })
+        setToast(`附件已解析：${uploaded.filename}`)
+      }
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : "附件上传失败")
+    } finally {
+      setAttachmentUploading(false)
+      if (attachmentInputRef.current) attachmentInputRef.current.value = ""
+    }
+  }
+
   async function closeIntentModal() {
     if (submitting || confirming) return
     const taskIds = draftTasks.map((task) => task.id)
@@ -645,6 +702,43 @@ function PublishPage({
           <span>任务诉求</span>
           <Input.TextArea rows={7} value={content} onChange={(event) => setContent(event.target.value)} />
         </label>
+        <div className="field attachment-field">
+          <span>文本附件（可选）</span>
+          <input
+            ref={attachmentInputRef}
+            className="hidden-file-input"
+            type="file"
+            multiple
+            accept=".docx,.xlsx,.txt,.md,.log"
+            onChange={(event) => void handleAttachmentFiles(event.target.files)}
+          />
+          <div className="attachment-upload-panel">
+            <Button icon={<Paperclip size={16} />} loading={attachmentUploading} onClick={() => attachmentInputRef.current?.click()}>
+              上传文本附件
+            </Button>
+            <Typography.Text type="secondary">支持 .docx、.xlsx、.txt、.md、.log，仅解析纯文本，单个文件不超过 10MB。</Typography.Text>
+          </div>
+          {attachmentError && <Typography.Text type="danger">{attachmentError}</Typography.Text>}
+          {!!attachments.length && (
+            <div className="attachment-list">
+              {attachments.map((attachment) => (
+                <div className="attachment-item" key={attachment.id}>
+                  <div>
+                    <Typography.Text strong>{attachment.filename}</Typography.Text>
+                    <span>{formatFileSize(attachment.size_bytes)} / {attachment.text_length || 0} 字符{attachment.truncated ? " / 已截断" : ""}</span>
+                  </div>
+                  <Button
+                    size="small"
+                    icon={<Trash2 size={14} />}
+                    onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                  >
+                    移除
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <label className="field">
           <span>流程模板（可选）</span>
           <Select
@@ -690,7 +784,7 @@ function PublishPage({
           <Button key="cancel" onClick={() => void closeIntentModal()} disabled={confirming}>取消</Button>,
           <Button key="confirm" type="primary" onClick={confirmDrafts} loading={confirming} disabled={draftTasks.length === 0}>确认并执行</Button>,
         ]}
-        maskClosable={false}
+        mask={{ closable: false }}
         closable={!submitting && !confirming}
       >
         <Typography.Paragraph type="secondary">
@@ -737,7 +831,7 @@ function PublishPage({
         width="min(1680px, 96vw)"
         footer={null}
         destroyOnHidden
-        maskClosable={false}
+        mask={{ closable: false }}
         className="agent-workflow-modal"
         onCancel={() => {
           if (!workflowSubmitting) setWorkflowModalOpen(false)
@@ -932,6 +1026,8 @@ function TaskDetailModal({
   onOpenHumanWorkbench: () => void
   onClose: () => void
 }) {
+  const attachments = taskAttachments(task)
+
   return (
     <Modal
       title={
@@ -974,6 +1070,7 @@ function TaskDetailModal({
               <div><Tag color={taskTypeColor(task)}>{taskTypeText(task)}</Tag></div>
             </section>
           </div>
+          {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
           {isManualWorkflowTask(task) ? (
             <section className="execution-section">
               <h4>手动编排流程</h4>
@@ -997,6 +1094,26 @@ function TaskDetailModal({
           )}
         </div>
     </Modal>
+  )
+}
+
+function TaskAttachmentDetail({ attachments }: { attachments: TaskAttachment[] }) {
+  return (
+    <section className="task-attachment-detail">
+      <div>
+        <h4>文本附件</h4>
+        <span>{attachments.length} 个附件已解析进任务上下文</span>
+      </div>
+      <div className="task-attachment-chips">
+        {attachments.map((attachment) => (
+          <Tooltip key={attachment.id} title={attachment.text_preview || attachment.filename}>
+            <Tag color={attachment.status === "parsed" ? "cyan" : "red"}>
+              {attachment.filename} · {attachment.text_length || 0} 字符
+            </Tag>
+          </Tooltip>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -1530,7 +1647,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 function Metric({ label, value, tone }: { label: string; value: string | number; tone: string }) {
   return (
     <Card className={`metric-card ${tone}`} size="small">
-      <Statistic title={label} value={value} valueStyle={{ color: toneColor(tone), fontSize: 26 }} />
+      <Statistic title={label} value={value} styles={{ content: { color: toneColor(tone), fontSize: 26 } }} />
     </Card>
   )
 }

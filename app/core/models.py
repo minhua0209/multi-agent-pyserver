@@ -116,7 +116,27 @@ class TaskRequestCreate(BaseModel):
     title: str = Field(default="", max_length=50)
     content: str = Field(min_length=1)
     task_type: TaskType | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskAttachment(BaseModel):
+    id: str
+    filename: str
+    stored_filename: str = ""
+    content_type: str = ""
+    extension: str
+    size_bytes: int
+    text_preview: str = ""
+    text_content: str = ""
+    text_length: int = 0
+    truncated: bool = False
+    status: str = "parsed"
+    error: str = ""
+    created_by_user_id: str = ""
+    created_by_user_name: str = ""
+    created_at: datetime
+    updated_at: datetime
 
 
 class UserCreate(BaseModel):

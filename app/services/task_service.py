@@ -11,7 +11,9 @@ from app.core.models import (
     ExecutionResultCreate,
     SubTask,
     Task,
+    TaskAttachment,
     TaskConfirm,
+    TaskContext,
     TaskDraft,
     TaskRequestCreate,
     TaskRequestResponse,
@@ -38,6 +40,10 @@ class WorkflowNotFoundError(Exception):
     pass
 
 
+class AttachmentNotFoundError(Exception):
+    pass
+
+
 class TaskCannotBeCancelledError(Exception):
     pass
 
@@ -53,26 +59,32 @@ class TaskService:
         agent_registry: AgentRegistry,
         workflow_registry: WorkflowRegistry | None = None,
         user_registry: UserRegistry | None = None,
+        attachment_store=None,
     ) -> None:
         self.store = store
         self.agent_registry = agent_registry
         self.workflow_registry = workflow_registry
         self.user_registry = user_registry
+        self.attachment_store = attachment_store
         self.task_graph = TaskGraphRunner(agent_registry, user_registry)
         self.workflow_runner = WorkflowTemplateRunner(agent_registry)
 
     def create_request(self, payload: TaskRequestCreate, created_by: User | None = None) -> TaskRequestResponse:
         request_id = new_id("req")
         request_metadata = self._request_metadata_with_workflow_snapshot(payload.metadata)
+        attachments = self._resolve_attachments(payload, request_metadata)
+        request_metadata = self._request_metadata_with_attachments(request_metadata, attachments)
+        attachment_context = self._format_attachment_context(attachments)
+        recognition_content = self._content_with_attachment_context(payload.content, attachment_context)
         task_type = self._task_type_for_request(payload, request_metadata)
         if task_type == TaskType.MANUAL_ORCHESTRATION:
             draft = self._workflow_template_draft(payload, request_metadata)
         else:
             agents = self.agent_registry.list_processing_agents()
-            raw_drafts = recognize_tasks_with_model(payload.content, agents)
+            raw_drafts = recognize_tasks_with_model(recognition_content, agents)
             if not raw_drafts:
                 require_system_mock_fallback_enabled("intent_recognition")
-                raw_drafts = mock_intent_recognitions(payload.content, agents)
+                raw_drafts = mock_intent_recognitions(recognition_content, agents)
             draft = self._merge_drafts(payload.content, raw_drafts)
         task = Task(
             id=new_id("task"),
@@ -89,10 +101,16 @@ class TaskService:
             draft=draft,
             title=payload.title.strip() or draft.title,
             assigned_agent_id=draft.suggested_agent_id,
+            context=TaskContext(
+                summary=attachment_context,
+                artifacts=[self._attachment_artifact_text(attachment) for attachment in attachments],
+            ),
             created_at=utc_now(),
             updated_at=utc_now(),
         )
         task.events.append(self._event("task_created", f"Main task created from request {request_id}"))
+        if attachments:
+            task.events.append(self._event("attachments_bound", f"{len(attachments)} text attachments bound to task context"))
         if task_type == TaskType.MANUAL_ORCHESTRATION:
             task.events.append(self._event("workflow_template_selected", "Workflow template created a main task draft"))
         else:
@@ -272,6 +290,68 @@ class TaskService:
         request_metadata["workflow_description"] = workflow.description
         request_metadata["workflow_definition"] = workflow.definition.model_dump(mode="json", by_alias=True)
         return request_metadata
+
+    def _resolve_attachments(self, payload: TaskRequestCreate, request_metadata: dict) -> list[TaskAttachment]:
+        raw_attachment_ids = payload.attachment_ids or request_metadata.get("attachment_ids") or []
+        if not raw_attachment_ids:
+            return []
+        if self.attachment_store is None:
+            raise AttachmentNotFoundError("attachment store is not configured")
+        attachments = []
+        for attachment_id in raw_attachment_ids:
+            attachment = self.attachment_store.get(str(attachment_id))
+            if attachment is None:
+                raise AttachmentNotFoundError(str(attachment_id))
+            attachments.append(attachment)
+        return attachments
+
+    @staticmethod
+    def _request_metadata_with_attachments(request_metadata: dict, attachments: list[TaskAttachment]) -> dict:
+        if not attachments:
+            return request_metadata
+        next_metadata = dict(request_metadata)
+        next_metadata["attachment_ids"] = [attachment.id for attachment in attachments]
+        next_metadata["attachments"] = [
+            {
+                "id": attachment.id,
+                "filename": attachment.filename,
+                "extension": attachment.extension,
+                "size_bytes": attachment.size_bytes,
+                "text_length": attachment.text_length,
+                "truncated": attachment.truncated,
+                "status": attachment.status,
+                "text_preview": attachment.text_preview,
+            }
+            for attachment in attachments
+        ]
+        return next_metadata
+
+    @staticmethod
+    def _format_attachment_context(attachments: list[TaskAttachment]) -> str:
+        if not attachments:
+            return ""
+        parts = []
+        for attachment in attachments:
+            if attachment.status != "parsed":
+                parts.append(f"附件 {attachment.filename} 解析失败：{attachment.error or 'unknown error'}")
+                continue
+            parts.append(
+                f"附件：{attachment.filename}\n"
+                f"类型：{attachment.extension}，字符数：{attachment.text_length}"
+                f"{'，内容已截断' if attachment.truncated else ''}\n"
+                f"{attachment.text_content}"
+            )
+        return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _content_with_attachment_context(content: str, attachment_context: str) -> str:
+        if not attachment_context:
+            return content
+        return f"{content}\n\n以下是用户上传附件解析出的纯文本内容：\n{attachment_context}"
+
+    @staticmethod
+    def _attachment_artifact_text(attachment: TaskAttachment) -> str:
+        return f"{attachment.filename}（{attachment.extension}，{attachment.text_length} 字符）"
 
     @staticmethod
     def _workflow_template_draft(payload: TaskRequestCreate, request_metadata: dict) -> TaskDraft:

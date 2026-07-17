@@ -51,4 +51,17 @@ describe("buildTaskRequestPayload", () => {
       },
     })
   })
+
+  it("builds a task request payload with text attachment ids", () => {
+    expect(buildTaskRequestPayload("任务名称", "任务诉求", "", "business_system", ["att_001"])).toEqual({
+      source_type: "business_system",
+      title: "任务名称",
+      content: "任务诉求",
+      task_type: "auto_planning",
+      attachment_ids: ["att_001"],
+      metadata: {
+        attachment_ids: ["att_001"],
+      },
+    })
+  })
 })

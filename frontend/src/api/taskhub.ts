@@ -68,6 +68,8 @@ export interface Task {
     workflow_name?: string
     workflow_description?: string
     workflow_definition?: WorkflowDefinition
+    attachment_ids?: string[]
+    attachments?: TaskAttachment[]
   }
   created_by_user_id?: string
   created_by_user_name?: string
@@ -95,6 +97,20 @@ export interface Task {
 export interface TaskRequestResponse {
   request_id?: string
   tasks: Task[]
+}
+
+export interface TaskAttachment {
+  id: string
+  filename: string
+  content_type?: string
+  extension: string
+  size_bytes: number
+  text_preview?: string
+  text_length?: number
+  truncated?: boolean
+  status?: string
+  error?: string
+  created_at?: string
 }
 
 export interface WorkflowNode {
@@ -232,12 +248,13 @@ async function readJson<T>(response: Response): Promise<T> {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const userId = getCurrentUserId()
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
     headers: {
       Accept: "application/json",
       ...(userId ? { "X-User-Id": userId } : {}),
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
   })
@@ -257,8 +274,9 @@ export function buildTaskRequestPayload(
   content: string,
   workflow: string | WorkflowTaskMetadata = "",
   sourceType = "business_system",
+  attachmentIds: string[] = [],
 ) {
-  const metadata = typeof workflow === "string"
+  const workflowMetadata = typeof workflow === "string"
     ? workflow
       ? {
           execution_mode: "workflow_template",
@@ -266,11 +284,18 @@ export function buildTaskRequestPayload(
         }
       : {}
     : workflow
+  const metadata = attachmentIds.length
+    ? {
+        ...workflowMetadata,
+        attachment_ids: attachmentIds,
+      }
+    : workflowMetadata
   return {
     source_type: sourceType,
     title,
     content,
     task_type: metadata.execution_mode === "workflow_template" ? "manual_orchestration" : "auto_planning",
+    ...(attachmentIds.length ? { attachment_ids: attachmentIds } : {}),
     metadata,
   }
 }
@@ -280,10 +305,20 @@ export function createTaskRequest(
   content: string,
   workflow: string | WorkflowTaskMetadata = "",
   sourceType = "business_system",
+  attachmentIds: string[] = [],
 ) {
   return request<TaskRequestResponse>("/api/v1/tasks/requests", {
     method: "POST",
-    body: JSON.stringify(buildTaskRequestPayload(title, content, workflow, sourceType)),
+    body: JSON.stringify(buildTaskRequestPayload(title, content, workflow, sourceType, attachmentIds)),
+  })
+}
+
+export function uploadTaskAttachment(file: File) {
+  const formData = new FormData()
+  formData.append("file", file)
+  return request<TaskAttachment>("/api/v1/task-attachments", {
+    method: "POST",
+    body: formData,
   })
 }
 

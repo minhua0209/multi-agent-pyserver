@@ -10,6 +10,7 @@ if __name__ == "__main__" and str(PROJECT_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes_attachments import router as attachments_router
 from app.api.routes_agents import router as agents_router
 from app.api.routes_subtasks import router as subtasks_router
 from app.api.routes_tasks import router as tasks_router
@@ -19,10 +20,12 @@ from app.core.config import DEFAULT_DATABASE_URL, is_default_database_enabled
 from app.services.storage import (
     AgentRegistry,
     DatabaseAgentRegistry,
+    DatabaseTaskAttachmentStore,
     DatabaseTaskStore,
     DatabaseUserRegistry,
     DatabaseWorkflowRegistry,
     InMemoryTaskStore,
+    TaskAttachmentStore,
     UserRegistry,
     WorkflowRegistry,
 )
@@ -33,6 +36,7 @@ def create_app(
     agent_file: Path | None = None,
     workflow_file: Path | None = None,
     user_file: Path | None = None,
+    attachment_file: Path | None = None,
     database_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TaskHub MVP", version="0.1.0")
@@ -51,6 +55,7 @@ def create_app(
         app.state.task_store = DatabaseTaskStore(configured_database_url)
         app.state.workflow_registry = DatabaseWorkflowRegistry(configured_database_url)
         app.state.user_registry = DatabaseUserRegistry(configured_database_url)
+        app.state.attachment_store = DatabaseTaskAttachmentStore(configured_database_url)
     else:
         registry_file = agent_file or Path(__file__).resolve().parent / "data" / "agents.json"
         app.state.agent_registry = AgentRegistry(registry_file)
@@ -59,13 +64,17 @@ def create_app(
         app.state.workflow_registry = WorkflowRegistry(workflow_registry_file)
         user_registry_file = user_file or (registry_file.parent / "users.json")
         app.state.user_registry = UserRegistry(user_registry_file)
+        attachment_registry_file = attachment_file or (registry_file.parent / "task_attachments.json")
+        app.state.attachment_store = TaskAttachmentStore(attachment_registry_file)
     app.state.task_service = TaskService(
         app.state.task_store,
         app.state.agent_registry,
         app.state.workflow_registry,
         app.state.user_registry,
+        app.state.attachment_store,
     )
     app.include_router(agents_router)
+    app.include_router(attachments_router)
     app.include_router(tasks_router)
     app.include_router(subtasks_router)
     app.include_router(users_router)

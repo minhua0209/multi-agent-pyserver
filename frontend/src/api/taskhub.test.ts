@@ -5,6 +5,7 @@ import {
   listAssignableUsers,
   listTasks,
   setCurrentUserId,
+  uploadTaskAttachment,
   WorkflowTaskMetadata,
 } from "./taskhub"
 
@@ -74,5 +75,17 @@ describe("taskhub api client", () => {
       assignee_user_name: "张三",
       assignee_role: "user",
     })
+  })
+
+  it("uploads text attachment with multipart form data", async () => {
+    const fetchMock = vi.fn(async () => mockJsonResponse({ id: "att_001", filename: "需求.md" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await uploadTaskAttachment(new File(["需求内容"], "需求.md", { type: "text/markdown" }))
+
+    const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/task-attachments", expect.any(Object))
+    expect(options.body).toBeInstanceOf(FormData)
+    expect(options.headers).not.toHaveProperty("Content-Type")
   })
 })
