@@ -769,6 +769,64 @@ def test_human_subtask_pauses_round_until_result_is_submitted(tmp_path: Path, mo
     assert human_tasks[0]["id"] == "subtask_human_parallel"
 
 
+def test_confirmed_task_default_human_assignee_is_used_for_later_human_subtasks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    reviewer = client.post(
+        "/api/v1/users",
+        json={"name": "李晨", "role": "user", "department": "研发部", "position": "研发经理"},
+    ).json()
+
+    def _plan(task, agents):
+        from app.core.models import RoundPlan, SubTask
+
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Need human approval",
+                subtasks=[
+                    SubTask(
+                        id="subtask_default_assignee",
+                        title="确认研发方案",
+                        description="需要人工确认研发方案是否通过",
+                        assignee_type="human",
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, reason="No remaining subtasks", final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "确认研发方案"},
+    ).json()["tasks"][0]
+
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "确认研发方案",
+            "description": "需要人工确认研发方案是否通过",
+            "default_assignee_user_id": reviewer["id"],
+            "default_assignee_user_name": reviewer["name"],
+            "default_assignee_role": reviewer["role"],
+        },
+    ).json()
+
+    assert paused["request_metadata"]["default_human_assignee"] == {
+        "assignee_user_id": reviewer["id"],
+        "assignee_user_name": "李晨",
+        "assignee_role": "user",
+    }
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["assignee_user_id"] == reviewer["id"]
+    assert human_subtask["assignee_user_name"] == "李晨"
+    assert human_subtask["assignee_role"] == "user"
+    assert client.get(f"/api/v1/subtasks/human?assignee_user_id={reviewer['id']}").json()[0]["id"] == "subtask_default_assignee"
+
+
 def test_human_subtask_result_resumes_task_flow(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
 

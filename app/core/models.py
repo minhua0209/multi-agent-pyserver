@@ -192,6 +192,9 @@ class TaskConfirm(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     execution_mode: str = "sync"
+    default_assignee_user_id: str = ""
+    default_assignee_user_name: str = ""
+    default_assignee_role: str = ""
 
 
 class ExecutionResultCreate(BaseModel):

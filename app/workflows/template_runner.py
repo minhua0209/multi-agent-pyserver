@@ -63,7 +63,7 @@ class WorkflowTemplateRunner:
 
     @staticmethod
     def _node_to_subtask(task: Task, node: WorkflowNode) -> SubTask:
-        assignee = WorkflowTemplateRunner._human_assignee_from_config(node.config) if node.type == "human" else {}
+        assignee = WorkflowTemplateRunner._human_assignee_from_config(node.config, task) if node.type == "human" else {}
         subtask = SubTask(
             id=f"{task.id}_{node.id}",
             title=node.title or node.id,
@@ -77,7 +77,14 @@ class WorkflowTemplateRunner:
         return subtask
 
     @staticmethod
-    def _human_assignee_from_config(config: dict) -> dict:
+    def _human_assignee_from_config(config: dict, task: Task) -> dict:
+        default_assignee = task.request_metadata.get("default_human_assignee")
+        if not config.get("assignee_user_id") and isinstance(default_assignee, dict):
+            return {
+                "assignee_user_id": str(default_assignee.get("assignee_user_id") or "root"),
+                "assignee_user_name": str(default_assignee.get("assignee_user_name") or "管理员"),
+                "assignee_role": str(default_assignee.get("assignee_role") or "admin"),
+            }
         return {
             "assignee_user_id": str(config.get("assignee_user_id") or "root"),
             "assignee_user_name": str(config.get("assignee_user_name") or "管理员"),

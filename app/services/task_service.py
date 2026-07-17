@@ -125,6 +125,7 @@ class TaskService:
         task = self._get_existing(task_id)
         task.title = task.title or payload.title
         task.description = task.description or payload.description
+        task.request_metadata = self._metadata_with_default_human_assignee(task.request_metadata, payload)
         task.events.append(self._event("human_confirmed", "Human confirmed task details"))
         if not self._dependencies_satisfied(task):
             task.current_node = CurrentNode.WAITING_DEPENDENCIES
@@ -363,6 +364,39 @@ class TaskService:
             suggested_assignee_type="human",
             suggested_agent_id=None,
         )
+
+    def _metadata_with_default_human_assignee(self, request_metadata: dict, payload: TaskConfirm) -> dict:
+        assignee_user_id = payload.default_assignee_user_id.strip()
+        assignee_user_name = payload.default_assignee_user_name.strip()
+        assignee_role = payload.default_assignee_role.strip()
+        if not assignee_user_id and not assignee_user_name:
+            return request_metadata
+
+        if self.user_registry is not None and assignee_user_id:
+            user = self.user_registry.get_user(assignee_user_id)
+            if user and user.status == "active":
+                assignee_user_name = user.name
+                assignee_role = user.role.value
+            else:
+                root = self.user_registry.get_user("root")
+                assignee_user_id = root.id if root else "root"
+                assignee_user_name = root.name if root else "管理员"
+                assignee_role = root.role.value if root else "admin"
+
+        if not assignee_user_id:
+            assignee_user_id = assignee_user_name
+        if not assignee_user_name:
+            assignee_user_name = "管理员" if assignee_user_id == "root" else assignee_user_id
+        if not assignee_role:
+            assignee_role = "admin" if assignee_user_id == "root" else "approver"
+
+        next_metadata = dict(request_metadata)
+        next_metadata["default_human_assignee"] = {
+            "assignee_user_id": assignee_user_id,
+            "assignee_user_name": assignee_user_name,
+            "assignee_role": assignee_role,
+        }
+        return next_metadata
 
     def _find_subtask(self, subtask_id: str) -> tuple[Task, int, SubTask]:
         for task in self.store.list():

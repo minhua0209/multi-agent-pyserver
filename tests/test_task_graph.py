@@ -293,7 +293,7 @@ def test_task_graph_routes_email_subtask_to_smtp_tool(tmp_path: Path, monkeypatc
     assert "邮件发送完成" in subtask.output
 
 
-def test_failed_tool_call_marks_subtask_failed_and_feeds_next_round(tmp_path: Path, monkeypatch) -> None:
+def test_failed_tool_call_marks_task_failed_and_records_failed_round(tmp_path: Path, monkeypatch) -> None:
     registry = AgentRegistry(tmp_path / "agents.json")
     agent = registry.create_agent(
         AgentCreate(
@@ -330,9 +330,7 @@ def test_failed_tool_call_marks_subtask_failed_and_feeds_next_round(tmp_path: Pa
                     )
                 ],
             )
-        assert "FAILED: Query CRM" in task.context.summary
-        assert "Tool crm_query is not registered" in task.context.summary
-        return RoundPlan(should_continue=False, final_output=task.context.summary)
+        raise AssertionError("planner must not run again after a failed tool call")
 
     def _execute(task, subtask, agent, tool_results):
         if not tool_results:
@@ -347,12 +345,13 @@ def test_failed_tool_call_marks_subtask_failed_and_feeds_next_round(tmp_path: Pa
     failed_subtask = result.context.rounds[0].subtasks[0]
     assert failed_subtask.status == TaskStatus.FAILED
     assert "Tool crm_query is not registered" in failed_subtask.output
-    assert result.task_status == TaskStatus.SUCCEEDED
+    assert result.task_status == TaskStatus.FAILED
     assert result.loop_count == 1
-    assert seen_contexts == ["", result.context.summary]
+    assert "Query CRM: Tool crm_query is not registered" in result.final_output
+    assert seen_contexts == [""]
 
 
-def test_empty_agent_output_marks_subtask_failed_and_feeds_next_round(tmp_path: Path, monkeypatch) -> None:
+def test_empty_agent_output_marks_task_failed_and_records_failed_round(tmp_path: Path, monkeypatch) -> None:
     registry = AgentRegistry(tmp_path / "agents.json")
     agent = registry.create_agent(
         AgentCreate(
@@ -387,9 +386,7 @@ def test_empty_agent_output_marks_subtask_failed_and_feeds_next_round(tmp_path: 
                     )
                 ],
             )
-        assert "FAILED: Create quote" in task.context.summary
-        assert "Agent returned no output" in task.context.summary
-        return RoundPlan(should_continue=False, final_output=task.context.summary)
+        raise AssertionError("planner must not run again after an empty agent output")
 
     monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
     monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", lambda *args: ([], ""))
@@ -399,7 +396,8 @@ def test_empty_agent_output_marks_subtask_failed_and_feeds_next_round(tmp_path: 
     failed_subtask = result.context.rounds[0].subtasks[0]
     assert failed_subtask.status == TaskStatus.FAILED
     assert failed_subtask.output == "Agent returned no output"
-    assert result.task_status == TaskStatus.SUCCEEDED
+    assert result.task_status == TaskStatus.FAILED
+    assert "Create quote: Agent returned no output" in result.final_output
 
 
 def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_order(

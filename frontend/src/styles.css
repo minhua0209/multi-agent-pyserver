@@ -790,10 +790,11 @@ tr.selected td {
 .task-detail-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding-right: 4px;
 }
 
 .task-detail-summary {
@@ -856,6 +857,60 @@ tr.selected td {
   white-space: pre-wrap;
 }
 
+.task-result-detail,
+.task-context-detail {
+  flex: 0 0 auto;
+  border: 1px solid rgb(129 140 248 / 0.42);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(236 254 255 / 0.58));
+  overflow: hidden;
+}
+
+.task-result-detail > header,
+.task-context-detail > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgb(199 210 254 / 0.58);
+}
+
+.task-result-detail > header > div,
+.task-context-detail > header > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #312e81;
+}
+
+.task-result-detail h4,
+.task-context-detail h4 {
+  margin: 0;
+}
+
+.task-result-text {
+  max-height: 180px;
+  overflow: auto;
+  padding: 12px;
+  color: var(--text-primary);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.task-result-text.empty,
+.context-empty,
+.context-subtask-card pre.empty {
+  color: var(--text-muted);
+}
+
+.task-result-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
 .task-attachment-detail {
   flex: 0 0 auto;
   display: grid;
@@ -885,12 +940,169 @@ tr.selected td {
 }
 
 .execution-section {
-  flex: 0 0 min(75vh, 585px);
-  min-height: min(75vh, 585px);
-  max-height: 75vh;
+  flex: 0 0 min(58vh, 460px);
+  min-height: min(58vh, 460px);
+  max-height: 58vh;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.intent-assignee-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid rgb(129 140 248 / 0.38);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgb(238 242 255 / 0.86), rgb(236 254 255 / 0.72));
+}
+
+.intent-assignee-panel > div {
+  display: grid;
+  gap: 4px;
+}
+
+.intent-assignee-panel span {
+  color: var(--text-muted);
+}
+
+.task-context-detail {
+  display: grid;
+  gap: 0;
+}
+
+.context-summary-card,
+.context-round-card {
+  border-bottom: 1px solid rgb(199 210 254 / 0.5);
+}
+
+.context-summary-card summary,
+.context-round-card summary,
+.tool-result-detail summary,
+.round-context-diff summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #312e81;
+}
+
+.context-summary-card summary,
+.context-round-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.context-round-card > summary span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.context-summary-card pre,
+.context-subtask-card pre,
+.round-context-diff pre,
+.tool-result-detail pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  line-height: 1.65;
+}
+
+.context-summary-card pre {
+  max-height: 220px;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+
+.context-empty {
+  padding: 12px;
+}
+
+.context-round-reason {
+  margin: 0 12px 10px;
+  color: var(--text-muted);
+}
+
+.context-subtask-list {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.context-subtask-card {
+  border: 1px solid rgb(199 210 254 / 0.72);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.82);
+  padding: 10px;
+}
+
+.context-subtask-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.context-subtask-card header span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.context-subtask-card p,
+.context-subtask-card small {
+  display: block;
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.context-subtask-card pre {
+  margin-top: 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: rgb(238 242 255 / 0.7);
+  padding: 10px;
+}
+
+.tool-result-detail {
+  margin-top: 10px;
+}
+
+.tool-result-detail pre {
+  margin-top: 8px;
+  max-height: 140px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: rgb(240 249 255 / 0.78);
+  padding: 8px;
+}
+
+.round-context-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.round-context-diff details {
+  border: 1px solid rgb(199 210 254 / 0.62);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.72);
+  padding: 10px;
+}
+
+.round-context-diff pre {
+  max-height: 140px;
+  overflow: auto;
+  margin-top: 8px;
 }
 
 .execution-section h4 {
@@ -1217,6 +1429,15 @@ tr.selected td {
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
+}
+
+.subtask-node-output {
+  margin-top: 8px;
+  max-height: 42px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .flow-row,

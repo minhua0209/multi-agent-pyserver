@@ -44,6 +44,7 @@ export interface SubTask {
   output?: string
   error_message?: string
   tool_results?: Array<Record<string, unknown>>
+  result_metadata?: Record<string, unknown>
   created_at?: string
   updated_at?: string
 }
@@ -53,7 +54,9 @@ export interface TaskRound {
   round_index?: number
   execution_mode?: string
   reason?: string
+  context_before?: string
   subtasks?: SubTask[]
+  context_after?: string
 }
 
 export interface Task {
@@ -97,6 +100,15 @@ export interface Task {
 export interface TaskRequestResponse {
   request_id?: string
   tasks: Task[]
+}
+
+export interface TaskConfirmPayload {
+  title: string
+  description: string
+  execution_mode?: "sync" | "async"
+  default_assignee_user_id?: string
+  default_assignee_user_name?: string
+  default_assignee_role?: string
 }
 
 export interface TaskAttachment {
@@ -322,7 +334,7 @@ export function uploadTaskAttachment(file: File) {
   })
 }
 
-export function confirmTask(taskId: string, payload: { title: string; description: string; execution_mode?: "sync" | "async" }) {
+export function confirmTask(taskId: string, payload: TaskConfirmPayload) {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/confirm`, {
     method: "POST",
     body: JSON.stringify(payload),

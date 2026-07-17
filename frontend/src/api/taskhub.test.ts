@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   buildTaskRequestPayload,
+  confirmTask,
   listAssignableUsers,
   listTasks,
   setCurrentUserId,
@@ -87,5 +88,27 @@ describe("taskhub api client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/task-attachments", expect.any(Object))
     expect(options.body).toBeInstanceOf(FormData)
     expect(options.headers).not.toHaveProperty("Content-Type")
+  })
+
+  it("sends default human assignee when confirming a task", async () => {
+    const fetchMock = vi.fn(async () => mockJsonResponse({ id: "task_001" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await confirmTask("task_001", {
+      title: "确认研发方案",
+      description: "需要人工确认研发方案是否通过",
+      execution_mode: "async",
+      default_assignee_user_id: "user_001",
+      default_assignee_user_name: "李晨",
+      default_assignee_role: "user",
+    })
+
+    const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/tasks/task_001/confirm", expect.any(Object))
+    expect(JSON.parse(String(options.body))).toMatchObject({
+      default_assignee_user_id: "user_001",
+      default_assignee_user_name: "李晨",
+      default_assignee_role: "user",
+    })
   })
 })

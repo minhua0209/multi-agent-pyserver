@@ -148,6 +148,36 @@ function formatFileSize(size?: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
+function preferredAssignee(users: UserOption[], selectedUserId: string) {
+  return users.find((user) => user.id === selectedUserId)
+    || users.find((user) => user.id === "root")
+    || users.find((user) => user.role === "admin")
+    || users[0]
+}
+
+function assigneeConfirmPayload(user?: UserOption) {
+  if (!user) return {}
+  return {
+    default_assignee_user_id: user.id,
+    default_assignee_user_name: user.name,
+    default_assignee_role: user.role,
+  }
+}
+
+function taskResultText(task: Task) {
+  return String(task.final_output || task.context?.summary || "").trim()
+}
+
+function displayValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return ""
+  if (typeof value === "string") return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
 function taskTypeColor(task: Task) {
   return isManualWorkflowTask(task) ? "purple" : "blue"
 }
@@ -485,8 +515,10 @@ function PublishPage({
   const [attachments, setAttachments] = useState<TaskAttachment[]>([])
   const [attachmentUploading, setAttachmentUploading] = useState(false)
   const [attachmentError, setAttachmentError] = useState("")
+  const [defaultAssigneeUserId, setDefaultAssigneeUserId] = useState("")
   const attachmentInputRef = useRef<HTMLInputElement | null>(null)
   const attachmentIds = attachments.map((attachment) => attachment.id)
+  const selectedAssignee = preferredAssignee(users, defaultAssigneeUserId)
 
   useEffect(() => {
     let cancelled = false
@@ -506,6 +538,13 @@ function PublishPage({
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!users.length) return
+    if (!users.some((user) => user.id === defaultAssigneeUserId)) {
+      setDefaultAssigneeUserId(preferredAssignee(users, "")?.id || "")
+    }
+  }, [users, defaultAssigneeUserId])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -572,6 +611,7 @@ function PublishPage({
             title: task.title || title.trim(),
             description: draftTaskListText(task),
             execution_mode: "async",
+            ...assigneeConfirmPayload(selectedAssignee),
           }),
         )
       }
@@ -598,6 +638,7 @@ function PublishPage({
             title: task.title || task.draft?.title || taskTitle(task),
             description: draftTaskListText(task),
             execution_mode: "async",
+            ...assigneeConfirmPayload(selectedAssignee),
           }),
         )
       }
@@ -790,6 +831,24 @@ function PublishPage({
         <Typography.Paragraph type="secondary">
           {submitting ? "正在拆分整理任务清单，请稍后" : "请确认识别出的任务名称和描述，确认后系统会异步执行。"}
         </Typography.Paragraph>
+        {!submitting && !intentError && (
+          <div className="intent-assignee-panel">
+            <div>
+              <Typography.Text strong>默认人工处理人</Typography.Text>
+              <span>后续如果拆出人工节点，会优先分配给该人员；不选则由管理员处理。</span>
+            </div>
+            <Select
+              value={selectedAssignee?.id}
+              placeholder="选择默认人工处理人"
+              optionFilterProp="label"
+              options={users.map((user) => ({
+                value: user.id,
+                label: `${user.name}${user.role === "admin" ? "（管理员）" : ""}`,
+              }))}
+              onChange={setDefaultAssigneeUserId}
+            />
+          </div>
+        )}
             {submitting ? (
               <div className="intent-loading">
                 <Spin size="large" />
@@ -1070,6 +1129,7 @@ function TaskDetailModal({
               <div><Tag color={taskTypeColor(task)}>{taskTypeText(task)}</Tag></div>
             </section>
           </div>
+          <TaskResultDetail task={task} />
           {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
           {isManualWorkflowTask(task) ? (
             <section className="execution-section">
@@ -1092,8 +1152,37 @@ function TaskDetailModal({
               )}
             </section>
           )}
+          <TaskContextDetail task={task} />
         </div>
     </Modal>
+  )
+}
+
+function TaskResultDetail({ task }: { task: Task }) {
+  const resultText = taskResultText(task)
+  const artifacts = (task.context?.artifacts || []).map(displayValue).filter(Boolean)
+  return (
+    <section className="task-result-detail">
+      <header>
+        <div>
+          <FileText size={18} />
+          <h4>产出成果</h4>
+        </div>
+        <Tag color={taskStatus(task) === "succeeded" ? "green" : taskStatus(task) === "failed" ? "red" : "blue"}>
+          {statusText(taskStatus(task))}
+        </Tag>
+      </header>
+      <div className={resultText ? "task-result-text" : "task-result-text empty"}>
+        {resultText || "任务还没有形成最终成果，执行中的节点输出会先沉淀到下方上下文。"}
+      </div>
+      {!!artifacts.length && (
+        <div className="task-result-artifacts">
+          {artifacts.map((artifact, index) => (
+            <Tag key={`${artifact}-${index}`} color="geekblue">{artifact}</Tag>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -1113,6 +1202,81 @@ function TaskAttachmentDetail({ attachments }: { attachments: TaskAttachment[] }
           </Tooltip>
         ))}
       </div>
+    </section>
+  )
+}
+
+function TaskContextDetail({ task }: { task: Task }) {
+  const rounds = task.context?.rounds || []
+  const summary = String(task.context?.summary || "").trim()
+  return (
+    <section className="task-context-detail">
+      <header>
+        <div>
+          <ListChecks size={18} />
+          <h4>上下文与节点输出</h4>
+        </div>
+        <Tag color="cyan">{rounds.length} 轮</Tag>
+      </header>
+      {summary ? (
+        <details className="context-summary-card" open>
+          <summary>当前上下文汇总</summary>
+          <pre>{summary}</pre>
+        </details>
+      ) : (
+        <div className="context-empty">暂无上下文沉淀，任务执行后会在这里展示每个节点输出。</div>
+      )}
+      {!!rounds.length && (
+        <div className="context-round-list">
+          {rounds.map((round) => (
+            <details className="context-round-card" key={round.id || round.round_index} open>
+              <summary>
+                <strong>第 {round.round_index ?? "-"} 轮</strong>
+                <span>{round.execution_mode || "unknown"} · {round.subtasks?.length || 0} 个节点</span>
+              </summary>
+              {round.reason && <p className="context-round-reason">{round.reason}</p>}
+              <div className="context-subtask-list">
+                {(round.subtasks || []).map((subtask) => (
+                  <article className="context-subtask-card" key={subtask.id}>
+                    <header>
+                      <strong>{subtask.title || subtask.id}</strong>
+                      <span>
+                        <Tag>{subtask.assignee_type === "human" ? "人工" : subtask.assignee_type === "condition" ? "条件" : "Agent"}</Tag>
+                        <Tag color={subtask.status === "succeeded" ? "green" : subtask.status === "failed" ? "red" : "blue"}>{statusText(subtask.status)}</Tag>
+                      </span>
+                    </header>
+                    <p>{subtask.description || "暂无节点说明"}</p>
+                    {(subtask.assignee_user_name || subtask.assigned_agent_id) && (
+                      <small>执行主体：{subtask.assignee_user_name || subtask.assigned_agent_id}</small>
+                    )}
+                    <pre className={subtask.output ? "" : "empty"}>{subtask.output || "暂无输出"}</pre>
+                    {!!subtask.tool_results?.length && (
+                      <details className="tool-result-detail">
+                        <summary>工具调用结果 {subtask.tool_results.length} 条</summary>
+                        {subtask.tool_results.map((result, index) => (
+                          <pre key={index}>{displayValue(result)}</pre>
+                        ))}
+                      </details>
+                    )}
+                  </article>
+                ))}
+              </div>
+              {(round.context_before || round.context_after) && (
+                <div className="round-context-diff">
+                  <details>
+                    <summary>执行前上下文</summary>
+                    <pre>{round.context_before || "空"}</pre>
+                  </details>
+                  <details>
+                    <summary>执行后上下文</summary>
+                    <pre>{round.context_after || "空"}</pre>
+                  </details>
+                </div>
+              )}
+            </details>
+          ))}
+        </div>
+      )}
     </section>
   )
 }
@@ -1201,6 +1365,7 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
                       <span>{isHumanNode ? "人工节点" : "Agent节点"}</span>
                       <span className={`status-pill ${subtask.status}`}>{statusText(subtask.status)}</span>
                     </div>
+                    {subtask.output && <div className="subtask-node-output">{subtask.output}</div>}
                     {canOpenHumanWorkbench && <span className="subtask-node-action">点击处理</span>}
                   </>
                 )

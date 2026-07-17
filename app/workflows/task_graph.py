@@ -361,6 +361,17 @@ class TaskGraphRunner:
         return Event(type=event_type, message=message, created_at=utc_now())
 
     def _ensure_human_assignee(self, subtask: SubTask, task: Task | None = None) -> None:
+        if self._has_valid_subtask_assignee(subtask):
+            subtask.assignee_role = subtask.assignee_role or "approver"
+            return
+
+        default_assignee = self._default_human_assignee_from_task(task)
+        if default_assignee:
+            subtask.assignee_user_id = default_assignee["assignee_user_id"]
+            subtask.assignee_user_name = default_assignee["assignee_user_name"]
+            subtask.assignee_role = default_assignee["assignee_role"]
+            return
+
         if self.user_registry is not None:
             inferred = self._infer_user_assignee_from_text(subtask, task)
             if inferred:
@@ -378,6 +389,37 @@ class TaskGraphRunner:
         subtask.assignee_user_id = subtask.assignee_user_id or "root"
         subtask.assignee_user_name = subtask.assignee_user_name or "管理员"
         subtask.assignee_role = subtask.assignee_role or "admin"
+
+    def _has_valid_subtask_assignee(self, subtask: SubTask) -> bool:
+        if not subtask.assignee_user_id or not subtask.assignee_user_name:
+            return False
+        if self.user_registry is None:
+            return True
+        user = self.user_registry.get_user(subtask.assignee_user_id)
+        return bool(user and user.status == "active")
+
+    def _default_human_assignee_from_task(self, task: Task | None) -> dict | None:
+        if task is None:
+            return None
+        raw_assignee = task.request_metadata.get("default_human_assignee")
+        if not isinstance(raw_assignee, dict):
+            return None
+        assignee_user_id = str(raw_assignee.get("assignee_user_id") or "").strip()
+        assignee_user_name = str(raw_assignee.get("assignee_user_name") or "").strip()
+        assignee_role = str(raw_assignee.get("assignee_role") or "").strip()
+        if not assignee_user_id or not assignee_user_name:
+            return None
+        if self.user_registry is not None:
+            user = self.user_registry.get_user(assignee_user_id)
+            if not user or user.status != "active":
+                return None
+            assignee_user_name = user.name
+            assignee_role = user.role.value
+        return {
+            "assignee_user_id": assignee_user_id,
+            "assignee_user_name": assignee_user_name,
+            "assignee_role": assignee_role or ("admin" if assignee_user_id == "root" else "approver"),
+        }
 
     def _infer_user_assignee_from_text(self, subtask: SubTask, task: Task | None) -> User | None:
         if self.user_registry is None:
