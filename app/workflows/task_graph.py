@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -10,6 +11,8 @@ from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_no
 from app.core.model_client import execute_subtask_with_tools_model
 from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, User, utc_now
 from app.planners.factory import get_task_planner
+from app.services.completion_service import CompletionService
+from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry, UserRegistry
 from app.services.tool_executor import ToolExecutor
 
@@ -47,9 +50,23 @@ def plan_next_round_with_model(task: Task, agents: list) -> RoundPlan | None:
 class TaskGraphRunner:
     max_parallel_agent_subtasks = 4
 
-    def __init__(self, agent_registry: AgentRegistry, user_registry: UserRegistry | None = None) -> None:
+    def __init__(
+        self,
+        agent_registry: AgentRegistry,
+        user_registry: UserRegistry | None = None,
+        completion_service: CompletionService | None = None,
+        artifact_service: ArtifactService | None = None,
+    ) -> None:
         self.agent_registry = agent_registry
         self.user_registry = user_registry
+        self.artifact_service = (
+            artifact_service
+            or (completion_service.artifact_service if completion_service else None)
+            or ArtifactService()
+        )
+        self.completion_service = completion_service or CompletionService(
+            artifact_service=self.artifact_service
+        )
         self.tool_executor = ToolExecutor()
         self.graph = self._build_graph()
 
@@ -107,7 +124,12 @@ class TaskGraphRunner:
         task = state["task"]
         task.current_node = CurrentNode.DISPATCH_DECISION
         if task.loop_count >= task.max_loop_count:
-            return {"task": task, "round_plan": RoundPlan(should_continue=False), "round_outputs": [], "paused": False}
+            return {
+                "task": task,
+                "round_plan": RoundPlan(should_continue=True, reason="Loop limit exceeded"),
+                "round_outputs": [],
+                "paused": False,
+            }
 
         agents = self.agent_registry.list_processing_agents()
         plan = plan_next_round_with_model(task, agents)
@@ -116,6 +138,7 @@ class TaskGraphRunner:
             plan = mock_round_plan(task, agents)
         if self._should_create_draft_human_gate(task, plan):
             plan = self._draft_human_gate_plan(task, plan)
+        self._bind_planned_subtasks(task, plan)
         if plan.should_continue and plan.subtasks:
             task.loop_count += 1
             task.events.append(
@@ -123,6 +146,32 @@ class TaskGraphRunner:
             )
         task.updated_at = utc_now()
         return {"task": task, "round_plan": plan, "round_outputs": [], "paused": False}
+
+    @staticmethod
+    def _bind_planned_subtasks(task: Task, plan: RoundPlan) -> None:
+        execution_id = task.active_execution_id
+        if execution_id is None:
+            return
+        round_index = task.loop_count + 1
+        for ordinal, subtask in enumerate(plan.subtasks):
+            logical_key = subtask.logical_key.strip()
+            if not logical_key and subtask.id.strip():
+                logical_key = subtask.id.strip()
+            if not logical_key:
+                identity = "\x00".join(
+                    [
+                        str(round_index),
+                        str(ordinal),
+                        subtask.title,
+                        subtask.description,
+                        subtask.assignee_type,
+                    ]
+                )
+                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+                logical_key = f"round_{round_index}_{ordinal}_{digest}"
+            subtask.execution_id = execution_id
+            subtask.logical_key = logical_key
+            subtask.id = f"{task.id}_{execution_id}_{logical_key}"
 
     @staticmethod
     def _should_create_draft_human_gate(task: Task, plan: RoundPlan) -> bool:
@@ -191,11 +240,15 @@ class TaskGraphRunner:
         if failed_subtasks:
             failure_message = self._format_failure_summary(failed_subtasks)
             self._append_pending_round(task, state["round_plan"])
-            task.task_status = TaskStatus.FAILED
-            task.current_node = CurrentNode.SUBTASK_EXECUTION
-            task.final_output = failure_message
+            self.completion_service.finalize(
+                task,
+                candidate_status=TaskStatus.FAILED,
+                output=failure_message,
+                reason="One or more subtasks failed",
+                decided_by_type="system",
+                decided_by_id="task_graph",
+            )
             task.events.append(self._event("task_failed", failure_message))
-            task.updated_at = utc_now()
             return {"task": task, "round_plan": state["round_plan"], "round_outputs": [], "paused": False}
         outputs = [
             self._format_completed_subtask_context(subtask)
@@ -223,14 +276,17 @@ class TaskGraphRunner:
             task.assigned_agent_id = agent.id
         subtask.output = outcome.output or outcome.error
         subtask.status = TaskStatus.SUCCEEDED if outcome.completed else TaskStatus.FAILED
+        for ordinal, tool_result in enumerate(subtask.tool_results):
+            self.artifact_service.register_tool_result(task, subtask, tool_result, ordinal=ordinal)
         if outcome.completed:
+            self.artifact_service.register_subtask_output(task, subtask, subtask.output)
             event_type = "agent_executed" if agent else "human_node_processed"
             task.events.append(self._event(event_type, f"{subtask.title}: {subtask.output}"))
         else:
             task.events.append(self._event("subtask_failed", f"{subtask.title}: {subtask.output}"))
 
     def _route_after_subtask(self, state: TaskGraphState) -> RouteAfterSubTask:
-        if state["task"].task_status == TaskStatus.FAILED:
+        if state["task"].task_status != TaskStatus.RUNNING:
             return "end"
         if state["paused"]:
             return "end"
@@ -261,16 +317,29 @@ class TaskGraphRunner:
         task.current_node = CurrentNode.COMPLETION_JUDGE
         plan = state["round_plan"]
         if not plan.should_continue or not plan.subtasks:
-            task.task_status = TaskStatus.SUCCEEDED
-            task.final_output = plan.final_output or task.context.summary
-            task.events.append(self._event("completion_judged", "Dispatcher found no remaining subtasks"))
+            final_output = plan.final_output or task.context.summary
+            report = self.completion_service.finalize(
+                task,
+                candidate_status=TaskStatus.SUCCEEDED,
+                output=final_output,
+                reason=plan.reason or "Dispatcher found no remaining subtasks",
+                criterion_results=self.completion_service.evaluate_criteria(task, final_output),
+                decided_by_type="system",
+                decided_by_id="task_graph",
+            )
+            task.events.append(
+                self._event("completion_judged", f"Dispatcher finalized task as {report.terminal_status.value}")
+            )
         else:
             task.events.append(self._event("completion_judged", "Dispatcher requested another round check"))
-        task.updated_at = utc_now()
+        if task.task_status == TaskStatus.RUNNING:
+            task.updated_at = utc_now()
         return {"task": task, "round_plan": plan, "round_outputs": state["round_outputs"], "paused": False}
 
     def _route_after_judge(self, state: TaskGraphState) -> RouteAfterJudge:
         task = state["task"]
+        if task.current_node == CurrentNode.HUMAN_INTERVENTION:
+            return "end"
         if task.task_status != TaskStatus.RUNNING:
             return "end"
         if task.loop_count >= task.max_loop_count:
@@ -347,7 +416,11 @@ class TaskGraphRunner:
         expected_id = f"{task.id}_{node_id}"
         for round_item in task.context.rounds:
             for subtask in round_item.subtasks:
-                if subtask.id == expected_id and subtask.status == TaskStatus.SUCCEEDED:
+                matches = (
+                    subtask.logical_key == node_id
+                    or subtask.id == expected_id
+                )
+                if matches and subtask.status == TaskStatus.SUCCEEDED:
                     return subtask
         return None
 

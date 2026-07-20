@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.models import Agent, AgentTool, ToolCall, utc_now
 from app.services.tool_executor import ToolExecutor
 
@@ -26,7 +28,83 @@ def test_tool_executor_runs_mock_tool() -> None:
 
     assert result.success is True
     assert result.tool_name == "crm_query"
+    assert result.tool_type == "mock"
     assert result.result == '{"customer_name": "Customer A", "level": "vip"}'
+
+
+def test_tool_executor_assigns_a_new_execution_id_for_each_call() -> None:
+    agent = Agent(
+        id="agent_crm",
+        name="CRM Agent",
+        description="Uses CRM tools",
+        capabilities=["crm"],
+        tools=[AgentTool(name="crm_query", type="mock", config={"response": "same"})],
+        created_at=utc_now(),
+    )
+    executor = ToolExecutor()
+    call = ToolCall(tool_name="crm_query", arguments={"customer_id": "customer_a"})
+
+    first = executor.execute(agent, call)
+    second = executor.execute(agent, call)
+
+    assert first.tool_execution_id
+    assert second.tool_execution_id
+    assert first.tool_execution_id != second.tool_execution_id
+
+
+@pytest.mark.parametrize(
+    ("tool_type", "config", "arguments"),
+    [
+        ("smtp_email", {}, {}),
+        ("file_write", {}, {}),
+        ("http", {"method": "POST"}, {}),
+        ("http", {"method": "DELETE"}, {}),
+    ],
+)
+def test_failed_side_effecting_tool_call_keeps_side_effect_flag(
+    tool_type: str,
+    config: dict,
+    arguments: dict,
+) -> None:
+    agent = Agent(
+        id="agent_side_effect",
+        name="Side Effect Agent",
+        description="Uses side effecting tools",
+        capabilities=["write"],
+        tools=[AgentTool(name="side_effect_tool", type=tool_type, config=config)],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(
+        agent,
+        ToolCall(tool_name="side_effect_tool", arguments=arguments),
+    )
+
+    assert result.success is False
+    assert result.side_effect is True
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_failed_read_only_http_tool_call_has_no_side_effect(method: str) -> None:
+    agent = Agent(
+        id="agent_http",
+        name="HTTP Agent",
+        description="Uses HTTP tools",
+        capabilities=["http"],
+        tools=[
+            AgentTool(
+                name="read_api",
+                type="http",
+                config={"method": method},
+            )
+        ],
+        created_at=utc_now(),
+    )
+
+    result = ToolExecutor().execute(agent, ToolCall(tool_name="read_api"))
+
+    assert result.success is False
+    assert result.side_effect is False
 
 
 def test_tool_executor_rejects_unregistered_tool() -> None:
@@ -231,6 +309,7 @@ def test_tool_executor_runs_file_write_tool(tmp_path) -> None:
     )
 
     assert result.success is True
+    assert result.tool_type == "file_write"
     assert (tmp_path / "reports" / "summary.md").read_text() == "hello report"
     assert "summary.md" in result.result
 

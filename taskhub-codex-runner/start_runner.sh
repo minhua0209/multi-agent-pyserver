@@ -53,13 +53,13 @@ if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <TASKHUB_SERVER_URL> [USER_ID] [--once] [--dry-run] [--ui] [--background]"
   echo "       $0 status"
   echo "       $0 stop"
-  echo "Example: $0 http://192.168.170.18:8000 王大锤 --ui --background"
+  echo "Example: $0 http://192.168.170.18:8000 root --ui --background"
   exit 1
 fi
 
 TASKHUB_SERVER_URL="$1"
 shift || true
-TASKHUB_USER_ID="王大锤"
+TASKHUB_USER_ID="root"
 if [[ $# -gt 0 && "${1:-}" != --* ]]; then
   TASKHUB_USER_ID="$1"
   shift || true

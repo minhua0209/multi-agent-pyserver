@@ -1,5 +1,47 @@
-export type TaskStatus = "running" | "succeeded" | "failed"
+export type TaskStatus = "running" | "succeeded" | "failed" | "blocked" | "partial" | "cancelled"
 export type TaskType = "auto_planning" | "manual_orchestration"
+export type CriterionResultStatus = "passed" | "failed" | "pending"
+export type ArtifactKind = "text" | "file" | "tool_result"
+export type ArtifactSourceType = "task_result" | "subtask_output" | "tool_result"
+export type ArtifactValidationStatus = "valid" | "pending" | "invalid"
+export type ExecutionTriggerType = "initial" | "rerun"
+export type CurrentNode =
+  | "intent_recognition"
+  | "human_confirmation"
+  | "waiting_dependencies"
+  | "dispatch_decision"
+  | "subtask_execution"
+  | "context_update"
+  | "agent_execution"
+  | "human_execution"
+  | "completion_judge"
+  | "human_intervention"
+
+export interface TaskContractItem {
+  id: string
+  description: string
+}
+
+export interface TaskContractInput {
+  goal: string
+  deliverable_goal: string
+  deliverable_requirements?: TaskContractItem[]
+  success_criteria: TaskContractItem[]
+  requires_human_acceptance?: boolean
+}
+
+export interface TaskContract {
+  goal: string
+  deliverable_goal: string
+  deliverable_requirements: TaskContractItem[]
+  success_criteria: TaskContractItem[]
+  requires_human_acceptance: boolean
+  version: number
+  confirmed_by_user_id: string
+  confirmed_by_user_name: string
+  confirmed_at: string
+  legacy_inferred: boolean
+}
 
 export interface AgentTool {
   name: string
@@ -31,6 +73,8 @@ export interface TaskEvent {
 
 export interface SubTask {
   id: string
+  execution_id?: string
+  logical_key?: string
   task_id?: string
   task_title?: string
   task_description?: string
@@ -65,6 +109,140 @@ export interface TaskRound {
   context_after?: string
 }
 
+export interface TaskContext {
+  summary: string
+  rounds: TaskRound[]
+  artifacts: string[]
+}
+
+export interface CriterionResult {
+  criterion_id: string
+  status: CriterionResultStatus
+  evidence_artifact_ids: string[]
+  evidence_text: string
+  reason: string
+}
+
+export interface DeliverableResult {
+  requirement_id: string
+  status: CriterionResultStatus
+  artifact_ids: string[]
+  reason: string
+}
+
+export interface CompletionReport {
+  id: string
+  execution_id: string
+  terminal_status: TaskStatus
+  completion_reason: string
+  criterion_results: CriterionResult[]
+  deliverable_results: DeliverableResult[]
+  artifact_ids: string[]
+  workflow_end_node_id: string | null
+  human_accepted: boolean
+  decided_by_type: string
+  decided_by_id: string
+  decided_at: string
+  evidence_summary: string
+}
+
+export interface Artifact {
+  id: string
+  task_id: string
+  execution_id: string
+  kind: ArtifactKind
+  source_type: ArtifactSourceType
+  source_id: string
+  name: string
+  content: string
+  uri: string
+  media_type: string
+  checksum: string
+  validation_status: ArtifactValidationStatus
+  validation_reason: string
+  deliverable_requirement_ids: string[]
+  source_artifact_id: string | null
+  reused_from_execution_id: string | null
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface TaskExecution {
+  id: string
+  task_id: string
+  attempt_no: number
+  trigger_type: ExecutionTriggerType
+  trigger_reason: string
+  triggered_by_user_id: string
+  triggered_by_user_name: string
+  contract_snapshot: TaskContract | null
+  workflow_snapshot: Record<string, unknown> | null
+  status: TaskStatus
+  start_node: CurrentNode
+  current_node: CurrentNode
+  context_snapshot: TaskContext
+  artifacts: Artifact[]
+  loop_count: number
+  final_output: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  parent_execution_id: string | null
+  retry_of_execution_id: string | null
+  idempotency_key: string
+  request_fingerprint: string
+  execution_mode: "sync" | "async"
+  side_effects_confirmed_by_user_id: string
+  side_effects_confirmed_by_user_name: string
+  side_effects_confirmed_at: string | null
+  completion_report: CompletionReport | null
+}
+
+export interface RerunIssue {
+  code: string
+  message: string
+}
+
+export interface RerunSideEffect {
+  subtask_id: string
+  tool_execution_id: string
+  tool_name: string
+  tool_type: string
+  argument_keys: string[]
+  success: boolean
+}
+
+export interface TaskRerunPreflightRequest {
+  source_execution_id: string
+}
+
+export interface TaskRerunPreflightResponse {
+  task_id: string
+  source_execution_id: string
+  next_attempt_no: number
+  dependencies_satisfied: boolean
+  start_node: CurrentNode
+  will_wait_for_dependencies: boolean
+  allowed: boolean
+  issues: RerunIssue[]
+  side_effects: RerunSideEffect[]
+  requires_side_effect_confirmation: boolean
+}
+
+export interface TaskRerunCreate extends TaskRerunPreflightRequest {
+  reason: string
+  execution_mode?: "sync" | "async"
+  confirm_side_effects?: boolean
+}
+
+export interface TaskRerunResponse {
+  task: Task
+  execution: TaskExecution
+  replayed: boolean
+  scheduled: boolean
+  execution_is_active: boolean
+}
+
 export interface Task {
   id: string
   title?: string
@@ -96,7 +274,17 @@ export interface Task {
   draft?: {
     title?: string
     description?: string
+    goal?: string
+    deliverable_goal?: string
+    deliverable_requirements?: string[]
+    success_criteria?: string[]
+    requires_human_acceptance?: boolean
   }
+  contract?: TaskContract | null
+  executions?: TaskExecution[]
+  active_execution_id?: string | null
+  artifacts?: Artifact[]
+  completion_report?: CompletionReport | null
   events?: TaskEvent[]
   final_output?: string
   created_at?: string
@@ -111,6 +299,7 @@ export interface TaskRequestResponse {
 export interface TaskConfirmPayload {
   title: string
   description: string
+  contract?: TaskContractInput
   execution_mode?: "sync" | "async"
   default_assignee_user_id?: string
   default_assignee_user_name?: string
@@ -253,12 +442,26 @@ export function getCurrentUserId() {
 
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text()
-  const payload = text ? JSON.parse(text) : null
+  let payload: any = null
+  if (text) {
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      const status = `接口请求失败：${response.status}${response.statusText ? ` ${response.statusText}` : ""}`
+      if (!response.ok) {
+        throw new Error(`${status}${text.trim() ? `；${text.trim()}` : ""}`)
+      }
+      throw new Error(`接口响应不是有效 JSON：${response.status}${text.trim() ? `；${text.trim()}` : ""}`)
+    }
+  }
   if (!response.ok) {
     const detail = payload?.detail
-    const message = Array.isArray(detail)
+    const detailMessage = Array.isArray(detail)
       ? detail.map((item) => item.msg || JSON.stringify(item)).join("；")
-      : detail || payload?.message || `接口请求失败：${response.status}`
+      : detail && typeof detail === "object"
+        ? JSON.stringify(detail)
+        : detail
+    const message = detailMessage || payload?.message || `接口请求失败：${response.status}`
     throw new Error(message)
   }
   return payload as T
@@ -285,6 +488,31 @@ export function listTasks() {
 
 export function getTask(taskId: string) {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function listTaskExecutions(taskId: string) {
+  return request<TaskExecution[]>(`/api/v1/tasks/${encodeURIComponent(taskId)}/executions`)
+}
+
+export function getTaskExecution(taskId: string, executionId: string) {
+  return request<TaskExecution>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/executions/${encodeURIComponent(executionId)}`,
+  )
+}
+
+export function preflightTaskRerun(taskId: string, payload: TaskRerunPreflightRequest) {
+  return request<TaskRerunPreflightResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}/executions/preflight`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createTaskRerun(taskId: string, payload: TaskRerunCreate, idempotencyKey: string) {
+  return request<TaskRerunResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}/executions`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  })
 }
 
 export function buildTaskRequestPayload(
@@ -380,7 +608,7 @@ export function submitTaskResult(
     result_status: "succeeded" | "failed" | "blocked" | "partial"
     output: string
     should_complete?: boolean
-    metadata?: Record<string, string>
+    metadata?: Record<string, unknown>
     execution_mode?: "sync" | "async"
   },
 ) {

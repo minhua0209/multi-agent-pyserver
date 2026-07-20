@@ -63,7 +63,7 @@ def load_config(path: str | None) -> RunnerConfig:
 
     return RunnerConfig(
         server_url=os.getenv("TASKHUB_SERVER_URL", file_config.get("server_url", "http://127.0.0.1:8000")).rstrip("/"),
-        user_id=os.getenv("TASKHUB_USER_ID", file_config.get("user_id", "王大锤")),
+        user_id=os.getenv("TASKHUB_USER_ID", file_config.get("user_id", "root")),
         runner_id=os.getenv("TASKHUB_RUNNER_ID", file_config.get("runner_id", "local-codex-runner")),
         codex_command=codex_command,
         poll_interval_seconds=int(os.getenv("TASKHUB_POLL_INTERVAL_SECONDS", file_config.get("poll_interval_seconds", 5))),
@@ -87,8 +87,12 @@ def bool_value(value: Any) -> bool:
 
 
 class TaskHubClient:
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, user_id: str) -> None:
         self.server_url = server_url
+        self.user_id = user_id
+
+    def get_current_user(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/users/current")
 
     def poll_human_subtasks(self, user_id: str) -> list[dict[str, Any]]:
         query = parse.urlencode({"assignee_user_id": user_id})
@@ -118,7 +122,7 @@ class TaskHubClient:
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         data = None
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "X-User-Id": self.user_id}
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -220,12 +224,26 @@ class CodexClient:
 class TaskHubCodexRunner:
     def __init__(self, config: RunnerConfig) -> None:
         self.config = config
-        self.taskhub = TaskHubClient(config.server_url)
+        self.taskhub = TaskHubClient(config.server_url, config.user_id)
         self.codex = CodexClient(config.codex_command, config.codex_timeout_seconds)
         self.local_claimed: set[str] = set()
         self.state = RunnerState()
+        self._current_user_validated = False
+
+    def validate_current_user(self) -> None:
+        if self._current_user_validated:
+            return
+        current_user = self.taskhub.get_current_user()
+        current_user_id = str(current_user.get("id") or "")
+        if current_user_id != self.config.user_id:
+            raise RuntimeError(
+                f"TaskHub user mismatch: configured user_id={self.config.user_id}, "
+                f"current user id={current_user_id or '<missing>'}"
+            )
+        self._current_user_validated = True
 
     def run_forever(self) -> None:
+        self.validate_current_user()
         write_runner_runtime_config(RUNNER_DIR, build_runner_runtime_config(self.config))
         if self.config.auto_install_skill:
             result = ensure_skill_installed(
@@ -245,6 +263,7 @@ class TaskHubCodexRunner:
                 time.sleep(self.config.poll_interval_seconds)
 
     def poll_once(self) -> bool:
+        self.validate_current_user()
         self.state.set_last_poll()
         subtasks = self.taskhub.poll_human_subtasks(self.config.user_id)
         candidates = [item for item in subtasks if item.get("id") not in self.local_claimed]

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes_attachments import router as attachments_router
 from app.api.routes_agents import router as agents_router
+from app.api.routes_executions import router as executions_router
 from app.api.routes_subtasks import router as subtasks_router
 from app.api.routes_tasks import router as tasks_router
 from app.api.routes_users import router as users_router
@@ -76,6 +77,7 @@ def create_app(
     app.include_router(agents_router)
     app.include_router(attachments_router)
     app.include_router(tasks_router)
+    app.include_router(executions_router)
     app.include_router(subtasks_router)
     app.include_router(users_router)
     app.include_router(workflows_router)

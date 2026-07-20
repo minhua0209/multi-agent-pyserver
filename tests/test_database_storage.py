@@ -4,11 +4,25 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from app.core.config import DEFAULT_DATABASE_URL
-from app.core.enums import CurrentNode, SourceType, TaskStatus
-from app.core.models import AgentCreate, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
+from app.core.enums import CurrentNode, ExecutionTriggerType, SourceType, TaskStatus
+from app.core.models import (
+    AgentCreate,
+    RoundPlan,
+    SubTask,
+    Task,
+    TaskContext,
+    TaskContract,
+    TaskContractItem,
+    TaskExecution,
+    ToolCall,
+    new_id,
+    utc_now,
+)
 from app.main import create_app
 from app.services import storage as storage_module
 from app.services.storage import DatabaseAgentRegistry, DatabaseTaskAttachmentStore, DatabaseTaskStore
+from app.services.artifact_service import ArtifactService
+from app.services.execution_service import ExecutionService
 
 
 def test_database_agent_registry_persists_agents_across_instances(tmp_path: Path) -> None:
@@ -50,6 +64,122 @@ def test_database_task_store_persists_tasks_across_instances(tmp_path: Path) -> 
     reloaded_store = DatabaseTaskStore(database_url)
     assert reloaded_store.get(saved.id) == saved
     assert reloaded_store.list() == [saved]
+
+
+def test_database_task_store_restores_rerun_history_and_idempotency_across_instances(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    first_client = TestClient(create_app(database_url=database_url))
+    now = utc_now()
+    contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Reviewable delivery",
+        success_criteria=[TaskContractItem(id="criterion_1", description="Reviewable")],
+        confirmed_at=now,
+    )
+    source = TaskExecution(
+        id="execution_1",
+        task_id="task_rerun_db",
+        attempt_no=1,
+        trigger_type=ExecutionTriggerType.INITIAL,
+        contract_snapshot=contract,
+        status=TaskStatus.SUCCEEDED,
+        start_node=CurrentNode.DISPATCH_DECISION,
+        current_node=CurrentNode.COMPLETION_JUDGE,
+        context_snapshot=TaskContext(summary="done"),
+        final_output="done",
+        created_at=now,
+        started_at=now,
+        finished_at=now,
+    )
+    task = Task(
+        id="task_rerun_db",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Prepare delivery",
+        task_status=TaskStatus.SUCCEEDED,
+        current_node=CurrentNode.COMPLETION_JUDGE,
+        contract=contract,
+        context=TaskContext(summary="done"),
+        initial_context=TaskContext(summary="initial"),
+        executions=[source],
+        active_execution_id=source.id,
+        final_output="done",
+        created_at=now,
+        updated_at=now,
+    )
+    first_client.app.state.task_store.save(task)
+    monkeypatch.setattr(
+        first_client.app.state.task_service,
+        "start_background_task",
+        lambda *_args, **_kwargs: None,
+    )
+    payload = {
+        "source_execution_id": "execution_1",
+        "reason": "Retry after restart",
+        "execution_mode": "async",
+    }
+    first = first_client.post(
+        f"/api/v1/tasks/{task.id}/executions",
+        json=payload,
+        headers={"Idempotency-Key": "database-rerun-key"},
+    )
+    assert first.status_code == 201
+
+    second_client = TestClient(create_app(database_url=database_url))
+    restored = second_client.get(f"/api/v1/tasks/{task.id}").json()
+    replay = second_client.post(
+        f"/api/v1/tasks/{task.id}/executions",
+        json=payload,
+        headers={"Idempotency-Key": "database-rerun-key"},
+    )
+
+    assert len(restored["executions"]) == 2
+    restored_rerun = restored["executions"][1]
+    assert restored_rerun["idempotency_key"] == "database-rerun-key"
+    assert restored_rerun["request_fingerprint"].startswith("sha256:")
+    assert restored_rerun["execution_mode"] == "async"
+    assert restored_rerun["retry_of_execution_id"] == "execution_1"
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert replay.json()["execution"]["id"] == restored_rerun["id"]
+
+
+def test_database_task_store_persists_confirmed_contract_across_app_instances(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    first_client = TestClient(create_app(database_url=database_url))
+    created = first_client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "title": "交付方案", "content": "生成实施方案"},
+    ).json()["tasks"][0]
+
+    confirmed = first_client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "交付方案",
+            "description": "生成实施方案",
+            "contract": {
+                "goal": "明确实施路径",
+                "deliverable_goal": "交付实施方案",
+                "deliverable_requirements": [{"description": "包含里程碑"}],
+                "success_criteria": [{"description": "可以进入评审"}],
+                "requires_human_acceptance": True,
+            },
+        },
+    ).json()
+
+    second_client = TestClient(create_app(database_url=database_url))
+    reloaded = second_client.get(f"/api/v1/tasks/{created['id']}").json()
+
+    assert reloaded["contract"] == confirmed["contract"]
+    assert reloaded["contract"]["deliverable_requirements"][0]["id"]
+    assert reloaded["initial_context"] == confirmed["initial_context"]
+    assert reloaded["executions"] == confirmed["executions"]
+    assert reloaded["active_execution_id"] == confirmed["active_execution_id"]
+    assert reloaded["executions"][0]["context_snapshot"] == reloaded["context"]
+    assert reloaded["executions"][0]["status"] == reloaded["task_status"]
+    assert reloaded["executions"][0]["final_output"] == reloaded["final_output"]
 
 
 def test_database_task_store_uses_mysql_safe_task_type_migration(tmp_path: Path, monkeypatch) -> None:
@@ -108,7 +238,7 @@ def test_create_app_can_use_database_storage(tmp_path: Path) -> None:
     assert list_response.json()[0]["name"] == "CRM Agent"
 
 
-def test_database_storage_cancels_unconfirmed_task_and_removes_rows(tmp_path: Path) -> None:
+def test_database_storage_soft_cancels_unconfirmed_task_and_retains_rows(tmp_path: Path) -> None:
     database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
     client = TestClient(create_app(database_url=database_url))
 
@@ -126,7 +256,10 @@ def test_database_storage_cancels_unconfirmed_task_and_removes_rows(tmp_path: Pa
     response = client.delete(f"/api/v1/tasks/{task_id}")
 
     assert response.status_code == 204
-    assert client.get("/api/v1/tasks").json() == []
+    tasks = client.get("/api/v1/tasks").json()
+    assert len(tasks) == 1
+    assert tasks[0]["task_status"] == "cancelled"
+    assert tasks[0]["completion_report"]["completion_reason"] == "Cancelled before confirmation"
 
     engine = create_engine(database_url, future=True)
     with engine.begin() as connection:
@@ -134,9 +267,9 @@ def test_database_storage_cancels_unconfirmed_task_and_removes_rows(tmp_path: Pa
         request_count = connection.execute(text("select count(*) from task_requests where id = :id"), {"id": request_id}).scalar_one()
         event_count = connection.execute(text("select count(*) from task_events where task_id = :id"), {"id": task_id}).scalar_one()
 
-    assert task_count == 0
-    assert request_count == 0
-    assert event_count == 0
+    assert task_count == 1
+    assert request_count == 1
+    assert event_count >= 1
 
 
 def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
@@ -303,5 +436,51 @@ def test_database_storage_persists_structured_task_flow_tables(tmp_path: Path, m
     }
     assert len(tool_rows) == 1
     assert tool_rows[0]["tool_name"] == "crm_query"
+    assert tool_rows[0]["tool_type"] == "mock"
     assert tool_rows[0]["success"] == 1
     assert "Customer A" in tool_rows[0]["result_text"]
+
+
+def test_database_task_store_restores_artifacts_across_instances(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    store = DatabaseTaskStore(database_url)
+    now = utc_now()
+    contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Reviewable delivery",
+        success_criteria=[TaskContractItem(id="criterion_1", description="Reviewable")],
+        confirmed_at=now,
+        legacy_inferred=True,
+    )
+    execution = TaskExecution(
+        id="execution_artifacts",
+        task_id="task_artifacts",
+        attempt_no=1,
+        trigger_type=ExecutionTriggerType.INITIAL,
+        contract_snapshot=contract,
+        status=TaskStatus.RUNNING,
+        start_node=CurrentNode.DISPATCH_DECISION,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        created_at=now,
+    )
+    task = Task(
+        id="task_artifacts",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Prepare delivery",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        contract=contract,
+        executions=[execution],
+        active_execution_id=execution.id,
+        created_at=now,
+        updated_at=now,
+    )
+    ArtifactService().register_task_output(task, "Persisted delivery")
+    ExecutionService().sync_projection(task)
+
+    saved = store.save(task)
+    reloaded = DatabaseTaskStore(database_url).get(task.id)
+
+    assert reloaded is not None
+    assert reloaded.artifacts == saved.artifacts
+    assert reloaded.executions[0].artifacts == saved.artifacts

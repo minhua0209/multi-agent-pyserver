@@ -815,7 +815,7 @@ class DatabaseTaskStore:
                             subtask_id=subtask.id,
                             agent_id=subtask.assigned_agent_id,
                             tool_name=tool_result.tool_name,
-                            tool_type=None,
+                            tool_type=tool_result.tool_type or None,
                             arguments_json=_json_dump(tool_result.arguments),
                             success=tool_result.success,
                             result_text=tool_result.result,

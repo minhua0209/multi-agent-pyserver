@@ -20,11 +20,13 @@ The runner persists the latest startup values into `taskhub_runtime.json` in thi
 
 ```json
 {
-  "user_id": "王大锤",
+  "user_id": "root",
   "runner_id": "local-codex-runner",
   "runner_cli_path": "/current/machine/current/project/taskhub-codex-runner/runner_cli.py"
 }
 ```
+
+`user_id` must be the TaskHub backend user ID (for example `root` or `user_xxx`), not a display name. The runner and CLI validate it through `/api/v1/users/current` before doing any task operation.
 
 Use `runner_cli_path` as the only normal integration point. The runner writes the current machine's real CLI path into this file when started or when the Skill is installed, so Codex does not need to guess the project location or rely on `PATH`. The CLI reads the runner-owned local config at `taskhub-codex-runner/runtime/runner_runtime.json`, calls TaskHub, and prints JSON to stdout. This avoids exposing TaskHub `server_url` to the Skill and avoids relying on Codex being able to reach the host runner process or `127.0.0.1` ports from its sandbox.
 
@@ -39,13 +41,13 @@ If `taskhub_runtime.json` is missing, ask the user to restart the runner with an
 Example runner startup:
 
 ```bash
-taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 王大锤
+taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 root
 ```
 
 Recommended runner startup with local web console and publish proxy:
 
 ```bash
-taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 王大锤 --ui --background
+taskhub-codex-runner/start_runner.sh http://192.168.170.18:8000 root --ui --background
 ```
 
 The runner may also set environment variables for its own process, but independent Codex sessions should prefer `taskhub_runtime.json`.
@@ -54,7 +56,7 @@ Useful runner environment variables:
 
 ```text
 TASKHUB_SERVER_URL=<provided-by-runner-startup>
-TASKHUB_USER_ID=王大锤
+TASKHUB_USER_ID=root
 TASKHUB_RUNNER_ID=local-codex-runner
 TASKHUB_CODEX_COMMAND="codex exec"
 ```

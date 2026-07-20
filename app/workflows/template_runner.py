@@ -2,13 +2,32 @@ from __future__ import annotations
 
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.models import RoundPlan, SubTask, Task, WorkflowNode, WorkflowTemplate
+from app.services.completion_service import CompletionService
+from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry
 from app.workflows.task_graph import TaskGraphRunner
 
 
 class WorkflowTemplateRunner:
-    def __init__(self, agent_registry: AgentRegistry) -> None:
-        self.task_graph = TaskGraphRunner(agent_registry)
+    def __init__(
+        self,
+        agent_registry: AgentRegistry,
+        completion_service: CompletionService | None = None,
+        artifact_service: ArtifactService | None = None,
+    ) -> None:
+        self.artifact_service = (
+            artifact_service
+            or (completion_service.artifact_service if completion_service else None)
+            or ArtifactService()
+        )
+        self.completion_service = completion_service or CompletionService(
+            artifact_service=self.artifact_service
+        )
+        self.task_graph = TaskGraphRunner(
+            agent_registry,
+            completion_service=self.completion_service,
+            artifact_service=self.artifact_service,
+        )
 
     def run(self, task: Task, workflow: WorkflowTemplate) -> Task:
         if task.current_node.value == "human_execution" and self._has_running_human_subtasks(task):
@@ -21,7 +40,7 @@ class WorkflowTemplateRunner:
             runnable_nodes = [node for node in ready_nodes if node.type in {"agent", "human", "condition"}]
             if not runnable_nodes:
                 if ready_nodes and all(node.type == "end" for node in ready_nodes):
-                    return self._complete_workflow(task, workflow)
+                    return self._complete_workflow(task, workflow, ready_nodes[0].id)
                 return self._mark_workflow_blocked(task, workflow, completed_node_ids)
 
             plan = RoundPlan(
@@ -34,8 +53,9 @@ class WorkflowTemplateRunner:
             if task.current_node.value == "human_execution":
                 return task
             completed_node_ids = self._completed_node_ids(task)
-            if all(node.type == "end" for node in self._ready_nodes(workflow, completed_node_ids, task)):
-                return self._complete_workflow(task, workflow)
+            ready_after_round = self._ready_nodes(workflow, completed_node_ids, task)
+            if ready_after_round and all(node.type == "end" for node in ready_after_round):
+                return self._complete_workflow(task, workflow, ready_after_round[0].id)
 
     def _run_round(self, task: Task, plan: RoundPlan) -> Task:
         runner = self.task_graph
@@ -55,11 +75,22 @@ class WorkflowTemplateRunner:
             return state["task"]
         return runner._context_update(state)["task"]
 
-    def _complete_workflow(self, task: Task, workflow: WorkflowTemplate) -> Task:
-        task.task_status = TaskStatus.SUCCEEDED
-        task.current_node = CurrentNode.COMPLETION_JUDGE
-        task.final_output = task.context.summary
-        task.events.append(self.task_graph._event("workflow_completed", f"Workflow {workflow.id} completed"))
+    def _complete_workflow(self, task: Task, workflow: WorkflowTemplate, end_node_id: str) -> Task:
+        final_output = task.context.summary
+        report = self.completion_service.finalize(
+            task,
+            candidate_status=TaskStatus.SUCCEEDED,
+            output=final_output,
+            reason=f"Workflow {workflow.id} reached end node",
+            criterion_results=self.completion_service.evaluate_criteria(task, final_output),
+            workflow_end_reached=True,
+            workflow_end_node_id=end_node_id,
+            decided_by_type="system",
+            decided_by_id="workflow_template_runner",
+        )
+        task.events.append(
+            self.task_graph._event("workflow_completed", f"Workflow {workflow.id} finalized as {report.terminal_status.value}")
+        )
         return task
 
     def _mark_workflow_blocked(
@@ -75,17 +106,30 @@ class WorkflowTemplateRunner:
         ]
         pending_text = "、".join(pending_nodes[:6]) if pending_nodes else "未知节点"
         message = f"Workflow {workflow.id} 没有可继续执行的节点，且未到达完成节点。待处理节点：{pending_text}"
-        task.task_status = TaskStatus.RUNNING
-        task.current_node = CurrentNode.HUMAN_INTERVENTION
-        task.final_output = message
+        self.completion_service.finalize(
+            task,
+            candidate_status=TaskStatus.BLOCKED,
+            output=message,
+            reason=message,
+            workflow_end_reached=False,
+            decided_by_type="system",
+            decided_by_id="workflow_template_runner",
+        )
         task.events.append(self.task_graph._event("workflow_blocked", message))
         return task
 
     @staticmethod
     def _node_to_subtask(task: Task, node: WorkflowNode) -> SubTask:
         assignee = WorkflowTemplateRunner._human_assignee_from_config(node.config, task) if node.type == "human" else {}
+        execution_id = task.active_execution_id or ""
         subtask = SubTask(
-            id=f"{task.id}_{node.id}",
+            id=(
+                f"{task.id}_{execution_id}_{node.id}"
+                if execution_id
+                else f"{task.id}_{node.id}"
+            ),
+            execution_id=execution_id,
+            logical_key=node.id,
             title=node.title or node.id,
             description=node.description or node.title or node.id,
             assigned_agent_id=node.agent_id,
@@ -117,8 +161,9 @@ class WorkflowTemplateRunner:
         for round_item in task.context.rounds:
             for subtask in round_item.subtasks:
                 if subtask.status == TaskStatus.SUCCEEDED:
-                    prefix = f"{task.id}_"
-                    completed.add(subtask.id[len(prefix) :] if subtask.id.startswith(prefix) else subtask.id)
+                    completed.add(
+                        WorkflowTemplateRunner._subtask_logical_key(task, subtask)
+                    )
         return completed
 
     @staticmethod
@@ -153,14 +198,28 @@ class WorkflowTemplateRunner:
     @staticmethod
     def _completed_subtasks_by_node_id(task: Task) -> dict[str, SubTask]:
         completed = {}
-        prefix = f"{task.id}_"
         for round_item in task.context.rounds:
             for subtask in round_item.subtasks:
                 if subtask.status != TaskStatus.SUCCEEDED:
                     continue
-                node_id = subtask.id[len(prefix) :] if subtask.id.startswith(prefix) else subtask.id
+                node_id = WorkflowTemplateRunner._subtask_logical_key(task, subtask)
                 completed[node_id] = subtask
         return completed
+
+    @staticmethod
+    def _subtask_logical_key(task: Task, subtask: SubTask) -> str:
+        if subtask.logical_key:
+            return subtask.logical_key
+        if subtask.execution_id:
+            execution_prefix = f"{task.id}_{subtask.execution_id}_"
+            if subtask.id.startswith(execution_prefix):
+                return subtask.id[len(execution_prefix) :]
+        task_prefix = f"{task.id}_"
+        return (
+            subtask.id[len(task_prefix) :]
+            if subtask.id.startswith(task_prefix)
+            else subtask.id
+        )
 
     @staticmethod
     def _dependencies_ready(edges, completed_node_ids: set[str], completed_subtasks: dict[str, SubTask]) -> bool:

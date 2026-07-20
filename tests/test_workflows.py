@@ -142,7 +142,7 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
         json={"result_status": "succeeded", "output": "quote approved", "should_complete": True},
     ).json()
 
-    assert resumed["task_status"] == "succeeded"
+    assert resumed["task_status"] == "succeeded", resumed["completion_report"]
     assert resumed["current_node"] == "completion_judge"
     assert "quote ready" in resumed["context"]["summary"]
     assert "quote approved" in resumed["context"]["summary"]
@@ -443,7 +443,8 @@ def test_workflow_template_routes_by_human_result_metadata(tmp_path: Path, monke
     ]
     assert "Make quote" in completed_titles
     assert "Revise solution" not in completed_titles
-    assert resumed["task_status"] == "succeeded"
+    assert resumed["task_status"] == "blocked"
+    assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 
 def test_workflow_template_routes_rejected_human_result_to_revision(tmp_path: Path, monkeypatch) -> None:
@@ -529,7 +530,8 @@ def test_workflow_template_routes_rejected_human_result_to_revision(tmp_path: Pa
     ]
     assert "Revise solution" in completed_titles
     assert "Make quote" not in completed_titles
-    assert resumed["task_status"] == "succeeded"
+    assert resumed["task_status"] == "blocked"
+    assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 
 def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, monkeypatch) -> None:
@@ -632,7 +634,8 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
     assert condition_subtask["result_metadata"]["decision"] == "approved"
     assert "Make quote" in completed_titles
     assert "Revise solution" not in completed_titles
-    assert resumed["task_status"] == "succeeded"
+    assert resumed["task_status"] == "blocked"
+    assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 
 def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_path: Path, monkeypatch) -> None:
@@ -699,6 +702,148 @@ def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_pa
         },
     ).json()
 
-    assert resumed["task_status"] == "running"
-    assert resumed["current_node"] == "human_intervention"
+    assert resumed["task_status"] == "blocked"
+    assert resumed["current_node"] == "completion_judge"
     assert "没有可继续执行的节点" in resumed["final_output"]
+    assert resumed["completion_report"]["terminal_status"] == "blocked"
+    assert resumed["completion_report"]["workflow_end_node_id"] is None
+
+
+def test_workflow_completion_records_the_actual_ready_end_node(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Multiple End Workflow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "judge",
+                        "type": "condition",
+                        "title": "Judge",
+                        "config": {"default_decision": "approved"},
+                    },
+                    {"id": "end_rejected", "type": "end"},
+                    {"id": "end_approved", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "judge"},
+                    {
+                        "from": "judge",
+                        "to": "end_rejected",
+                        "condition": {"type": "decision", "value": "rejected"},
+                    },
+                    {
+                        "from": "judge",
+                        "to": "end_approved",
+                        "condition": {"type": "decision", "value": "approved"},
+                    },
+                ],
+            },
+        },
+    ).json()
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Run multiple end workflow",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+
+    completed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "Multiple end", "description": "Run multiple end workflow"},
+    ).json()
+
+    assert completed["task_status"] == "succeeded"
+    assert completed["completion_report"]["workflow_end_node_id"] == "end_approved"
+
+
+def test_workflow_human_acceptance_preserves_end_evidence_until_approved(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            agent_file=tmp_path / "agents.json",
+            workflow_file=tmp_path / "workflows.json",
+        )
+    )
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Acceptance Workflow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "judge",
+                        "type": "condition",
+                        "title": "Prepare decision evidence",
+                        "config": {"default_decision": "approved"},
+                    },
+                    {"id": "end_approved", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "judge"},
+                    {"from": "judge", "to": "end_approved"},
+                ],
+            },
+        },
+    ).json()
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Run workflow and wait for acceptance",
+            "metadata": {
+                "execution_mode": "workflow_template",
+                "workflow_id": workflow["id"],
+            },
+        },
+    ).json()["tasks"][0]
+
+    pending = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "Acceptance workflow",
+            "description": "Run workflow and wait for acceptance",
+            "contract": {
+                "goal": "Run the workflow",
+                "deliverable_goal": "Approved workflow result",
+                "success_criteria": [
+                    {
+                        "id": "criterion_workflow_done",
+                        "description": "Workflow reaches its end node",
+                    }
+                ],
+                "requires_human_acceptance": True,
+            },
+        },
+    ).json()
+    pending_artifact_ids = [artifact["id"] for artifact in pending["artifacts"]]
+
+    assert pending["task_status"] == "running"
+    assert pending["current_node"] == "human_intervention"
+    assert pending["completion_report"]["terminal_status"] == "running"
+    assert pending["completion_report"]["workflow_end_node_id"] == "end_approved"
+    assert pending["completion_report"]["criterion_results"][0]["status"] == "passed"
+    assert pending["executions"][0]["finished_at"] is None
+
+    response = client.post(
+        f"/api/v1/tasks/{created['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "人工验收通过",
+            "metadata": {"human_accepted": True},
+        },
+    )
+
+    assert response.status_code == 200
+    accepted = response.json()
+    assert accepted["task_status"] == "succeeded"
+    assert accepted["completion_report"]["human_accepted"] is True
+    assert accepted["completion_report"]["workflow_end_node_id"] == "end_approved"
+    assert [artifact["id"] for artifact in accepted["artifacts"]] == pending_artifact_ids
+    assert accepted["executions"][0]["finished_at"] is not None

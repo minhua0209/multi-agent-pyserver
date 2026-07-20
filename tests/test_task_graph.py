@@ -3,10 +3,70 @@ import time
 
 import pytest
 
-from app.core.enums import CurrentNode, SourceType, TaskStatus
-from app.core.models import AgentCreate, AgentTool, RoundPlan, SubTask, Task, ToolCall, new_id, utc_now
+from app.core.enums import (
+    ArtifactKind,
+    ArtifactSourceType,
+    CurrentNode,
+    ExecutionTriggerType,
+    SourceType,
+    TaskStatus,
+)
+from app.core.models import (
+    AgentCreate,
+    AgentTool,
+    RoundPlan,
+    SubTask,
+    Task,
+    TaskContract,
+    TaskContractItem,
+    TaskExecution,
+    ToolCall,
+    new_id,
+    utc_now,
+)
 from app.services.storage import AgentRegistry
+from app.services.artifact_service import ArtifactService
 from app.workflows.task_graph import TaskGraphRunner
+
+
+def _legacy_contract() -> TaskContract:
+    return TaskContract(
+        goal="Complete the task",
+        deliverable_goal="Reviewable output",
+        success_criteria=[TaskContractItem(id="criterion_legacy", description="Output is available")],
+        confirmed_at=utc_now(),
+        legacy_inferred=True,
+    )
+
+
+def _task_with_active_execution(task_id: str) -> Task:
+    now = utc_now()
+    contract = _legacy_contract()
+    execution = TaskExecution(
+        id=f"execution_{task_id}",
+        task_id=task_id,
+        attempt_no=1,
+        trigger_type=ExecutionTriggerType.INITIAL,
+        contract_snapshot=contract,
+        status=TaskStatus.RUNNING,
+        start_node=CurrentNode.DISPATCH_DECISION,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        created_at=now,
+    )
+    return Task(
+        id=task_id,
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Prepare artifact delivery",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        title="Prepare artifact delivery",
+        description="Prepare artifact delivery",
+        contract=contract,
+        executions=[execution],
+        active_execution_id=execution.id,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -> None:
@@ -18,17 +78,10 @@ def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -
             capabilities=["quote"],
         )
     )
-    task = Task(
-        id=new_id("task"),
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="Create quote for customer D",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="Create quote for customer D",
-        description="Prepare quote for customer D",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution(new_id("task"))
+    task.content = "Create quote for customer D"
+    task.title = "Create quote for customer D"
+    task.description = "Prepare quote for customer D"
 
     result = TaskGraphRunner(registry).run(task)
 
@@ -46,6 +99,40 @@ def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -
     ]
 
 
+def test_task_graph_stops_at_human_acceptance_without_sealing_execution(
+    tmp_path: Path,
+) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    task = _task_with_active_execution("task_acceptance")
+    task.contract = task.contract.model_copy(
+        update={"requires_human_acceptance": True}
+    )
+    task.executions[0].contract_snapshot = task.contract.model_copy(deep=True)
+    runner = TaskGraphRunner(registry)
+
+    state = runner._completion_judge(
+        {
+            "task": task,
+            "round_plan": RoundPlan(
+                should_continue=False,
+                reason="Automatic work completed",
+                final_output="Reviewable delivery",
+            ),
+            "round_outputs": [],
+            "paused": False,
+        }
+    )
+
+    assert task.task_status == TaskStatus.RUNNING
+    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert task.completion_report is not None
+    assert task.completion_report.terminal_status == TaskStatus.RUNNING
+    assert task.completion_report.criterion_results[0].status.value == "passed"
+    assert task.executions[0].status == TaskStatus.RUNNING
+    assert task.executions[0].finished_at is None
+    assert runner._route_after_judge(state) == "end"
+
+
 def test_task_graph_does_not_use_round_plan_mock_when_system_fallback_disabled(
     tmp_path: Path,
     monkeypatch,
@@ -59,17 +146,10 @@ def test_task_graph_does_not_use_round_plan_mock_when_system_fallback_disabled(
             capabilities=["quote"],
         )
     )
-    task = Task(
-        id=new_id("task"),
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="Create quote for customer D",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="Create quote for customer D",
-        description="Prepare quote for customer D",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution(new_id("task"))
+    task.content = "Create quote for customer D"
+    task.title = "Create quote for customer D"
+    task.description = "Prepare quote for customer D"
 
     with pytest.raises(RuntimeError, match="System mock fallback is disabled"):
         TaskGraphRunner(registry).run(task)
@@ -88,17 +168,10 @@ def test_task_graph_passes_only_processing_agents_to_planner(tmp_path: Path, mon
             capabilities=["approval"],
         )
     )
-    task = Task(
-        id=new_id("task"),
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="Create quote for customer D",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="Create quote for customer D",
-        description="Prepare quote for customer D",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution(new_id("task"))
+    task.content = "Create quote for customer D"
+    task.title = "Create quote for customer D"
+    task.description = "Prepare quote for customer D"
 
     seen_agent_ids = []
 
@@ -142,17 +215,10 @@ def test_task_graph_executes_agent_tool_calls(tmp_path: Path, monkeypatch) -> No
             ],
         )
     )
-    task = Task(
-        id="task_tool",
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="Query CRM and prepare quote",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="Query CRM",
-        description="Query customer_a from CRM",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution("task_tool")
+    task.content = "Query CRM and prepare quote"
+    task.title = "Query CRM"
+    task.description = "Query customer_a from CRM"
 
     def _plan(task, agents):
         if task.loop_count == 0:
@@ -236,17 +302,10 @@ def test_task_graph_routes_email_subtask_to_smtp_tool(tmp_path: Path, monkeypatc
             ],
         )
     )
-    task = Task(
-        id="task_email",
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="请发送一封测试邮件给 minh@getui.com，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="发送测试邮件",
-        description="向 minh@getui.com 发送测试邮件",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution("task_email")
+    task.content = "请发送一封测试邮件给 minh@getui.com，主题为 Agent 测试邮件，正文说明这是任务协同中心发出的测试邮件。"
+    task.title = "发送测试邮件"
+    task.description = "向 minh@getui.com 发送测试邮件"
 
     def _plan(task, agents):
         if task.loop_count == 0:
@@ -412,17 +471,10 @@ def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_
             capabilities=["quote"],
         )
     )
-    task = Task(
-        id="task_parallel_agents",
-        source_type=SourceType.BUSINESS_SYSTEM,
-        content="Run independent quote subtasks",
-        task_status=TaskStatus.RUNNING,
-        current_node=CurrentNode.HUMAN_CONFIRMATION,
-        title="Run independent quote subtasks",
-        description="Run two independent agent subtasks",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
+    task = _task_with_active_execution("task_parallel_agents")
+    task.content = "Run independent quote subtasks"
+    task.title = "Run independent quote subtasks"
+    task.description = "Run two independent agent subtasks"
 
     def _plan(task, agents):
         if task.loop_count == 0:
@@ -448,7 +500,7 @@ def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_
         return RoundPlan(should_continue=False, final_output=task.context.summary)
 
     def _execute(task, subtask, agent, tool_results):
-        if subtask.id == "subtask_slow":
+        if subtask.logical_key == "subtask_slow":
             time.sleep(0.2)
             return [], "slow output"
         time.sleep(0.2)
@@ -464,3 +516,110 @@ def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_
     assert elapsed < 0.35
     assert result.context.summary == "slow output\nfast output"
     assert [subtask.output for subtask in result.context.rounds[0].subtasks] == ["slow output", "fast output"]
+
+
+def test_task_graph_registers_agent_output_file_and_tool_receipt_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Delivery Agent",
+            description="Produces delivery artifacts",
+            capabilities=["delivery"],
+            tools=[
+                AgentTool(
+                    name="write_delivery",
+                    type="file_write",
+                    config={"base_dir": str(tmp_path / "outputs")},
+                ),
+                AgentTool(
+                    name="crm_query",
+                    type="mock",
+                    config={"response": '{"customer": "A"}'},
+                ),
+            ],
+        )
+    )
+    task = _task_with_active_execution("task_artifact_graph")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                subtasks=[
+                    SubTask(
+                        id="subtask_artifact_graph",
+                        title="Prepare delivery",
+                        description="Prepare delivery artifacts",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    def _execute(_task, _subtask, _agent, tool_results):
+        if not tool_results:
+            return [
+                ToolCall(
+                    tool_name="write_delivery",
+                    arguments={"filename": "delivery.md", "content": "file delivery"},
+                ),
+                ToolCall(tool_name="crm_query", arguments={"customer_id": "A"}),
+            ], ""
+        return [], "Agent delivery complete"
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+    artifact_service = ArtifactService()
+
+    result = TaskGraphRunner(registry, artifact_service=artifact_service).run(task)
+
+    assert result.task_status == TaskStatus.SUCCEEDED
+    assert len(result.artifacts) == 4
+    assert {artifact.source_type for artifact in result.artifacts} == {
+        ArtifactSourceType.TASK_RESULT,
+        ArtifactSourceType.SUBTASK_OUTPUT,
+        ArtifactSourceType.TOOL_RESULT,
+    }
+    tool_artifacts = [
+        artifact
+        for artifact in result.artifacts
+        if artifact.source_type == ArtifactSourceType.TOOL_RESULT
+    ]
+    assert {artifact.kind for artifact in tool_artifacts} == {
+        ArtifactKind.FILE,
+        ArtifactKind.TOOL_RESULT,
+    }
+    assert result.executions[0].artifacts == result.artifacts
+
+
+def test_task_graph_registers_condition_subtask_output_artifact(tmp_path: Path, monkeypatch) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    task = _task_with_active_execution("task_condition_artifact")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            condition = SubTask(
+                id="condition_artifact",
+                title="Evaluate condition",
+                description="Evaluate workflow condition",
+                assignee_type="condition",
+                result_metadata={"config": {"default_decision": "approved"}},
+            )
+            return RoundPlan(should_continue=True, subtasks=[condition])
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    artifact_service = ArtifactService()
+
+    result = TaskGraphRunner(registry, artifact_service=artifact_service).run(task)
+
+    condition_artifact = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.source_id.endswith("_condition_artifact")
+    )
+    assert condition_artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
+    assert condition_artifact.content == "Condition decision: approved"

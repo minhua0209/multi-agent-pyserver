@@ -25,7 +25,18 @@ def taskhub_client(runtime_config: dict[str, Any]) -> TaskHubClient:
     server_url = str(runtime_config.get("server_url") or "").strip()
     if not server_url:
         raise RuntimeError("TaskHub server_url is missing in runner runtime config")
-    return TaskHubClient(server_url.rstrip("/"))
+    user_id = str(runtime_config.get("user_id") or "").strip()
+    if not user_id:
+        raise RuntimeError("TaskHub user_id is missing in runner runtime config")
+    client = TaskHubClient(server_url.rstrip("/"), user_id)
+    current_user = client.get_current_user()
+    current_user_id = str(current_user.get("id") or "")
+    if current_user_id != user_id:
+        raise RuntimeError(
+            f"TaskHub user mismatch: configured user_id={user_id}, "
+            f"current user id={current_user_id or '<missing>'}"
+        )
+    return client
 
 
 def format_task_request_response(raw: dict[str, Any]) -> dict[str, Any]:

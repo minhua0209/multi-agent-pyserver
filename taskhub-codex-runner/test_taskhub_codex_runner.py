@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 MODULE_PATH = Path(__file__).with_name("taskhub_codex_runner.py")
@@ -24,7 +24,44 @@ sys.modules["runner_cli"] = runner_cli
 CLI_SPEC.loader.exec_module(runner_cli)
 
 
+def make_runner_config(**overrides):
+    values = {
+        "server_url": "http://taskhub.local",
+        "user_id": "root",
+        "runner_id": "local-codex-runner",
+        "codex_command": ["codex", "exec"],
+        "poll_interval_seconds": 5,
+        "codex_timeout_seconds": 300,
+        "once": True,
+        "dry_run": False,
+        "auto_submit": True,
+        "auto_install_skill": False,
+        "auto_update_skill": False,
+        "codex_skill_name": "taskhub-codex",
+        "ui": False,
+        "ui_host": "127.0.0.1",
+        "ui_port": 8787,
+    }
+    values.update(overrides)
+    return runner.RunnerConfig(**values)
+
+
 class TaskHubCodexRunnerTests(unittest.TestCase):
+    def test_runner_distribution_uses_backend_user_id_examples(self) -> None:
+        runner_dir = MODULE_PATH.parent
+        start_script = (runner_dir / "start_runner.sh").read_text(encoding="utf-8")
+        skill_text = (runner_dir / "skill" / "taskhub-codex" / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn('TASKHUB_USER_ID="root"', start_script)
+        self.assertNotIn("王大锤", start_script)
+        self.assertNotIn("王大锤", skill_text)
+
+    def test_runner_config_defaults_to_root_user_id(self) -> None:
+        with patch.dict(runner.os.environ, {}, clear=True):
+            config = runner.load_config(None)
+
+        self.assertEqual(config.user_id, "root")
+
     def test_needs_human_codex_result_is_not_auto_submittable(self) -> None:
         result = runner.parse_codex_result(
             '{"action": "needs_human", "decision": "need_more_info", "output": "需要人工确认预算", "questions": ["预算是否接受？"]}'
@@ -88,7 +125,7 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             runtime_path = runner.write_skill_runtime_config(
                 target,
                 {
-                    "user_id": "王大锤",
+                    "user_id": "user_001",
                     "runner_id": "local-codex-runner",
                     "runner_cli_path": "taskhub-codex-runner/runner_cli.py",
                 },
@@ -97,7 +134,7 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             self.assertEqual(runtime_path, target / "taskhub_runtime.json")
             self.assertEqual(
                 runtime_path.read_text(encoding="utf-8"),
-                '{\n  "user_id": "王大锤",\n  "runner_id": "local-codex-runner",\n  "runner_cli_path": "taskhub-codex-runner/runner_cli.py"\n}\n',
+                '{\n  "user_id": "user_001",\n  "runner_id": "local-codex-runner",\n  "runner_cli_path": "taskhub-codex-runner/runner_cli.py"\n}\n',
             )
 
     def test_runtime_paths_are_fixed_under_runner_directory(self) -> None:
@@ -161,13 +198,81 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             self.assertEqual(payload["server_url"], "http://192.168.170.18:8000")
 
     def test_create_task_request_proxy_calls_taskhub_once(self) -> None:
-        client = runner.TaskHubClient("http://taskhub.local")
+        client = runner.TaskHubClient("http://taskhub.local", "root")
         client._request = Mock(return_value={"request_id": "req_1", "tasks": []})  # type: ignore[method-assign]
 
         result = client.create_task_request({"title": "测试", "content": "帮我处理任务"})
 
         self.assertEqual(result["request_id"], "req_1")
         client._request.assert_called_once_with("POST", "/api/v1/tasks/requests", {"title": "测试", "content": "帮我处理任务"})
+
+    def test_get_current_user_calls_current_user_endpoint(self) -> None:
+        client = runner.TaskHubClient("http://taskhub.local", "root")
+        client._request = Mock(return_value={"id": "root", "name": "管理员"})  # type: ignore[method-assign]
+
+        current_user = client.get_current_user()
+
+        self.assertEqual(current_user["id"], "root")
+        client._request.assert_called_once_with("GET", "/api/v1/users/current")
+
+    def test_taskhub_client_sends_user_id_header_on_every_request(self) -> None:
+        captured_request = None
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"id": "root"}'
+
+        def fake_urlopen(req, timeout):
+            nonlocal captured_request
+            captured_request = req
+            self.assertEqual(timeout, 30)
+            return FakeResponse()
+
+        client = runner.TaskHubClient("http://taskhub.local", "root")
+        with patch.object(runner.request, "urlopen", fake_urlopen):
+            client.get_current_user()
+
+        self.assertIsNotNone(captured_request)
+        headers = {key.lower(): value for key, value in captured_request.header_items()}
+        self.assertEqual(headers["x-user-id"], "root")
+
+    def test_runner_start_fails_before_setup_when_current_user_does_not_match(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(make_runner_config(user_id="user_001"))
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "user_002"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=[])  # type: ignore[method-assign]
+
+        with patch.object(runner, "write_runner_runtime_config") as write_runtime:
+            with self.assertRaisesRegex(RuntimeError, "configured user_id=user_001.*current user id=user_002"):
+                task_runner.run_forever()
+
+        write_runtime.assert_not_called()
+
+    def test_runner_poll_fails_when_current_user_does_not_match(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(make_runner_config(user_id="user_001"))
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "user_002"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=[])  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(RuntimeError, "configured user_id=user_001.*current user id=user_002"):
+            task_runner.poll_once()
+
+        task_runner.taskhub.poll_human_subtasks.assert_not_called()
+
+    def test_runner_validates_matching_user_once_before_polling(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(make_runner_config(user_id="user_001"))
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "user_001"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=[])  # type: ignore[method-assign]
+
+        self.assertFalse(task_runner.poll_once())
+        self.assertFalse(task_runner.poll_once())
+
+        task_runner.taskhub.get_current_user.assert_called_once_with()
+        self.assertEqual(task_runner.taskhub.poll_human_subtasks.call_count, 2)
 
     def test_runner_status_exposes_pending_manual_subtasks(self) -> None:
         state = runner.RunnerState()
@@ -286,6 +391,33 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             config = runner_cli.load_runner_runtime_config(root)
 
             self.assertEqual(config["server_url"], "http://192.168.170.18:8000")
+
+    def test_cli_runtime_client_uses_and_validates_configured_user_id(self) -> None:
+        client = Mock()
+        client.get_current_user.return_value = {"id": "user_001"}
+
+        with patch.object(runner_cli, "TaskHubClient", return_value=client) as client_class:
+            result = runner_cli.taskhub_client(
+                {"server_url": "http://taskhub.local", "user_id": "user_001"}
+            )
+
+        self.assertIs(result, client)
+        client_class.assert_called_once_with("http://taskhub.local", "user_001")
+        client.get_current_user.assert_called_once_with()
+
+    def test_cli_runtime_client_rejects_mismatched_user_id(self) -> None:
+        client = Mock()
+        client.get_current_user.return_value = {"id": "user_002"}
+
+        with patch.object(runner_cli, "TaskHubClient", return_value=client):
+            with self.assertRaisesRegex(RuntimeError, "configured user_id=user_001.*current user id=user_002"):
+                runner_cli.taskhub_client(
+                    {"server_url": "http://taskhub.local", "user_id": "user_001"}
+                )
+
+    def test_cli_runtime_client_requires_user_id(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "user_id is missing"):
+            runner_cli.taskhub_client({"server_url": "http://taskhub.local"})
 
 
 if __name__ == "__main__":

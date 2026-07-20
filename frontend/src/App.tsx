@@ -2,6 +2,8 @@ import {
   Alert as AntAlert,
   Button,
   Card,
+  Checkbox,
+  Collapse,
   ConfigProvider,
   Descriptions,
   Empty as AntEmpty,
@@ -13,6 +15,7 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -33,6 +36,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   ShieldCheck,
@@ -60,14 +64,14 @@ import {
   SubTask,
   Task,
   TaskAttachment,
+  TaskRerunPreflightResponse,
   TaskRound,
   User,
   UserCreatePayload,
   UserOption,
   WorkflowDefinition,
   WorkflowTemplate,
-  cancelTask,
-  confirmTask,
+  createTaskRerun,
   createAgent,
   createHumanNodeForUser,
   createSimpleAgent,
@@ -82,6 +86,7 @@ import {
   listTasks,
   listUsers,
   listWorkflows,
+  preflightTaskRerun,
   setCurrentUserId,
   submitHumanSubtaskResult,
   submitTaskResult,
@@ -89,14 +94,33 @@ import {
   uploadTaskAttachment,
 } from "./api/taskhub"
 import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
-import { draftDescriptionValue, draftTitleValue, taskLabel } from "./intentDrafts"
+import { isTaskAwaitingConfirmation } from "./taskConfirmation"
+import { TaskConfirmationModal } from "./TaskConfirmationModal"
+import {
+  PendingTaskRerunRequest,
+  canSubmitTaskRerun,
+  clearPendingTaskRerun,
+  ensurePendingTaskRerun,
+  loadPendingTaskRerun,
+  shouldBlockTaskRerunFormForPreflight,
+} from "./taskRerunState"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
 import {
+  buildTaskInterventionResultPayload,
   compactContextText,
+  executionHistoryActiveKeys,
   manualWorkflowFlowElements,
+  taskArtifactClickableUri,
+  taskArtifactViews,
   taskContextNodeView,
+  taskDeliverableResultViews,
   taskDetailSummaryBlocks,
   taskDetailTypeBadge,
+  taskExecutionHistory,
+  taskFourQuestions,
+  taskHumanAcceptanceText,
+  taskInterventionView,
+  workflowDefinitionForTask,
   workflowNodeStateColor as detailWorkflowNodeStateColor,
 } from "./taskDetailView"
 import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
@@ -128,12 +152,26 @@ const navGroups = [
 
 function statusText(status?: string) {
   const value = status || "running"
-  return { running: "正在执行", succeeded: "执行完成", failed: "执行失败" }[value] || value
+  return {
+    running: "正在执行",
+    succeeded: "执行完成",
+    failed: "执行失败",
+    blocked: "执行阻塞",
+    partial: "部分完成",
+    cancelled: "已取消",
+  }[value] || value
 }
 
 function statusColor(status?: string) {
   const value = status || "running"
-  return { running: "processing", succeeded: "success", failed: "error" }[value] || "default"
+  return {
+    running: "processing",
+    succeeded: "success",
+    failed: "error",
+    blocked: "warning",
+    partial: "orange",
+    cancelled: "default",
+  }[value] || "default"
 }
 
 function toneColor(tone: string) {
@@ -148,15 +186,12 @@ function taskDescription(task: Task) {
   return task.description || task.draft?.description || task.content || "-"
 }
 
-function draftTaskListText(task: Task) {
-  if (!task.draft) return "暂无识别任务清单"
-  const title = task.draft.title || "未命名任务"
-  const description = task.draft.description || ""
-  return description ? `${title}\n${description}` : title
-}
-
 function taskStatus(task: Task) {
   return task.task_status || task.status || "running"
+}
+
+function isTerminalTask(task: Task) {
+  return taskStatus(task) !== "running"
 }
 
 function taskAttachments(task: Task): TaskAttachment[] {
@@ -419,7 +454,7 @@ export default function App() {
 
           <Layout.Content className="content">
           {toast && <div className="toast" key={toast.id}>{toast.text}</div>}
-          {error && <AntAlert type="error" showIcon message={error} className="page-alert" />}
+          {error && <AntAlert type="error" showIcon title={error} className="page-alert" />}
           {page === "overview" && <Overview tasks={tasks} agents={agents} humanSubtasks={humanSubtasks} events={events} setPage={(nextPage) => void navigateTo(nextPage)} />}
           {page === "publish" && <PublishPage agents={agents} users={assignableUsers} setToast={setToast} onCreated={(created) => {
             setTasks((current) => mergeTasks(current, created))
@@ -530,7 +565,6 @@ function PublishPage({
   const [intentModalOpen, setIntentModalOpen] = useState(false)
   const [intentError, setIntentError] = useState("")
   const [submitting, setSubmitting] = useState(false)
-  const [confirming, setConfirming] = useState(false)
   const [message, setMessage] = useState("")
   const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
   const [workflowId, setWorkflowId] = useState("")
@@ -581,8 +615,9 @@ function PublishPage({
     setIntentModalOpen(true)
     try {
       const response = await createTaskRequest(title.trim(), content, workflowId, "business_system", attachmentIds)
-      onCreated(response.tasks || [])
-      setDraftTasks(response.tasks || [])
+      const created = response.tasks || []
+      onCreated(created)
+      openTaskConfirmation(created)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "提交失败"
       setIntentError(errorMessage)
@@ -630,20 +665,9 @@ function PublishPage({
       )
       const created = response.tasks || []
       onCreated(created)
-      const confirmed = []
-      for (const task of created) {
-        confirmed.push(
-          await confirmTask(task.id, {
-            title: task.title || title.trim(),
-            description: draftTaskListText(task),
-            execution_mode: "async",
-            ...assigneeConfirmPayload(selectedAssignee),
-          }),
-        )
-      }
-      onConfirmed(confirmed)
       setWorkflowModalOpen(false)
-      setMessage("任务已按 Agent 编排提交")
+      openTaskConfirmation(created)
+      setMessage("Agent 编排任务已创建，请确认交付与成功目标")
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Agent 编排任务提交失败"
       setMessage(errorMessage)
@@ -653,46 +677,16 @@ function PublishPage({
     }
   }
 
-  async function confirmDrafts() {
-    setConfirming(true)
-    setMessage("")
-    try {
-      const confirmed = []
-      for (const task of draftTasks) {
-        confirmed.push(
-          await confirmTask(task.id, {
-            title: task.title || task.draft?.title || taskTitle(task),
-            description: draftTaskListText(task),
-            execution_mode: "async",
-            ...assigneeConfirmPayload(selectedAssignee),
-          }),
-        )
-      }
-      onConfirmed(confirmed)
-      setDraftTasks([])
-      setIntentModalOpen(false)
-      setMessage("任务已确认，系统正在异步执行")
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "确认失败")
-    } finally {
-      setConfirming(false)
-    }
+  function openTaskConfirmation(created: Task[]) {
+    setDraftTasks(created)
+    setIntentError("")
+    setIntentModalOpen(true)
   }
 
-  function updateDraftTask(taskId: string, patch: Partial<{ title: string; description: string }>) {
-    setDraftTasks((current) =>
-      current.map((task) => {
-        if (task.id !== taskId) return task
-        return {
-          ...task,
-          ...(patch.title !== undefined ? { title: patch.title } : {}),
-          draft: {
-            ...(task.draft || { title: taskTitle(task), description: taskDescription(task) }),
-            ...patch,
-          },
-        }
-      }),
-    )
+  function closeTaskConfirmation() {
+    setDraftTasks([])
+    setIntentError("")
+    setIntentModalOpen(false)
   }
 
   async function handleAttachmentFiles(fileList: FileList | null) {
@@ -724,30 +718,6 @@ function PublishPage({
       setAttachmentUploading(false)
       if (attachmentInputRef.current) attachmentInputRef.current.value = ""
     }
-  }
-
-  async function closeIntentModal() {
-    if (submitting || confirming) return
-    const taskIds = draftTasks.map((task) => task.id)
-    if (taskIds.length > 0) {
-      setConfirming(true)
-      setMessage("")
-      setIntentError("")
-      try {
-        await Promise.all(taskIds.map((taskId) => cancelTask(taskId)))
-        onCancelled(taskIds)
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : "取消任务失败"
-        setIntentError(errorMessage)
-        setMessage(`取消失败：${errorMessage}`)
-        setConfirming(false)
-        return
-      }
-      setConfirming(false)
-    }
-    setDraftTasks([])
-    setIntentError("")
-    setIntentModalOpen(false)
   }
 
   return (
@@ -842,22 +812,17 @@ function PublishPage({
         </Flex>
       </Card>
       </Card>
-      <Modal
+      <TaskConfirmationModal
         title="意图识别任务清单"
         open={intentModalOpen}
-        width={860}
-        onCancel={() => void closeIntentModal()}
-        footer={submitting || intentError ? null : [
-          <Button key="cancel" onClick={() => void closeIntentModal()} disabled={confirming}>取消</Button>,
-          <Button key="confirm" type="primary" onClick={confirmDrafts} loading={confirming} disabled={draftTasks.length === 0}>确认并执行</Button>,
-        ]}
-        mask={{ closable: false }}
-        closable={!submitting && !confirming}
-      >
-        <Typography.Paragraph type="secondary">
-          {submitting ? "正在拆分整理任务清单，请稍后" : "请确认识别出的任务名称和描述，确认后系统会异步执行。"}
-        </Typography.Paragraph>
-        {!submitting && !intentError && (
+        tasks={draftTasks}
+        preparing={submitting}
+        preparationError={intentError}
+        confirmOptions={{
+          execution_mode: "async",
+          ...assigneeConfirmPayload(selectedAssignee),
+        }}
+        beforeTasks={(
           <div className="intent-assignee-panel">
             <div>
               <Typography.Text strong>默认人工处理人</Typography.Text>
@@ -875,41 +840,16 @@ function PublishPage({
             />
           </div>
         )}
-            {submitting ? (
-              <div className="intent-loading">
-                <Spin size="large" />
-                <strong>正在拆分整理任务清单，请稍后</strong>
-                <span>系统正在调用意图识别能力，返回后会在这里展示待确认任务。</span>
-              </div>
-            ) : intentError ? (
-              <div className="intent-loading error">
-                <XCircle size={34} />
-                <strong>任务清单整理失败</strong>
-                <span>{intentError}</span>
-              </div>
-            ) : (
-              <>
-                <div className="intent-task-list">
-                  {draftTasks.map((task) => (
-                    <Card className="intent-task-card" key={task.id} size="small">
-                      <div className="intent-task-index">
-                        <Tag color="blue">{taskLabel()}</Tag>
-                        <Typography.Text type="secondary">可编辑任务名称和描述</Typography.Text>
-                      </div>
-                      <label className="field">
-                        <span>任务名称</span>
-                        <Input value={draftTitleValue(task)} onChange={(event) => updateDraftTask(task.id, { title: event.target.value })} />
-                      </label>
-                      <label className="field">
-                        <span>任务描述</span>
-                        <Input.TextArea rows={5} value={draftDescriptionValue(task)} onChange={(event) => updateDraftTask(task.id, { description: event.target.value })} />
-                      </label>
-                    </Card>
-                  ))}
-                </div>
-              </>
-            )}
-      </Modal>
+        onTaskUpdated={(confirmed) => {
+          onConfirmed([confirmed])
+          setMessage("任务已确认，系统正在异步执行")
+        }}
+        onTasksCancelled={(taskIds) => {
+          onCancelled(taskIds)
+          setMessage("任务清单已取消")
+        }}
+        onClose={closeTaskConfirmation}
+      />
       <Modal
         title="Agent 节点编排"
         open={workflowModalOpen}
@@ -1100,6 +1040,7 @@ function TasksPage({
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState("")
+  const [confirmationTask, setConfirmationTask] = useState<Task | null>(null)
 
   async function openDetail(taskId: string) {
     setSelectedTaskId(taskId)
@@ -1139,7 +1080,12 @@ function TasksPage({
     <div className="page active">
       <PageHeader title="任务列表" description="按状态、节点、来源和执行者定位任务，点击详情查看执行轨迹。" />
       <Panel title="任务表">
-        <TaskTable tasks={tasks} onSelect={openDetail} selectedTaskId={detailTask?.id} />
+        <TaskTable
+          tasks={tasks}
+          onSelect={openDetail}
+          onContinueConfirmation={setConfirmationTask}
+          selectedTaskId={detailTask?.id}
+        />
       </Panel>
       {detailTask && (
         <TaskDetailModal
@@ -1150,6 +1096,7 @@ function TasksPage({
             setDetailTask(updated)
             onTaskUpdated(updated)
           }}
+          onContinueConfirmation={() => setConfirmationTask(detailTask)}
           onOpenHumanWorkbench={() => {
             setDetailTask(null)
             setDetailError("")
@@ -1161,6 +1108,25 @@ function TasksPage({
           }}
         />
       )}
+      <TaskConfirmationModal
+        title="继续确认任务"
+        open={Boolean(confirmationTask)}
+        tasks={confirmationTask ? [confirmationTask] : []}
+        onTaskUpdated={(updated) => {
+          setDetailTask(updated)
+          onTaskUpdated(updated)
+        }}
+        onTasksCancelled={async ([taskId]) => {
+          try {
+            const updated = await getTask(taskId)
+            setDetailTask(updated)
+            onTaskUpdated(updated)
+          } catch (err) {
+            setDetailError(err instanceof Error ? err.message : "任务已取消，请刷新任务列表")
+          }
+        }}
+        onClose={() => setConfirmationTask(null)}
+      />
     </div>
   )
 }
@@ -1170,6 +1136,7 @@ function TaskDetailModal({
   loading,
   error,
   onTaskUpdated,
+  onContinueConfirmation,
   onOpenHumanWorkbench,
   onClose,
 }: {
@@ -1177,12 +1144,15 @@ function TaskDetailModal({
   loading: boolean
   error: string
   onTaskUpdated: (task: Task) => void
+  onContinueConfirmation: () => void
   onOpenHumanWorkbench: () => void
   onClose: () => void
 }) {
   const attachments = taskAttachments(task)
   const typeBadge = taskDetailTypeBadge(task)
   const summaryBlocks = taskDetailSummaryBlocks(task)
+  const fourQuestions = taskFourQuestions(task)
+  const workflowDefinition = workflowDefinitionForTask(task)
 
   return (
     <Modal
@@ -1192,6 +1162,18 @@ function TaskDetailModal({
             <Typography.Text strong ellipsis>{taskTitle(task)}</Typography.Text>
           </Tooltip>
           <Tag color={typeBadge.color}>{typeBadge.text}</Tag>
+          {isTaskAwaitingConfirmation(task) && (
+            <Button
+              size="small"
+              type="primary"
+              aria-label="继续确认任务"
+              icon={<ClipboardCheck size={15} />}
+              onClick={onContinueConfirmation}
+            >
+              继续确认
+            </Button>
+          )}
+          <TaskRerunControl key={task.id} task={task} onTaskUpdated={onTaskUpdated} />
         </div>
       }
       open
@@ -1211,9 +1193,10 @@ function TaskDetailModal({
       className="task-detail-modal"
     >
         <div className="task-detail-body">
+          <TaskFourQuestionGrid questions={fourQuestions} />
           <div className="task-detail-summary">
-            {loading && <AntAlert type="info" showIcon message="正在加载最新详情" />}
-            {error && <AntAlert type="error" showIcon message={error} />}
+            {loading && <AntAlert type="info" showIcon title="正在加载最新详情" />}
+            {error && <AntAlert type="error" showIcon title={error} />}
             {summaryBlocks.map((block) => (
               <section className="detail-text-block" key={block.key}>
                 <h4>{block.title}</h4>
@@ -1222,13 +1205,14 @@ function TaskDetailModal({
             ))}
           </div>
           <TaskResultDetail task={task} />
+          <ExecutionHistory key={task.id} task={task} />
           <TaskInterventionPanel task={task} onTaskUpdated={onTaskUpdated} />
           {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
           {isManualWorkflowTask(task) ? (
             <section className="execution-section">
               <h4>手动编排流程</h4>
-              {task.request_metadata?.workflow_definition ? (
-                <ManualWorkflowDetail task={task} definition={task.request_metadata.workflow_definition} />
+              {workflowDefinition ? (
+                <ManualWorkflowDetail task={task} definition={workflowDefinition} />
               ) : (
                 <EmptyState text="暂无手动编排流程" />
               )}
@@ -1251,32 +1235,357 @@ function TaskDetailModal({
   )
 }
 
+function TaskFourQuestionGrid({
+  questions,
+}: {
+  questions: ReturnType<typeof taskFourQuestions>
+}) {
+  return (
+    <section className="task-four-questions" aria-label="任务四个核心问题">
+      {questions.map((question) => (
+        <div className="task-four-question" key={question.key}>
+          <span>{question.title}</span>
+          <strong>{question.text}</strong>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function TaskRerunControl({
+  task,
+  onTaskUpdated,
+}: {
+  task: Task
+  onTaskUpdated: (task: Task) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [preflight, setPreflight] = useState<TaskRerunPreflightResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [reason, setReason] = useState("")
+  const [executionMode, setExecutionMode] = useState<"sync" | "async">("async")
+  const [confirmSideEffects, setConfirmSideEffects] = useState(false)
+  const [pendingRequest, setPendingRequest] = useState<PendingTaskRerunRequest | null>(
+    () => loadPendingTaskRerun(task.id),
+  )
+  const [error, setError] = useState("")
+  const [outcome, setOutcome] = useState("")
+  const sourceExecutionId = task.active_execution_id || ""
+  const canRerun = isTerminalTask(task) && Boolean(sourceExecutionId)
+  const canOpenRerun = canRerun || Boolean(pendingRequest)
+
+  useEffect(() => {
+    const restored = loadPendingTaskRerun(task.id)
+    setPendingRequest(restored)
+    if (restored) applyPendingRequest(restored)
+  }, [task.id])
+
+  function applyPendingRequest(request: PendingTaskRerunRequest) {
+    setReason(request.payload.reason)
+    setExecutionMode(request.payload.execution_mode || "sync")
+    setConfirmSideEffects(Boolean(request.payload.confirm_side_effects))
+  }
+
+  async function loadPreflight(sourceId: string, preservePendingError = false) {
+    setLoading(true)
+    try {
+      setPreflight(await preflightTaskRerun(task.id, {
+        source_execution_id: sourceId,
+      }))
+      if (!preservePendingError) setError("")
+    } catch (err) {
+      setError(readableRerunError(err, "重跑预检失败"))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function openRerun() {
+    const restored = loadPendingTaskRerun(task.id) || pendingRequest
+    if (!sourceExecutionId && !restored) return
+    setOpen(true)
+    setPreflight(null)
+    setError("")
+    setOutcome("")
+    if (restored) {
+      setPendingRequest(restored)
+      applyPendingRequest(restored)
+      await loadPreflight(restored.payload.source_execution_id, true)
+      return
+    }
+    setReason("")
+    setExecutionMode("async")
+    setConfirmSideEffects(false)
+    await loadPreflight(sourceExecutionId)
+  }
+
+  async function submitRerun() {
+    if (submitting) return
+    let request = pendingRequest || loadPendingTaskRerun(task.id)
+    if (!request) {
+      const trimmedReason = reason.trim()
+      if (!trimmedReason) {
+        setError("请填写重跑理由")
+        return
+      }
+      if (!preflight?.allowed) {
+        setError("当前任务未通过重跑预检")
+        return
+      }
+      if (preflight.requires_side_effect_confirmation && !confirmSideEffects) {
+        setError("请确认重跑可能重复触发外部副作用")
+        return
+      }
+      try {
+        request = ensurePendingTaskRerun(task.id, {
+          source_execution_id: preflight.source_execution_id,
+          reason: trimmedReason,
+          execution_mode: executionMode,
+          confirm_side_effects: confirmSideEffects,
+        })
+        setPendingRequest(request)
+        applyPendingRequest(request)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "无法保存待确认的重跑请求")
+        return
+      }
+    }
+    setSubmitting(true)
+    setError("")
+    try {
+      const response = await createTaskRerun(
+        task.id,
+        request.payload,
+        request.idempotencyKey,
+      )
+      clearPendingTaskRerun(task.id)
+      setPendingRequest(null)
+      onTaskUpdated(response.task)
+      setOutcome([
+        response.replayed ? "请求命中幂等回放" : `已创建第 ${response.execution.attempt_no} 次执行`,
+        response.execution_is_active ? "该执行当前有效" : "该执行已不是当前活动执行",
+        response.scheduled ? "已进入后台调度" : "请求已处理",
+      ].join("；"))
+    } catch (err) {
+      setError(readableRerunError(err, "重跑创建失败"))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function discardPendingRequest() {
+    clearPendingTaskRerun(task.id)
+    setPendingRequest(null)
+    setPreflight(null)
+    setReason("")
+    setExecutionMode("async")
+    setConfirmSideEffects(false)
+    setError("")
+    setOutcome("")
+    if (canRerun && sourceExecutionId) {
+      await loadPreflight(sourceExecutionId)
+    } else {
+      setOpen(false)
+    }
+  }
+
+  if (!canOpenRerun && !open) return null
+
+  return (
+    <>
+      {canOpenRerun && (
+        <Tooltip title={pendingRequest ? "确认上一次重跑请求的提交结果" : "基于当前执行创建一次重跑"}>
+          <Button
+            size="small"
+            type="text"
+            aria-label={pendingRequest ? "确认上一次重跑请求的提交结果" : "重跑任务"}
+            icon={<RotateCcw size={15} />}
+            onClick={() => void openRerun()}
+          >
+            {pendingRequest ? "待确认" : "重跑"}
+          </Button>
+        </Tooltip>
+      )}
+      <Modal
+        title="重跑任务"
+        open={open}
+        width={680}
+        onCancel={() => setOpen(false)}
+        mask={{ closable: false }}
+        footer={[
+          <Button key="close" onClick={() => setOpen(false)} disabled={submitting}>关闭</Button>,
+          <Button
+            key="submit"
+            type="primary"
+            icon={<RotateCcw size={15} />}
+            loading={submitting}
+            disabled={
+              Boolean(outcome)
+              || (!pendingRequest && loading)
+              || !canSubmitTaskRerun({
+                pendingRequest,
+                preflightAllowed: Boolean(preflight?.allowed),
+                reason,
+                requiresSideEffectConfirmation: Boolean(preflight?.requires_side_effect_confirmation),
+                confirmSideEffects,
+              })
+            }
+            onClick={() => void submitRerun()}
+          >
+            {pendingRequest ? "确认提交结果" : "确认重跑"}
+          </Button>,
+        ]}
+        className="task-rerun-modal"
+      >
+        {shouldBlockTaskRerunFormForPreflight(loading, pendingRequest) ? (
+          <div className="rerun-loading">
+            <Spin />
+            <span>正在检查重跑条件</span>
+          </div>
+        ) : (
+          <div className="rerun-form">
+            {error && <AntAlert type="error" showIcon title={error} />}
+            {outcome && <AntAlert type="success" showIcon title={outcome} />}
+            {pendingRequest && !outcome && (
+              <AntAlert
+                type="warning"
+                showIcon
+                title="存在待确认的重跑请求"
+                description="上次提交结果尚未确认。系统将复用原幂等键和原请求参数，输入已锁定。"
+                action={(
+                  <Popconfirm
+                    title="放弃待确认请求？"
+                    description="原请求可能已经执行；放弃后再次重跑可能重复触发外部操作。"
+                    onConfirm={() => void discardPendingRequest()}
+                  >
+                    <Button size="small" danger>放弃请求</Button>
+                  </Popconfirm>
+                )}
+              />
+            )}
+            {preflight && (
+              <>
+                <div className="rerun-summary">
+                  <div><span>下一次执行</span><strong>第 {preflight.next_attempt_no} 次</strong></div>
+                  <div><span>依赖状态</span><strong>{preflight.will_wait_for_dependencies ? "等待依赖" : "已满足"}</strong></div>
+                  <div><span>起始节点</span><strong>{preflight.start_node}</strong></div>
+                </div>
+                {!!preflight.issues.length && (
+                  <section className="rerun-issues">
+                    <h4>当前不可重跑</h4>
+                    <ul>
+                      {preflight.issues.map((issue) => (
+                        <li key={issue.code}><code>{issue.code}</code><span>{issue.message}</span></li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {!!preflight.side_effects.length && (
+                  <section className="rerun-side-effects">
+                    <h4>可能重复触发的外部操作</h4>
+                    <div className="rerun-side-effect-list">
+                      {preflight.side_effects.map((effect) => (
+                        <div key={effect.tool_execution_id || `${effect.subtask_id}-${effect.tool_name}`}>
+                          <strong>{effect.tool_name}</strong>
+                          <span>{effect.tool_type} · {effect.success ? "上次成功" : "上次失败"}</span>
+                          <small>参数字段：{effect.argument_keys.join("、") || "无"}</small>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
+            <label className="field">
+              <span>重跑理由</span>
+              <Input.TextArea
+                rows={3}
+                value={reason}
+                maxLength={300}
+                showCount
+                disabled={Boolean(outcome || pendingRequest)}
+                onChange={(event) => {
+                  setReason(event.target.value)
+                  setError("")
+                }}
+              />
+            </label>
+            <div className="rerun-mode-field">
+              <span>执行方式</span>
+              <Segmented
+                value={executionMode}
+                options={[
+                  { label: "后台执行", value: "async" },
+                  { label: "同步等待", value: "sync" },
+                ]}
+                disabled={Boolean(outcome || pendingRequest)}
+                onChange={(value) => setExecutionMode(value as "sync" | "async")}
+              />
+            </div>
+            {preflight?.requires_side_effect_confirmation && (
+              <Checkbox
+                checked={confirmSideEffects}
+                disabled={Boolean(outcome || pendingRequest)}
+                onChange={(event) => {
+                  setConfirmSideEffects(event.target.checked)
+                  setError("")
+                }}
+              >
+                我已确认重跑可能再次执行上述外部操作
+              </Checkbox>
+            )}
+          </div>
+        )}
+      </Modal>
+    </>
+  )
+}
+
+function readableRerunError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback
+  try {
+    const detail = JSON.parse(message)
+    if (Array.isArray(detail?.issues)) {
+      return detail.issues
+        .map((issue: { code?: string; message?: string }) => issue.message || issue.code)
+        .filter(Boolean)
+        .join("；") || fallback
+    }
+  } catch {
+    return message
+  }
+  return message
+}
+
 function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpdated: (task: Task) => void }) {
   const [output, setOutput] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
   const needsIntervention = taskStatus(task) === "running" && task.current_node === "human_intervention"
+  const intervention = taskInterventionView(task)
 
   useEffect(() => {
-    if (needsIntervention) setOutput(task.final_output || "")
-  }, [needsIntervention, task.id, task.final_output])
+    if (needsIntervention) {
+      setOutput(intervention.awaitingAcceptance ? "" : task.final_output || "")
+    }
+  }, [needsIntervention, intervention.awaitingAcceptance, task.id, task.final_output])
 
   if (!needsIntervention) return null
 
   async function submit() {
     const value = output.trim()
-    if (!value) {
+    if (intervention.requiresOutput && !value) {
       setError("请填写处理结论")
       return
     }
     setSubmitting(true)
     setError("")
     try {
-      const updated = await submitTaskResult(task.id, {
-        result_status: "succeeded",
-        output: value,
-        should_complete: true,
-      })
+      const updated = await submitTaskResult(
+        task.id,
+        buildTaskInterventionResultPayload(task, value),
+      )
       onTaskUpdated(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交处理结果失败")
@@ -1290,21 +1599,28 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
       <header>
         <div>
           <ShieldCheck size={18} />
-          <h4>人工介入处理</h4>
+          <h4>{intervention.title}</h4>
         </div>
-        <Tag color="orange">待处理</Tag>
+        <Tag color="orange">{intervention.awaitingAcceptance ? "待验收" : "待处理"}</Tag>
       </header>
-      <p>流程当前无法自动继续。请补充最终处理结论，提交后任务会进入完成状态并沉淀到产出成果。</p>
+      <p>{intervention.description}</p>
+      <span className="task-intervention-label">{intervention.inputLabel}</span>
       <Input.TextArea
         rows={4}
         value={output}
         onChange={(event) => setOutput(event.target.value)}
-        placeholder="填写最终结论、处理结果或后续说明"
+        placeholder={intervention.placeholder}
       />
-      {error && <AntAlert type="error" showIcon message={error} />}
+      {error && <AntAlert type="error" showIcon title={error} />}
       <div className="form-actions">
-        <Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => void submit()} loading={submitting}>
-          完成任务
+        <Button
+          type="primary"
+          icon={<CheckCircle2 size={16} />}
+          onClick={() => void submit()}
+          loading={submitting}
+          disabled={intervention.requiresOutput && !output.trim()}
+        >
+          {intervention.submitText}
         </Button>
       </div>
     </section>
@@ -1313,7 +1629,8 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
 
 function TaskResultDetail({ task }: { task: Task }) {
   const resultText = taskResultText(task)
-  const artifacts = (task.context?.artifacts || []).map(displayValue).filter(Boolean)
+  const artifacts = taskArtifactViews(task)
+  const deliverableResults = taskDeliverableResultViews(task)
   return (
     <section className="task-result-detail">
       <header>
@@ -1328,15 +1645,182 @@ function TaskResultDetail({ task }: { task: Task }) {
       <div className={resultText ? "task-result-text" : "task-result-text empty"}>
         {resultText || "任务还没有形成最终成果，执行中的节点输出会先沉淀到下方上下文。"}
       </div>
-      {!!artifacts.length && (
-        <div className="task-result-artifacts">
-          {artifacts.map((artifact, index) => (
-            <Tag key={`${artifact}-${index}`} color="geekblue">{artifact}</Tag>
-          ))}
+      {!!deliverableResults.length && (
+        <div className="task-deliverable-list">
+          {deliverableResults.map((result) => {
+            const requirement = task.contract?.deliverable_requirements.find(
+              (item) => item.id === result.requirementId,
+            )
+            return (
+              <div className="task-deliverable-item" key={result.requirementId}>
+                <div>
+                  <strong>{requirement?.description || result.requirementId}</strong>
+                  <span>{result.reason || "暂无判定说明"}</span>
+                </div>
+                <Tag color={criterionStatusColor(result.status)}>{criterionStatusText(result.status)}</Tag>
+                {!!result.artifactIds.length && (
+                  <small>关联产物：{result.artifactIds.join("、")}</small>
+                )}
+              </div>
+            )
+          })}
         </div>
+      )}
+      {!!artifacts.length && <ArtifactOutputList artifacts={artifacts} />}
+    </section>
+  )
+}
+
+function ArtifactOutputList({
+  artifacts,
+}: {
+  artifacts: ReturnType<typeof taskArtifactViews>
+}) {
+  return (
+    <div className="task-artifact-list">
+      {artifacts.map((artifact) => {
+        const clickableUri = taskArtifactClickableUri(artifact)
+        return (
+          <div className="task-artifact-item" key={artifact.id}>
+            <div className="task-artifact-heading">
+              <strong>{artifact.name || artifact.id}</strong>
+              <span>
+                <Tag>{artifactKindText(artifact.kind)}</Tag>
+                <Tag color={artifactValidationColor(artifact.validationStatus)}>
+                  {artifactValidationText(artifact.validationStatus)}
+                </Tag>
+              </span>
+            </div>
+            {clickableUri ? (
+              <a href={clickableUri} target="_blank" rel="noreferrer">{artifact.uri}</a>
+            ) : artifact.uri ? (
+              <span className="task-artifact-uri">{artifact.uri}</span>
+            ) : (
+              <p>{artifact.contentPreview || "暂无文本预览"}</p>
+            )}
+            {artifact.validationReason && <small>{artifact.validationReason}</small>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ExecutionHistory({ task }: { task: Task }) {
+  const executions = taskExecutionHistory(task)
+  const activeExecutionId = executions.find((execution) => execution.isActive)?.id || ""
+  const [activeKeys, setActiveKeys] = useState<string[]>(
+    () => executionHistoryActiveKeys([], activeExecutionId),
+  )
+
+  useEffect(() => {
+    setActiveKeys((current) => executionHistoryActiveKeys(current, activeExecutionId))
+  }, [activeExecutionId])
+
+  return (
+    <section className="task-execution-history">
+      <header>
+        <div>
+          <RefreshCw size={18} />
+          <h4>执行历史</h4>
+        </div>
+        <Tag>{executions.length} 次</Tag>
+      </header>
+      {executions.length ? (
+        <Collapse
+          ghost
+          activeKey={activeKeys}
+          onChange={(keys) => setActiveKeys((Array.isArray(keys) ? keys : [keys]).map(String))}
+          items={executions.map((execution) => ({
+            key: execution.id,
+            label: (
+              <div className="execution-history-label">
+                <strong>第 {execution.attemptNo} 次</strong>
+                <Tag color={execution.trigger === "rerun" ? "purple" : "blue"}>
+                  {execution.trigger === "rerun" ? "重跑" : "初次执行"}
+                </Tag>
+                <Tag color={statusColor(execution.status)}>{statusText(execution.status)}</Tag>
+                {execution.isActive && <Tag color="cyan">当前</Tag>}
+                <span>{execution.actor} · {formatDate(execution.time.createdAt)}</span>
+              </div>
+            ),
+            children: (
+              <div className="execution-history-detail">
+                <dl>
+                  <div><dt>触发原因</dt><dd>{execution.triggerReason || "-"}</dd></div>
+                  <div><dt>结束依据</dt><dd>{execution.status === "running" ? "尚未结束" : execution.reason || "-"}</dd></div>
+                  <div><dt>开始时间</dt><dd>{formatDate(execution.time.startedAt || "")}</dd></div>
+                  <div><dt>结束时间</dt><dd>{formatDate(execution.time.finishedAt || "")}</dd></div>
+                </dl>
+                {execution.report && (
+                  <section className="execution-report-detail">
+                    <h5>完成报告</h5>
+                    <p>{execution.report.completionReason || "未记录完成原因"}</p>
+                    {execution.report.evidenceSummary && <small>{execution.report.evidenceSummary}</small>}
+                    <div className="execution-report-meta">
+                      <span>人工验收：{taskHumanAcceptanceText(execution.report)}</span>
+                      <span>
+                        判定人：{execution.report.decidedById || execution.report.decidedByType || "-"}
+                      </span>
+                      <span>判定时间：{formatDate(execution.report.decidedAt)}</span>
+                    </div>
+                    {!!execution.report.criterionResults.length && (
+                      <ul className="criterion-result-list">
+                        {execution.report.criterionResults.map((result) => (
+                          <li key={result.criterionId}>
+                            <strong>{result.criterionId}</strong>
+                            <span>{criterionStatusText(result.status)}</span>
+                            {!!result.evidenceArtifactIds.length && (
+                              <small>证据产物：{result.evidenceArtifactIds.join("、")}</small>
+                            )}
+                            {result.evidenceText && <small>证据说明：{result.evidenceText}</small>}
+                            {result.reason && <small>判定原因：{result.reason}</small>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {!!execution.report.deliverableResults.length && (
+                      <ul>
+                        {execution.report.deliverableResults.map((result) => (
+                          <li key={result.requirementId}>
+                            <strong>{result.requirementId}</strong>
+                            <span>{criterionStatusText(result.status)}{result.reason ? ` · ${result.reason}` : ""}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                )}
+                {!!execution.artifacts.length && <ArtifactOutputList artifacts={execution.artifacts} />}
+              </div>
+            ),
+          }))}
+        />
+      ) : (
+        <EmptyState text="暂无执行历史" />
       )}
     </section>
   )
+}
+
+function criterionStatusText(status: string) {
+  return { passed: "通过", failed: "未通过", pending: "待确认" }[status] || status
+}
+
+function criterionStatusColor(status: string) {
+  return { passed: "green", failed: "red", pending: "gold" }[status] || "default"
+}
+
+function artifactKindText(kind: string) {
+  return { text: "文本", file: "文件", tool_result: "工具结果" }[kind] || kind
+}
+
+function artifactValidationText(status: string) {
+  return { valid: "有效", invalid: "无效", pending: "待校验" }[status] || status
+}
+
+function artifactValidationColor(status: string) {
+  return { valid: "green", invalid: "red", pending: "gold" }[status] || "default"
 }
 
 function TaskAttachmentDetail({ attachments }: { attachments: TaskAttachment[] }) {
@@ -1732,7 +2216,7 @@ function AgentsPage({
               className="agent-result"
               type={result.agent ? "success" : "warning"}
               showIcon
-              message={result.agent ? "节点已创建" : "节点未创建"}
+              title={result.agent ? "节点已创建" : "节点未创建"}
               description={
                 <>
                   {result.agent ? `${result.agent.name} 已作为${nodeTypeLabel(result.agent.agent_type)}保存` : result.message}
@@ -2017,7 +2501,19 @@ function Metric({ label, value, tone }: { label: string; value: string | number;
   )
 }
 
-function TaskTable({ tasks, compact, onSelect, selectedTaskId }: { tasks: Task[]; compact?: boolean; onSelect?: (id: string) => void; selectedTaskId?: string }) {
+function TaskTable({
+  tasks,
+  compact,
+  onSelect,
+  onContinueConfirmation,
+  selectedTaskId,
+}: {
+  tasks: Task[]
+  compact?: boolean
+  onSelect?: (id: string) => void
+  onContinueConfirmation?: (task: Task) => void
+  selectedTaskId?: string
+}) {
   const [page, setPage] = useState(1)
   const sortedTasks = useMemo(
     () =>
@@ -2077,8 +2573,22 @@ function TaskTable({ tasks, compact, onSelect, selectedTaskId }: { tasks: Task[]
     },
     ...(onSelect ? [{
       title: "操作",
-      width: 90,
-      render: (_: unknown, task: Task) => <Button size="small" onClick={() => onSelect(task.id)}>详情</Button>,
+      width: 190,
+      render: (_: unknown, task: Task) => (
+        <Space size={4}>
+          <Button size="small" onClick={() => onSelect(task.id)}>详情</Button>
+          {onContinueConfirmation && isTaskAwaitingConfirmation(task) && (
+            <Button
+              size="small"
+              type="primary"
+              icon={<ClipboardCheck size={14} />}
+              onClick={() => onContinueConfirmation(task)}
+            >
+              继续确认
+            </Button>
+          )}
+        </Space>
+      ),
     } as ColumnsType<Task>[number]] : []),
   ]
   return (

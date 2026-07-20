@@ -11,11 +11,43 @@ class TaskStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    BLOCKED = "blocked"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
+
+
+class CriterionResultStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    PENDING = "pending"
+
+
+class ArtifactKind(StrEnum):
+    TEXT = "text"
+    FILE = "file"
+    TOOL_RESULT = "tool_result"
+
+
+class ArtifactSourceType(StrEnum):
+    TASK_RESULT = "task_result"
+    SUBTASK_OUTPUT = "subtask_output"
+    TOOL_RESULT = "tool_result"
+
+
+class ArtifactValidationStatus(StrEnum):
+    VALID = "valid"
+    PENDING = "pending"
+    INVALID = "invalid"
 
 
 class TaskType(StrEnum):
     AUTO_PLANNING = "auto_planning"
     MANUAL_ORCHESTRATION = "manual_orchestration"
+
+
+class ExecutionTriggerType(StrEnum):
+    INITIAL = "initial"
+    RERUN = "rerun"
 
 
 class CurrentNode(StrEnum):

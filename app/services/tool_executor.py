@@ -8,42 +8,67 @@ from urllib import request
 
 import pymysql
 
-from app.core.models import Agent, AgentTool, ToolCall, ToolExecutionResult
+from app.core.models import Agent, AgentTool, ToolCall, ToolExecutionResult, new_id
 
 
 class ToolExecutor:
     def execute(self, agent: Agent, tool_call: ToolCall) -> ToolExecutionResult:
         tool = self._find_tool(agent, tool_call.tool_name)
         if tool is None:
-            return ToolExecutionResult(
+            return self._with_tool_type(ToolExecutionResult(
                 tool_name=tool_call.tool_name,
                 arguments=tool_call.arguments,
                 success=False,
                 error=f"Tool {tool_call.tool_name} is not registered for agent {agent.id}",
-            )
+            ), "", side_effect=False)
 
         if tool.type == "mock":
-            return ToolExecutionResult(
+            return self._with_tool_type(ToolExecutionResult(
                 tool_name=tool.name,
                 arguments=tool_call.arguments,
                 success=True,
                 result=tool.config.get("response", ""),
-            )
+            ), tool.type, side_effect=False)
         if tool.type == "http":
-            return self._execute_http(tool, tool_call)
+            method = tool.config.get("method", "GET").upper()
+            return self._with_tool_type(
+                self._execute_http(tool, tool_call),
+                tool.type,
+                side_effect=method not in {"GET", "HEAD"},
+            )
         if tool.type == "mysql":
-            return self._execute_mysql(tool, tool_call)
+            return self._with_tool_type(
+                self._execute_mysql(tool, tool_call), tool.type, side_effect=False
+            )
         if tool.type == "smtp_email":
-            return self._execute_smtp_email(tool, tool_call)
+            return self._with_tool_type(
+                self._execute_smtp_email(tool, tool_call), tool.type, side_effect=True
+            )
         if tool.type == "file_write":
-            return self._execute_file_write(tool, tool_call)
+            return self._with_tool_type(
+                self._execute_file_write(tool, tool_call), tool.type, side_effect=True
+            )
 
-        return ToolExecutionResult(
+        return self._with_tool_type(ToolExecutionResult(
             tool_name=tool.name,
             arguments=tool_call.arguments,
             success=False,
             error=f"Tool type {tool.type} is not executable",
-        )
+        ), tool.type, side_effect=False)
+
+    @staticmethod
+    def _with_tool_type(
+        result: ToolExecutionResult,
+        tool_type: str,
+        *,
+        side_effect: bool,
+    ) -> ToolExecutionResult:
+        result.tool_type = tool_type
+        result.side_effect = side_effect
+        result.side_effect_known = True
+        if not result.tool_execution_id:
+            result.tool_execution_id = new_id("tool_execution")
+        return result
 
     @staticmethod
     def _find_tool(agent: Agent, tool_name: str) -> AgentTool | None:

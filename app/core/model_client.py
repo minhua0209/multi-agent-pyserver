@@ -5,7 +5,20 @@ import os
 from typing import Any
 from urllib import request
 
-from app.core.models import Agent, RoundPlan, SubTask, Task, TaskDraft, ToolCall, ToolExecutionResult, new_id
+from app.core.enums import CriterionResultStatus
+from app.core.models import (
+    Agent,
+    Artifact,
+    CriterionResult,
+    DeliverableResult,
+    RoundPlan,
+    SubTask,
+    Task,
+    TaskDraft,
+    ToolCall,
+    ToolExecutionResult,
+    new_id,
+)
 
 
 DEFAULT_RESPONSES_API_URL = "http://192.168.18.94:30377/v1/responses"
@@ -134,6 +147,9 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"tasks": [{"draft_key": "stable_key", "title": "...", "description": "...", '
         '"confidence": 0.0, "depends_on": ["other_draft_key"], '
+        '"goal": "...", "deliverable_goal": "...", '
+        '"deliverable_requirements": ["..."], "success_criteria": ["..."], '
+        '"requires_human_acceptance": false, '
         '"suggested_assignee_type": "agent|human", "suggested_agent_id": "agent_id 或 null"}]}'
     )
     agents_payload = [
@@ -175,6 +191,11 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
                     confidence=float(item.get("confidence", 0.8)),
                     draft_key=_optional_string(item.get("draft_key")),
                     depends_on=_string_list(item.get("depends_on")),
+                    goal=_optional_string(item.get("goal")) or "",
+                    deliverable_goal=_optional_string(item.get("deliverable_goal")) or "",
+                    deliverable_requirements=_string_list(item.get("deliverable_requirements")),
+                    success_criteria=_string_list(item.get("success_criteria")),
+                    requires_human_acceptance=item.get("requires_human_acceptance") is True,
                     suggested_assignee_type=_normalize_assignee_type(item.get("suggested_assignee_type")),
                     suggested_agent_id=_valid_agent_id(item.get("suggested_agent_id"), agents),
                 )
@@ -424,6 +445,191 @@ def judge_completion_with_model(task: Task, execution_output: str) -> bool | Non
         return None
     complete = data.get("complete")
     return complete if isinstance(complete, bool) else None
+
+
+def evaluate_success_criteria_with_model(
+    task: Task,
+    execution_output: str,
+) -> list[CriterionResult] | None:
+    if task.contract is None:
+        return []
+    system_prompt = (
+        "你是任务成功标准评估 agent。必须逐项判断执行结果是否满足给定成功标准。"
+        "不能遗漏标准，也不能仅因为有输出就判定通过。只返回 JSON，不要返回 Markdown。"
+        '格式: {"criterion_results": [{"criterion_id": "...", '
+        '"status": "passed|failed|pending", "evidence_text": "...", "reason": "..."}]}'
+    )
+    user_prompt = json.dumps(
+        {
+            "task": {
+                "id": task.id,
+                "goal": task.contract.goal,
+                "deliverable_goal": task.contract.deliverable_goal,
+            },
+            "success_criteria": [
+                criterion.model_dump(mode="json") for criterion in task.contract.success_criteria
+            ],
+            "execution_output": execution_output,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        data = _loads_json(default_client.create(system_prompt, user_prompt))
+    except Exception:
+        return None
+    raw_results = data.get("criterion_results")
+    if not isinstance(raw_results, list):
+        return None
+
+    criteria = task.contract.success_criteria
+    expected_ids = {criterion.id for criterion in criteria}
+    known_result_ids = [
+        str(item.get("criterion_id") or "").strip()
+        for item in raw_results
+        if isinstance(item, dict)
+        and str(item.get("criterion_id") or "").strip() in expected_ids
+    ]
+    if len(known_result_ids) != len(set(known_result_ids)):
+        return [
+            CriterionResult(
+                criterion_id=criterion.id,
+                status=CriterionResultStatus.PENDING,
+                reason="Model evaluation contains duplicate criterion IDs",
+            )
+            for criterion in criteria
+        ]
+
+    results_by_id: dict[str, CriterionResult] = {}
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        criterion_id = str(item.get("criterion_id") or "").strip()
+        if criterion_id not in expected_ids:
+            continue
+        try:
+            results_by_id[criterion_id] = CriterionResult(
+                criterion_id=criterion_id,
+                status=CriterionResultStatus(str(item.get("status") or "pending")),
+                evidence_artifact_ids=_string_list(item.get("evidence_artifact_ids")),
+                evidence_text=str(item.get("evidence_text") or "").strip(),
+                reason=str(item.get("reason") or "").strip(),
+            )
+        except (TypeError, ValueError):
+            continue
+    return [
+        results_by_id.get(criterion.id)
+        or CriterionResult(
+            criterion_id=criterion.id,
+            status=CriterionResultStatus.PENDING,
+            reason="Model evaluation did not return this criterion",
+        )
+        for criterion in criteria
+    ]
+
+
+def evaluate_deliverable_requirements_with_model(
+    task: Task,
+    selected_artifacts: list[Artifact],
+) -> list[DeliverableResult] | None:
+    if task.contract is None or not task.contract.deliverable_requirements:
+        return []
+    requirements = task.contract.deliverable_requirements
+    selected_artifact_ids = {artifact.id for artifact in selected_artifacts}
+    system_prompt = (
+        "你是任务交付物评估 agent。必须逐项判断选中的交付物是否满足交付要求。"
+        "只能引用输入中 selected_artifacts 的 artifact_id，不能遗漏要求。"
+        "只返回 JSON，不要返回 Markdown。"
+        '格式: {"deliverable_results": [{"requirement_id": "...", '
+        '"status": "passed|failed|pending", "artifact_ids": ["..."], "reason": "..."}]}'
+    )
+    user_prompt = json.dumps(
+        {
+            "task": {
+                "id": task.id,
+                "goal": task.contract.goal,
+                "deliverable_goal": task.contract.deliverable_goal,
+            },
+            "deliverable_requirements": [
+                requirement.model_dump(mode="json") for requirement in requirements
+            ],
+            "selected_artifacts": [
+                {
+                    "artifact_id": artifact.id,
+                    "kind": artifact.kind.value,
+                    "name": artifact.name,
+                    "content": artifact.content,
+                    "uri": artifact.uri,
+                    "media_type": artifact.media_type,
+                    "metadata": artifact.metadata,
+                }
+                for artifact in selected_artifacts
+            ],
+        },
+        ensure_ascii=False,
+    )
+    try:
+        data = _loads_json(default_client.create(system_prompt, user_prompt))
+    except Exception:
+        return None
+    raw_results = data.get("deliverable_results")
+    if not isinstance(raw_results, list):
+        return None
+
+    expected_ids = {requirement.id for requirement in requirements}
+    known_result_ids = [
+        str(item.get("requirement_id") or "").strip()
+        for item in raw_results
+        if isinstance(item, dict)
+        and str(item.get("requirement_id") or "").strip() in expected_ids
+    ]
+    if len(known_result_ids) != len(set(known_result_ids)):
+        return [
+            DeliverableResult(
+                requirement_id=requirement.id,
+                status=CriterionResultStatus.PENDING,
+                reason="Model evaluation contains duplicate requirement IDs",
+            )
+            for requirement in requirements
+        ]
+
+    results_by_id: dict[str, DeliverableResult] = {}
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        requirement_id = str(item.get("requirement_id") or "").strip()
+        if requirement_id not in expected_ids:
+            continue
+        artifact_ids = _string_list(item.get("artifact_ids"))
+        try:
+            status = CriterionResultStatus(str(item.get("status") or "pending"))
+        except ValueError:
+            status = CriterionResultStatus.PENDING
+        reason = str(item.get("reason") or "").strip()
+        if any(artifact_id not in selected_artifact_ids for artifact_id in artifact_ids):
+            status = CriterionResultStatus.PENDING
+            artifact_ids = []
+            reason = "Deliverable result references artifacts outside the selected set"
+        elif status == CriterionResultStatus.PASSED and not artifact_ids:
+            status = CriterionResultStatus.PENDING
+            reason = "Passed deliverable result must reference selected artifacts"
+        try:
+            results_by_id[requirement_id] = DeliverableResult(
+                requirement_id=requirement_id,
+                status=status,
+                artifact_ids=artifact_ids,
+                reason=reason,
+            )
+        except (TypeError, ValueError):
+            continue
+    return [
+        results_by_id.get(requirement.id)
+        or DeliverableResult(
+            requirement_id=requirement.id,
+            status=CriterionResultStatus.PENDING,
+            reason="Model evaluation did not return this requirement",
+        )
+        for requirement in requirements
+    ]
 
 
 def _loads_json(text: str) -> dict[str, Any]:
