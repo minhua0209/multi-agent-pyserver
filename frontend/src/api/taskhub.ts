@@ -140,6 +140,8 @@ export interface CompletionReport {
   artifact_ids: string[]
   workflow_end_node_id: string | null
   human_accepted: boolean
+  awaiting_human_decision?: boolean
+  automatic_gaps?: string[]
   decided_by_type: string
   decided_by_id: string
   decided_at: string

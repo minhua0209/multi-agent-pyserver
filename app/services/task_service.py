@@ -198,6 +198,7 @@ class TaskService:
             task.request_metadata = self._metadata_with_default_human_assignee(task.request_metadata, payload)
             if self._is_workflow_template_task(task):
                 task.context.summary = self._workflow_initial_context_summary(task)
+            task.initial_context = task.context.model_copy(deep=True)
             dependencies_satisfied = self._dependencies_satisfied(task)
             task.current_node = (
                 CurrentNode.DISPATCH_DECISION if dependencies_satisfied else CurrentNode.WAITING_DEPENDENCIES
@@ -302,13 +303,26 @@ class TaskService:
             execution = self._runnable_execution(task, expected_execution_id)
             if (
                 execution is None
-                or execution.started_at is not None
                 or not self._dependencies_satisfied(task)
             ):
                 return None
-            execution.started_at = utc_now()
+            if execution.started_at is None:
+                execution.started_at = utc_now()
+            elif self._started_execution_can_resume_after_human_round(task):
+                task.current_node = CurrentNode.DISPATCH_DECISION
+            else:
+                return None
             saved = self._save(task)
             return saved, execution.id
+
+    @staticmethod
+    def _started_execution_can_resume_after_human_round(task: Task) -> bool:
+        if task.current_node != CurrentNode.CONTEXT_UPDATE or not task.context.rounds:
+            return False
+        latest_round = max(task.context.rounds, key=lambda item: item.round_index)
+        return any(subtask.assignee_type == "human" for subtask in latest_round.subtasks) and all(
+            subtask.status != TaskStatus.RUNNING for subtask in latest_round.subtasks
+        )
 
     def _runnable_execution(
         self,
@@ -343,19 +357,27 @@ class TaskService:
                 raise TaskResultNotAllowedError(task_id)
             candidate_status = self._task_status_from_result(payload.result_status)
             human_accepted = payload.metadata.get("human_accepted") is True
-            pending_acceptance = self._pending_human_acceptance_report(task)
-            if human_accepted and (
-                candidate_status != TaskStatus.SUCCEEDED
-                or not payload.should_complete
-                or pending_acceptance is None
-            ):
-                raise HumanAcceptanceNotPendingError(task_id)
-            if (
-                not human_accepted
-                and candidate_status == TaskStatus.SUCCEEDED
-                and pending_acceptance is not None
-            ):
-                raise HumanAcceptanceNotPendingError(task_id)
+            pending_review = self._pending_human_review_report(task)
+            pending_adjudication = bool(
+                pending_review is not None and pending_review.awaiting_human_decision
+            )
+            if pending_adjudication:
+                if candidate_status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED} or not payload.should_complete:
+                    raise HumanAcceptanceNotPendingError(task_id)
+                human_accepted = candidate_status == TaskStatus.SUCCEEDED
+            else:
+                if human_accepted and (
+                    candidate_status != TaskStatus.SUCCEEDED
+                    or not payload.should_complete
+                    or pending_review is None
+                ):
+                    raise HumanAcceptanceNotPendingError(task_id)
+                if (
+                    not human_accepted
+                    and candidate_status == TaskStatus.SUCCEEDED
+                    and pending_review is not None
+                ):
+                    raise HumanAcceptanceNotPendingError(task_id)
             task.events.append(
                 self._event(
                     "execution_result_submitted",
@@ -365,7 +387,7 @@ class TaskService:
             if candidate_status != TaskStatus.SUCCEEDED or payload.should_complete:
                 result_output = (
                     task.final_output.strip()
-                    if pending_acceptance is not None
+                    if pending_review is not None
                     else payload.output.strip() or task.final_output.strip() or task.context.summary.strip()
                 )
                 if candidate_status != TaskStatus.SUCCEEDED and not result_output:
@@ -373,7 +395,7 @@ class TaskService:
                 reason = (
                     (payload.completion_reason or "").strip()
                     or str(payload.metadata.get("completion_reason") or "").strip()
-                    or (payload.output.strip() if pending_acceptance is not None else "")
+                    or (payload.output.strip() if pending_review is not None else "")
                     or f"Execution result reported {payload.result_status.value}"
                 )
                 report = self.completion_service.finalize(
@@ -382,25 +404,26 @@ class TaskService:
                     output=result_output,
                     reason=reason,
                     criterion_results=(
-                        pending_acceptance.criterion_results
-                        if pending_acceptance is not None
+                        pending_review.criterion_results
+                        if pending_review is not None
                         else payload.criterion_results
                     ),
                     artifact_ids=(
-                        pending_acceptance.artifact_ids
-                        if pending_acceptance is not None
+                        pending_review.artifact_ids
+                        if pending_review is not None
                         else payload.artifact_ids
                     ),
                     workflow_end_reached=bool(
-                        pending_acceptance is not None
-                        and pending_acceptance.workflow_end_node_id
+                        pending_review is not None
+                        and pending_review.workflow_end_node_id
                     ),
                     workflow_end_node_id=(
-                        pending_acceptance.workflow_end_node_id
-                        if pending_acceptance is not None
+                        pending_review.workflow_end_node_id
+                        if pending_review is not None
                         else None
                     ),
                     human_accepted=human_accepted,
+                    human_override=pending_adjudication,
                     decided_by_type="human" if current_user else "external_executor",
                     decided_by_id=current_user.id if current_user else "",
                 )
@@ -417,13 +440,22 @@ class TaskService:
         return saved
 
     def _pending_human_acceptance_report(self, task: Task):
+        report = self._pending_human_review_report(task)
+        if (
+            report is None
+            or report.awaiting_human_decision
+            or task.contract is None
+            or not task.contract.requires_human_acceptance
+        ):
+            return None
+        return report
+
+    def _pending_human_review_report(self, task: Task):
         report = task.completion_report
         active_execution = self.execution_service.active(task)
         if (
             task.task_status != TaskStatus.RUNNING
             or task.current_node != CurrentNode.HUMAN_INTERVENTION
-            or task.contract is None
-            or not task.contract.requires_human_acceptance
             or active_execution is None
             or active_execution.status != TaskStatus.RUNNING
             or active_execution.finished_at is not None
@@ -433,6 +465,10 @@ class TaskService:
             or report.human_accepted
             or report.decided_by_type != "system"
             or active_execution.completion_report != report
+        ):
+            return None
+        if not report.awaiting_human_decision and (
+            task.contract is None or not task.contract.requires_human_acceptance
         ):
             return None
         return report

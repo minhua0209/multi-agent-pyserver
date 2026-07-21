@@ -410,6 +410,8 @@ class CompletionReport(BaseModel):
     artifact_ids: list[str] = Field(default_factory=list)
     workflow_end_node_id: str | None = None
     human_accepted: bool = False
+    awaiting_human_decision: bool = False
+    automatic_gaps: list[str] = Field(default_factory=list)
     decided_by_type: str = "system"
     decided_by_id: str = ""
     decided_at: datetime

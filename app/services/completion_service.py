@@ -53,6 +53,7 @@ class CompletionService:
         workflow_end_reached: bool = False,
         workflow_end_node_id: str | None = None,
         human_accepted: bool = False,
+        human_override: bool = False,
         decided_by_type: str = "system",
         decided_by_id: str = "",
     ) -> CompletionReport:
@@ -116,31 +117,39 @@ class CompletionService:
         deliverable_results: list[DeliverableResult] = []
         gaps: list[str] = []
         awaiting_human_acceptance = False
+        awaiting_human_decision = False
 
         if candidate_status == TaskStatus.SUCCEEDED:
-            deliverable_results, selected_artifacts = self._evaluate_deliverables(
-                task,
-                selected_artifacts,
-            )
-            normalized_results, gaps = self._evaluate_success(
-                task,
-                normalized_output,
-                normalized_results,
-                deliverable_results,
-                selected_artifacts,
-                artifact_gaps,
-                workflow_end_reached,
-            )
+            if not human_override:
+                deliverable_results, selected_artifacts = self._evaluate_deliverables(
+                    task,
+                    selected_artifacts,
+                )
+                normalized_results, gaps = self._evaluate_success(
+                    task,
+                    normalized_output,
+                    normalized_results,
+                    deliverable_results,
+                    selected_artifacts,
+                    artifact_gaps,
+                    workflow_end_reached,
+                )
             if gaps:
                 if self._requires_human_acceptance(task, effective_human_acceptance):
                     gaps.append("human acceptance is required")
-                terminal_status = TaskStatus.BLOCKED
-                normalized_reason = f"Completion blocked: {'; '.join(gaps)}"
+                awaiting_human_decision = True
+                terminal_status = TaskStatus.RUNNING
+                normalized_reason = f"Awaiting human adjudication: {'; '.join(gaps)}"
             elif self._requires_human_acceptance(task, effective_human_acceptance):
                 awaiting_human_acceptance = True
                 terminal_status = TaskStatus.RUNNING
                 normalized_reason = "Awaiting required human acceptance"
                 gaps.append("human acceptance is required")
+        elif candidate_status == TaskStatus.BLOCKED:
+            awaiting_human_decision = True
+            terminal_status = TaskStatus.RUNNING
+            gaps.append(normalized_reason)
+            normalized_reason = f"Awaiting human adjudication: {normalized_reason}"
         elif candidate_status not in self._non_success_statuses:
             terminal_status = TaskStatus.BLOCKED
             gaps.append(f"unsupported terminal status: {candidate_status.value}")
@@ -157,6 +166,8 @@ class CompletionService:
             artifact_ids=[artifact.id for artifact in selected_artifacts],
             workflow_end_node_id=workflow_end_node_id if workflow_end_reached else None,
             human_accepted=effective_human_acceptance,
+            awaiting_human_decision=awaiting_human_decision,
+            automatic_gaps=list(gaps) if awaiting_human_decision else [],
             decided_by_type=decided_by_type,
             decided_by_id=decided_by_id,
             decided_at=utc_now(),
@@ -165,7 +176,7 @@ class CompletionService:
         task.task_status = terminal_status
         task.current_node = (
             CurrentNode.HUMAN_INTERVENTION
-            if awaiting_human_acceptance
+            if awaiting_human_acceptance or awaiting_human_decision
             else CurrentNode.COMPLETION_JUDGE
         )
         task.final_output = normalized_output

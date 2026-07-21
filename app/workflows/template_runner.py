@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.core.enums import CurrentNode, TaskStatus
-from app.core.models import RoundPlan, SubTask, Task, WorkflowNode, WorkflowTemplate, scoped_subtask_id
+from app.core.models import RoundPlan, SubTask, Task, WorkflowEdge, WorkflowNode, WorkflowTemplate, scoped_subtask_id
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry
@@ -114,7 +114,7 @@ class WorkflowTemplateRunner:
         message = f"Workflow {workflow.id} 没有可继续执行的节点，且未到达完成节点。待处理节点：{pending_text}"
         self.completion_service.finalize(
             task,
-            candidate_status=TaskStatus.BLOCKED,
+            candidate_status=TaskStatus.FAILED,
             output=message,
             reason=message,
             workflow_end_reached=False,
@@ -198,19 +198,72 @@ class WorkflowTemplateRunner:
         for edge in workflow.definition.edges:
             incoming.setdefault(edge.to_node, []).append(edge)
             outgoing.setdefault(edge.from_node, []).append(edge.to_node)
+        skipped_node_ids = WorkflowTemplateRunner._skipped_node_ids(
+            workflow,
+            node_map,
+            incoming,
+            completed_node_ids,
+            completed_subtasks,
+        )
 
         ready = []
         for node in workflow.definition.nodes:
-            if node.id in completed_node_ids or node.type == "start":
+            if node.id in completed_node_ids or node.id in skipped_node_ids or node.type == "start":
                 continue
             incoming_edges = incoming.get(node.id, [])
-            valid_incoming_edges = [edge for edge in incoming_edges if edge.from_node in node_map]
+            valid_incoming_edges = [
+                edge
+                for edge in incoming_edges
+                if edge.from_node in node_map and edge.from_node not in skipped_node_ids
+            ]
             if has_start_node and not valid_incoming_edges:
                 continue
             dependencies = [edge for edge in valid_incoming_edges if node_map[edge.from_node].type != "start"]
             if WorkflowTemplateRunner._dependencies_ready(dependencies, completed_node_ids, completed_subtasks):
                 ready.append(node)
         return ready
+
+    @staticmethod
+    def _skipped_node_ids(
+        workflow: WorkflowTemplate,
+        node_map: dict[str, WorkflowNode],
+        incoming: dict[str, list[WorkflowEdge]],
+        completed_node_ids: set[str],
+        completed_subtasks: dict[str, SubTask],
+    ) -> set[str]:
+        skipped: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for node in workflow.definition.nodes:
+                if node.type == "start" or node.id in completed_node_ids or node.id in skipped:
+                    continue
+                incoming_edges = [
+                    edge
+                    for edge in incoming.get(node.id, [])
+                    if edge.from_node in node_map and node_map[edge.from_node].type != "start"
+                ]
+                if not incoming_edges:
+                    continue
+                possible_edges = []
+                for edge in incoming_edges:
+                    if edge.from_node in skipped:
+                        continue
+                    if not edge.condition:
+                        possible_edges.append(edge)
+                        continue
+                    if edge.from_node not in completed_node_ids:
+                        possible_edges.append(edge)
+                        continue
+                    if WorkflowTemplateRunner._condition_matches(
+                        edge.condition,
+                        completed_subtasks.get(edge.from_node),
+                    ):
+                        possible_edges.append(edge)
+                if not possible_edges:
+                    skipped.add(node.id)
+                    changed = True
+        return skipped
 
     @staticmethod
     def _completed_subtasks_by_node_id(task: Task) -> dict[str, SubTask]:

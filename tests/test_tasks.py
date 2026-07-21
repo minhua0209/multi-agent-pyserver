@@ -1819,7 +1819,7 @@ def test_human_acceptance_rejects_pending_report_from_other_execution(
     assert service.get_task(task.id).model_dump(mode="json") == before
 
 
-@pytest.mark.parametrize("result_status", ["blocked", "partial"])
+@pytest.mark.parametrize("result_status", ["partial"])
 def test_task_level_result_preserves_non_success_terminal_status(tmp_path: Path, result_status: str) -> None:
     app = create_app(agent_file=tmp_path / "agents.json")
     client = TestClient(app)
@@ -1852,6 +1852,105 @@ def test_task_level_result_preserves_non_success_terminal_status(tmp_path: Path,
     assert task["task_status"] == result_status
     assert task["completion_report"]["terminal_status"] == result_status
     assert task["completion_report"]["completion_reason"] == f"External executor reported {result_status}"
+
+
+def test_task_level_blocked_result_waits_for_human_adjudication(tmp_path: Path) -> None:
+    app = create_app(agent_file=tmp_path / "agents.json")
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Task requiring external completion"},
+    ).json()["tasks"][0]
+    task = app.state.task_service.get_task(created["id"])
+    task.current_node = CurrentNode.HUMAN_INTERVENTION
+    task.contract = TaskContract(
+        goal="Complete external task",
+        deliverable_goal="External result",
+        success_criteria=[TaskContractItem(id="criterion_external", description="External result is available")],
+        confirmed_at=utc_now(),
+        legacy_inferred=True,
+    )
+    app.state.task_service.store.save(task)
+
+    response = client.post(
+        f"/api/v1/tasks/{created['id']}/result",
+        json={
+            "result_status": "blocked",
+            "output": "Only partial evidence is available",
+            "completion_reason": "External executor could not decide",
+        },
+    )
+
+    assert response.status_code == 200
+    pending = response.json()
+    assert pending["task_status"] == "running"
+    assert pending["current_node"] == "human_intervention"
+    assert pending["completion_report"]["terminal_status"] == "running"
+    assert pending["completion_report"]["awaiting_human_decision"] is True
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status"),
+    [("succeeded", "succeeded"), ("failed", "failed")],
+)
+def test_human_adjudication_finalizes_automatic_completion_gap(
+    tmp_path: Path,
+    decision: str,
+    expected_status: str,
+) -> None:
+    app = create_app(agent_file=tmp_path / "agents.json")
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Prepare delivery for adjudication"},
+    ).json()["tasks"][0]
+    service = app.state.task_service
+    task = service.get_task(created["id"])
+    task.contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Reviewable delivery",
+        success_criteria=[TaskContractItem(id="criterion_reviewable", description="Delivery is reviewable")],
+        confirmed_at=utc_now(),
+    )
+    task.current_node = CurrentNode.DISPATCH_DECISION
+    actor = app.state.user_registry.get_user("root")
+    execution = service.execution_service.create_initial(task, actor, CurrentNode.DISPATCH_DECISION)
+    execution.started_at = utc_now()
+    pending_report = service.completion_service.finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Delivery output requiring review",
+        reason="Automatic checks completed",
+        criterion_results=[
+            CriterionResult(
+                criterion_id="criterion_reviewable",
+                status=CriterionResultStatus.FAILED,
+                reason="Evidence is inconclusive",
+            )
+        ],
+    )
+    service.store.save(task)
+
+    assert pending_report.awaiting_human_decision is True
+    assert execution.finished_at is None
+
+    response = client.post(
+        f"/api/v1/tasks/{task.id}/result",
+        json={
+            "result_status": decision,
+            "output": "管理员确认最终结论",
+            "should_complete": True,
+            "metadata": {"human_adjudicated": True},
+        },
+    )
+
+    assert response.status_code == 200
+    adjudicated = response.json()
+    assert adjudicated["task_status"] == expected_status
+    assert adjudicated["current_node"] == "completion_judge"
+    assert adjudicated["completion_report"]["terminal_status"] == expected_status
+    assert adjudicated["completion_report"]["decided_by_type"] == "human"
+    assert adjudicated["executions"][0]["finished_at"] is not None
 
 
 def test_task_result_rejects_duplicate_criterion_ids(tmp_path: Path) -> None:
@@ -2160,7 +2259,9 @@ def test_manual_task_result_cannot_forge_workflow_end_metadata(tmp_path: Path) -
 
     assert response.status_code == 200
     result = response.json()
-    assert result["task_status"] == "blocked"
+    assert result["task_status"] == "running"
+    assert result["current_node"] == "human_intervention"
+    assert result["completion_report"]["awaiting_human_decision"] is True
     assert result["completion_report"]["workflow_end_node_id"] is None
     assert "workflow end was not reached" in result["completion_report"]["evidence_summary"]
 

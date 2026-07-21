@@ -95,7 +95,16 @@ import {
 import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
 import { PageId, canNavigateToPage, refreshTargetsForPage } from "./pageRefresh"
 import { initialPublishForm, validatePublishForm, validateWorkflowBuilderOpen } from "./publishForm"
-import { isManualWorkflowTask, taskNodeText, taskTypeText } from "./taskType"
+import {
+  isManualWorkflowTask,
+  isTaskRerunnable,
+  isTerminalTask,
+  taskNodeText,
+  taskStatus,
+  taskStatusColor,
+  taskStatusText,
+  taskTypeText,
+} from "./taskType"
 import { isTaskAwaitingConfirmation } from "./taskConfirmation"
 import { TaskConfirmationModal } from "./TaskConfirmationModal"
 import {
@@ -143,35 +152,9 @@ const navGroups = [
     items: [
       { id: "agents", text: "流程节点管理", icon: Bot, adminOnly: true },
       { id: "users", text: "用户管理", icon: Users, adminOnly: true },
-      { id: "audit", text: "审计记录", icon: FileText, adminOnly: true },
-      { id: "governance", text: "平台治理", icon: ShieldCheck, adminOnly: true },
     ],
   },
 ] as const
-
-function statusText(status?: string) {
-  const value = status || "running"
-  return {
-    running: "正在执行",
-    succeeded: "执行完成",
-    failed: "执行失败",
-    blocked: "执行阻塞",
-    partial: "部分完成",
-    cancelled: "已取消",
-  }[value] || value
-}
-
-function statusColor(status?: string) {
-  const value = status || "running"
-  return {
-    running: "processing",
-    succeeded: "success",
-    failed: "error",
-    blocked: "warning",
-    partial: "orange",
-    cancelled: "default",
-  }[value] || "default"
-}
 
 function toneColor(tone: string) {
   return { info: "#2563eb", success: "#16a34a", warning: "#d97706", danger: "#dc2626" }[tone] || "#2563eb"
@@ -183,14 +166,6 @@ function taskTitle(task: Task) {
 
 function taskDescription(task: Task) {
   return task.description || task.draft?.description || task.content || "-"
-}
-
-function taskStatus(task: Task) {
-  return task.task_status || task.status || "running"
-}
-
-function isTerminalTask(task: Task) {
-  return taskStatus(task) !== "running"
 }
 
 function taskAttachments(task: Task): TaskAttachment[] {
@@ -331,7 +306,7 @@ export default function App() {
       setUsers(nextUsers || [])
       setHumanSubtasks(nextHumanSubtasks || [])
       if (!selectedTaskId && nextTasks?.[0]) setSelectedTaskId(nextTasks[0].id)
-      if (nextCurrentUser.role !== "admin" && ["agents", "users", "audit", "governance"].includes(page)) {
+      if (nextCurrentUser.role !== "admin" && ["agents", "users"].includes(page)) {
         setPage("overview")
       }
     } catch (err) {
@@ -493,8 +468,6 @@ export default function App() {
           }} />}
           {page === "agents" && isAdmin && <AgentsPage agents={agents} users={assignableUsers} setAgents={setAgents} setToast={setToast} />}
           {page === "users" && isAdmin && <UsersPage users={users} setUsers={setUsers} setToast={setToast} />}
-          {page === "audit" && isAdmin && <AuditPage events={events} />}
-          {page === "governance" && isAdmin && <GovernancePage />}
           </Layout.Content>
         </Layout>
       </Layout>
@@ -927,7 +900,7 @@ function ConfirmationPage({
                 >
                   <span className="human-queue-card-head">
                     <span>{subtask.title || subtask.description || subtask.id}</span>
-                    <Tag color={statusColor(subtask.status)}>{statusText(subtask.status)}</Tag>
+                    <Tag color={taskStatusColor(subtask.status)}>{taskStatusText(subtask.status)}</Tag>
                   </span>
                   <span className="human-queue-task">{subtask.task_title || "未命名任务"}</span>
                   <span className="human-queue-meta">
@@ -946,7 +919,7 @@ function ConfirmationPage({
                 <p>{active.task_content || active.task_description || active.description || "暂无原始诉求"}</p>
               </div>
               <div className="human-review-status">
-                <Tag color={statusColor(active.status)}>{statusText(active.status)}</Tag>
+                <Tag color={taskStatusColor(active.status)}>{taskStatusText(active.status)}</Tag>
                 <Tag color="blue">{active.assignee_user_name || "管理员"}</Tag>
               </div>
             </div>
@@ -1068,6 +1041,7 @@ function TasksPage({
           tasks={tasks}
           onSelect={openDetail}
           onContinueConfirmation={setConfirmationTask}
+          onTaskUpdated={onTaskUpdated}
           selectedTaskId={detailTask?.id}
         />
       </Panel>
@@ -1257,7 +1231,7 @@ function TaskRerunControl({
   const [error, setError] = useState("")
   const [outcome, setOutcome] = useState("")
   const sourceExecutionId = task.active_execution_id || ""
-  const canRerun = isTerminalTask(task) && Boolean(sourceExecutionId)
+  const canRerun = isTaskRerunnable(task) && Boolean(sourceExecutionId)
   const canOpenRerun = canRerun || Boolean(pendingRequest)
 
   useEffect(() => {
@@ -1558,7 +1532,7 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
 
   if (!needsIntervention) return null
 
-  async function submit() {
+  async function submit(decision: "succeeded" | "failed" = "succeeded") {
     const value = output.trim()
     if (intervention.requiresOutput && !value) {
       setError("请填写处理结论")
@@ -1569,7 +1543,7 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
     try {
       const updated = await submitTaskResult(
         task.id,
-        buildTaskInterventionResultPayload(task, value),
+        buildTaskInterventionResultPayload(task, value, decision),
       )
       onTaskUpdated(updated)
     } catch (err) {
@@ -1586,7 +1560,9 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
           <ShieldCheck size={18} />
           <h4>{intervention.title}</h4>
         </div>
-        <Tag color="orange">{intervention.awaitingAcceptance ? "待验收" : "待处理"}</Tag>
+        <Tag color="orange">
+          {intervention.awaitingAdjudication ? "待裁决" : intervention.awaitingAcceptance ? "待验收" : "待处理"}
+        </Tag>
       </header>
       <p>{intervention.description}</p>
       <span className="task-intervention-label">{intervention.inputLabel}</span>
@@ -1601,12 +1577,22 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
         <Button
           type="primary"
           icon={<CheckCircle2 size={16} />}
-          onClick={() => void submit()}
+          onClick={() => void submit("succeeded")}
           loading={submitting}
           disabled={intervention.requiresOutput && !output.trim()}
         >
           {intervention.submitText}
         </Button>
+        {intervention.awaitingAdjudication && (
+          <Button
+            danger
+            icon={<XCircle size={16} />}
+            onClick={() => void submit("failed")}
+            disabled={submitting || !output.trim()}
+          >
+            判定失败
+          </Button>
+        )}
       </div>
     </section>
   )
@@ -1624,7 +1610,7 @@ function TaskResultDetail({ task }: { task: Task }) {
           <h4>产出成果</h4>
         </div>
         <Tag color={taskStatus(task) === "succeeded" ? "green" : taskStatus(task) === "failed" ? "red" : "blue"}>
-          {statusText(taskStatus(task))}
+          {taskStatusText(taskStatus(task))}
         </Tag>
       </header>
       <div className={resultText ? "task-result-text" : "task-result-text empty"}>
@@ -1724,7 +1710,7 @@ function ExecutionHistory({ task }: { task: Task }) {
                 <Tag color={execution.trigger === "rerun" ? "purple" : "blue"}>
                   {execution.trigger === "rerun" ? "重跑" : "初次执行"}
                 </Tag>
-                <Tag color={statusColor(execution.status)}>{statusText(execution.status)}</Tag>
+                <Tag color={taskStatusColor(execution.status)}>{taskStatusText(execution.status)}</Tag>
                 {execution.isActive && <Tag color="cyan">当前</Tag>}
                 <span>{execution.actor} · {formatDate(execution.time.createdAt)}</span>
               </div>
@@ -1872,7 +1858,7 @@ function TaskContextDetail({ task }: { task: Task }) {
                             <strong>{nodeView.title}</strong>
                             <span className="context-node-tags">
                               <Tag>{nodeView.typeText}</Tag>
-                              <Tag color={subtask.status === "succeeded" ? "green" : subtask.status === "failed" ? "red" : "blue"}>{statusText(subtask.status)}</Tag>
+                              <Tag color={subtask.status === "succeeded" ? "green" : subtask.status === "failed" ? "red" : "blue"}>{taskStatusText(subtask.status)}</Tag>
                             </span>
                           </span>
                           <span className="context-node-preview">{nodeView.preview}</span>
@@ -2034,7 +2020,7 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
                     <div className="subtask-node-title">{subtask.title || subtask.id}</div>
                     <div className="subtask-node-meta">
                       <span>{isHumanNode ? "人工节点" : "Agent节点"}</span>
-                      <span className={`status-pill ${subtask.status}`}>{statusText(subtask.status)}</span>
+                      <span className={`status-pill ${subtask.status}`}>{taskStatusText(subtask.status)}</span>
                     </div>
                     {subtask.output && <div className="subtask-node-output">{subtask.output}</div>}
                     {canOpenHumanWorkbench && <span className="subtask-node-action">点击处理</span>}
@@ -2486,30 +2472,6 @@ function userStatusLabel(status?: string) {
   return { active: "启用", disabled: "停用" }[status || "active"] || status || "启用"
 }
 
-function AuditPage({ events }: { events: Array<Record<string, unknown>> }) {
-  return (
-    <div className="page active">
-      <PageHeader title="审计记录" description="从任务事件中回放确认、分发、执行和闭环过程。" />
-      <Panel title="事件流">
-        <EventList events={events} />
-      </Panel>
-    </div>
-  )
-}
-
-function GovernancePage() {
-  return (
-    <div className="page active">
-      <PageHeader title="平台治理" description="规则、来源权限和紧急开关的产品 1.0 预留页面。" />
-      <div className="grid three">
-        <Metric label="运行模式" value="接口联调" tone="info" />
-        <Metric label="循环超限" value="10轮转人工" tone="warning" />
-        <Metric label="权限矩阵" value="预留" tone="info" />
-      </div>
-    </div>
-  )
-}
-
 function PageHeader({ title, description, children }: { title: string; description: string; children?: React.ReactNode }) {
   return (
     <div className="page-header">
@@ -2543,12 +2505,14 @@ function TaskTable({
   compact,
   onSelect,
   onContinueConfirmation,
+  onTaskUpdated,
   selectedTaskId,
 }: {
   tasks: Task[]
   compact?: boolean
   onSelect?: (id: string) => void
   onContinueConfirmation?: (task: Task) => void
+  onTaskUpdated?: (task: Task) => void
   selectedTaskId?: string
 }) {
   const [page, setPage] = useState(1)
@@ -2600,7 +2564,7 @@ function TaskTable({
     {
       title: "状态",
       width: 110,
-      render: (_, task) => <Tag color={statusColor(taskStatus(task))}>{statusText(taskStatus(task))}</Tag>,
+      render: (_, task) => <Tag color={taskStatusColor(taskStatus(task))}>{taskStatusText(taskStatus(task))}</Tag>,
     },
     {
       title: "创建时间",
@@ -2623,6 +2587,9 @@ function TaskTable({
             >
               继续确认
             </Button>
+          )}
+          {onTaskUpdated && isTaskRerunnable(task) && (
+            <TaskRerunControl task={task} onTaskUpdated={onTaskUpdated} />
           )}
         </Space>
       ),

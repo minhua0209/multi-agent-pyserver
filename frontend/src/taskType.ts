@@ -1,7 +1,8 @@
-import { Task, TaskType } from "./api/taskhub"
+import { Task, TaskStatus, TaskType } from "./api/taskhub"
 
 type TaskTypeSource = Pick<Task, "task_type" | "request_metadata"> & { id?: string }
 type TaskNodeSource = TaskTypeSource & Pick<Task, "current_node" | "task_status" | "status">
+type TaskStatusSource = Pick<Task, "task_status" | "status" | "active_execution_id"> & { id?: string }
 
 const TASK_NODE_LABELS: Record<string, string> = {
   intent_recognition: "任务识别",
@@ -41,4 +42,40 @@ export function taskNodeText(task: TaskNodeSource) {
   if (status === "running" && isManualWorkflowTask(task) && currentNode === "dispatch_decision") return "流程执行中"
 
   return TASK_NODE_LABELS[currentNode] || currentNode
+}
+
+export function taskStatus(task: Pick<Task, "task_status" | "status">) {
+  return task.task_status || task.status || "running"
+}
+
+export function taskStatusText(status?: TaskStatus | string) {
+  const value = status || "running"
+  return {
+    running: "正在执行",
+    succeeded: "执行完成",
+    failed: "执行失败",
+    blocked: "待人工介入",
+    partial: "部分完成",
+    cancelled: "已取消",
+  }[value] || value
+}
+
+export function taskStatusColor(status?: TaskStatus | string) {
+  const value = status || "running"
+  return {
+    running: "processing",
+    succeeded: "success",
+    failed: "error",
+    blocked: "warning",
+    partial: "orange",
+    cancelled: "default",
+  }[value] || "default"
+}
+
+export function isTerminalTask(task: TaskStatusSource) {
+  return taskStatus(task) !== "running"
+}
+
+export function isTaskRerunnable(task: TaskStatusSource) {
+  return isTerminalTask(task) && Boolean(task.active_execution_id)
 }

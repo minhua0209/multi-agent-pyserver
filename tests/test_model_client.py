@@ -593,7 +593,8 @@ def test_model_criterion_evaluation_marks_missing_legal_id_pending(
         reason="Model evaluation completed",
         criterion_results=results,
     )
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
 
 
 def test_model_criterion_evaluation_ignores_unknown_id_and_marks_missing_legal_id_pending(
@@ -627,7 +628,8 @@ def test_model_criterion_evaluation_ignores_unknown_id_and_marks_missing_legal_i
         reason="Model evaluation completed",
         criterion_results=results,
     )
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
 
 
 def _task_with_deliverable_requirements() -> tuple[Task, list[Artifact]]:

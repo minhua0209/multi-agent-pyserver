@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { isManualWorkflowTask, taskNodeText, taskType, taskTypeText } from "./taskType"
+import { isManualWorkflowTask, isTaskRerunnable, taskNodeText, taskStatusText, taskType, taskTypeText } from "./taskType"
 
 describe("task type helpers", () => {
   it("uses explicit task_type for task list labels", () => {
@@ -38,5 +38,15 @@ describe("task type helpers", () => {
         current_node: "dispatch_decision",
       }),
     ).toBe("流程执行中")
+  })
+
+  it("maps blocked tasks to a human intervention state", () => {
+    expect(taskStatusText("blocked")).toBe("待人工介入")
+  })
+
+  it("allows terminal tasks with an active execution to be rerun", () => {
+    expect(isTaskRerunnable({ id: "task_failed", task_status: "failed", active_execution_id: "execution_1" })).toBe(true)
+    expect(isTaskRerunnable({ id: "task_blocked", task_status: "blocked", active_execution_id: "execution_1" })).toBe(true)
+    expect(isTaskRerunnable({ id: "task_running", task_status: "running", active_execution_id: "execution_1" })).toBe(false)
   })
 })

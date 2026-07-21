@@ -285,6 +285,41 @@ describe("task detail view helpers", () => {
     })
   })
 
+  it("builds explicit success and failure decisions for automatic completion gaps", () => {
+    const pendingAdjudication = {
+      ...task,
+      task_status: "running",
+      current_node: "human_intervention",
+      completion_report: {
+        terminal_status: "running",
+        completion_reason: "Awaiting human adjudication",
+        human_accepted: false,
+        awaiting_human_decision: true,
+        automatic_gaps: ["criterion has no passed evidence"],
+      },
+      final_output: "已有执行结果",
+    } as Task
+
+    expect(taskInterventionView(pendingAdjudication)).toMatchObject({
+      awaitingAdjudication: true,
+      title: "人工结果裁决",
+      submitText: "判定成功",
+      requiresOutput: true,
+    })
+    expect(buildTaskInterventionResultPayload(pendingAdjudication, "证据足够", "succeeded")).toEqual({
+      result_status: "succeeded",
+      output: "证据足够",
+      should_complete: true,
+      metadata: { human_adjudicated: true, human_accepted: true },
+    })
+    expect(buildTaskInterventionResultPayload(pendingAdjudication, "证据不足", "failed")).toEqual({
+      result_status: "failed",
+      output: "证据不足",
+      should_complete: true,
+      metadata: { human_adjudicated: true, human_accepted: false },
+    })
+  })
+
   it("maps only output artifacts, deliverable results and execution history for direct UI use", () => {
     const taskWithHistory = {
       ...task,

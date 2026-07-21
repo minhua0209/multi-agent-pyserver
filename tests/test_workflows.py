@@ -58,6 +58,53 @@ def test_create_and_update_workflow_template_persists_definition(tmp_path: Path)
     assert reloaded["definition"]["nodes"][1]["id"] == "approve_quote"
 
 
+def test_workflow_confirmation_snapshots_initial_context(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Order Review",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [{"from": "start", "to": "end"}],
+            },
+        },
+    ).json()
+    monkeypatch.setattr(
+        "app.services.task_service.TaskService.start_background_task",
+        lambda self, task_id, expected_execution_id=None: None,
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "订单审核",
+            "content": "我的订单是1100块，帮我审核一下",
+            "metadata": {
+                "execution_mode": "workflow_template",
+                "workflow_id": workflow["id"],
+            },
+        },
+    ).json()["tasks"][0]
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "订单审核",
+            "description": "我的订单是1100块，帮我审核一下",
+            "execution_mode": "async",
+        },
+    ).json()
+
+    expected_summary = "任务名称：订单审核\n任务诉求：我的订单是1100块，帮我审核一下"
+    assert confirmed["initial_context"]["summary"] == expected_summary
+    assert confirmed["context"]["summary"] == expected_summary
+    assert confirmed["executions"][0]["context_snapshot"] == confirmed["initial_context"]
+
+
 def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
     agent = client.post(
@@ -575,8 +622,8 @@ def test_workflow_template_routes_by_human_result_metadata(tmp_path: Path, monke
     ]
     assert "Make quote" in completed_titles
     assert "Revise solution" not in completed_titles
-    assert resumed["task_status"] == "blocked"
-    assert resumed["completion_report"]["workflow_end_node_id"] is None
+    assert resumed["task_status"] == "succeeded"
+    assert resumed["completion_report"]["workflow_end_node_id"] == "end"
 
 
 def test_workflow_template_routes_rejected_human_result_to_revision(tmp_path: Path, monkeypatch) -> None:
@@ -662,8 +709,8 @@ def test_workflow_template_routes_rejected_human_result_to_revision(tmp_path: Pa
     ]
     assert "Revise solution" in completed_titles
     assert "Make quote" not in completed_titles
-    assert resumed["task_status"] == "blocked"
-    assert resumed["completion_report"]["workflow_end_node_id"] is None
+    assert resumed["task_status"] == "succeeded"
+    assert resumed["completion_report"]["workflow_end_node_id"] == "end"
 
 
 def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, monkeypatch) -> None:
@@ -739,6 +786,10 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
             ensure_ascii=False,
         ),
     )
+    monkeypatch.setattr(
+        "app.services.task_service.TaskService.start_background_task",
+        lambda self, task_id, expected_execution_id=None: None,
+    )
 
     created = client.post(
         "/api/v1/tasks/requests",
@@ -776,8 +827,104 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
     assert condition_subtask["result_metadata"]["decision"] == "approved"
     assert "Make quote" in completed_titles
     assert "Revise solution" not in completed_titles
-    assert resumed["task_status"] == "blocked"
-    assert resumed["completion_report"]["workflow_end_node_id"] is None
+    assert resumed["task_status"] == "succeeded"
+    assert resumed["completion_report"]["workflow_end_node_id"] == "end"
+
+
+def test_workflow_template_async_human_result_reaches_end_node_after_condition(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Condition Human End",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "price_condition",
+                        "type": "condition",
+                        "title": "条件判断",
+                        "config": {
+                            "condition_options": [
+                                {"value": "v1", "content": "订单价格大于1000块"},
+                                {"value": "v2", "content": "订单价格小于等于1000块"},
+                            ]
+                        },
+                    },
+                    {"id": "review_expensive_order", "type": "human", "title": "人工确认"},
+                    {"id": "review_normal_order", "type": "human", "title": "人工确认"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "price_condition"},
+                    {
+                        "from": "price_condition",
+                        "to": "review_expensive_order",
+                        "condition": {"type": "decision", "value": "v1"},
+                    },
+                    {
+                        "from": "price_condition",
+                        "to": "review_normal_order",
+                        "condition": {"type": "decision", "value": "v2"},
+                    },
+                    {"from": "review_expensive_order", "to": "end"},
+                    {"from": "review_normal_order", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    monkeypatch.setattr(
+        "app.core.model_client.default_client.create",
+        lambda _system_prompt, _user_prompt: json.dumps(
+            {
+                "decision": "v1",
+                "reason": "订单价格1100块，大于1000块。",
+                "matched_source": "task_context",
+                "confidence": 1.0,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "我的订单是1100块，帮我审核一下",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "条件节点流程判断",
+            "description": "我的订单是1100块，帮我审核一下",
+            "execution_mode": "async",
+        },
+    ).json()
+    paused = client.app.state.task_service.run_confirmed_task(created["id"])
+    human_subtask = paused.context.rounds[1].subtasks[0]
+
+    submitted = client.post(
+        f"/api/v1/subtasks/{human_subtask.id}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "确认",
+            "metadata": {"decision": "approved"},
+            "execution_mode": "async",
+        },
+    ).json()
+    resumed = client.app.state.task_service.run_confirmed_task(created["id"])
+
+    assert submitted["task_status"] == "running"
+    assert confirmed["active_execution_id"] == resumed.active_execution_id
+    assert resumed.task_status.value == "succeeded"
+    assert resumed.current_node.value == "completion_judge"
+    assert resumed.completion_report.workflow_end_node_id == "end"
 
 
 def test_workflow_template_condition_node_uses_intelligent_context(tmp_path: Path, monkeypatch) -> None:
@@ -1112,10 +1259,10 @@ def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_pa
         },
     ).json()
 
-    assert resumed["task_status"] == "blocked"
+    assert resumed["task_status"] == "failed"
     assert resumed["current_node"] == "completion_judge"
     assert "没有可继续执行的节点" in resumed["final_output"]
-    assert resumed["completion_report"]["terminal_status"] == "blocked"
+    assert resumed["completion_report"]["terminal_status"] == "failed"
     assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 

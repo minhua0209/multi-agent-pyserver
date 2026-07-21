@@ -107,7 +107,7 @@ def _passed_criterion() -> CriterionResult:
 
 @pytest.mark.parametrize(
     "candidate_status",
-    [TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.PARTIAL, TaskStatus.CANCELLED],
+    [TaskStatus.FAILED, TaskStatus.PARTIAL, TaskStatus.CANCELLED],
 )
 def test_non_success_terminal_status_is_preserved_and_execution_report_is_sealed(
     candidate_status: TaskStatus,
@@ -132,7 +132,25 @@ def test_non_success_terminal_status_is_preserved_and_execution_report_is_sealed
     assert task.executions[0].finished_at is not None
 
 
-def test_succeeded_candidate_with_empty_output_becomes_blocked() -> None:
+def test_blocked_candidate_waits_for_human_adjudication() -> None:
+    task = _task(contract=_contract())
+
+    report = CompletionService().finalize(
+        task,
+        candidate_status=TaskStatus.BLOCKED,
+        output="Available output",
+        reason="Automatic completion is inconclusive",
+    )
+
+    assert task.task_status == TaskStatus.RUNNING
+    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
+    assert report.automatic_gaps == ["Automatic completion is inconclusive"]
+    assert task.executions[0].finished_at is None
+
+
+def test_succeeded_candidate_with_empty_output_waits_for_human_adjudication() -> None:
     task = _task(contract=_contract(legacy=True))
 
     report = CompletionService().finalize(
@@ -142,8 +160,9 @@ def test_succeeded_candidate_with_empty_output_becomes_blocked() -> None:
         reason="Work completed",
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert "output" in report.evidence_summary.lower()
 
 
@@ -157,7 +176,8 @@ def test_explicit_contract_requires_passed_evidence_for_every_criterion() -> Non
         reason="Work completed",
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.criterion_results == [
         CriterionResult(
             criterion_id="criterion_reviewable",
@@ -215,7 +235,8 @@ def test_legacy_contract_preserves_explicit_non_passed_evidence(status: Criterio
         ],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.criterion_results[0].status == status
     assert "criterion_reviewable" in report.evidence_summary
 
@@ -302,7 +323,8 @@ def test_manual_workflow_must_reach_end_node() -> None:
         workflow_end_reached=False,
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.workflow_end_node_id is None
     assert "workflow end" in report.evidence_summary.lower()
 
@@ -311,7 +333,7 @@ def test_manual_workflow_must_reach_end_node() -> None:
     "subtask_status",
     [TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.PARTIAL],
 )
-def test_succeeded_candidate_is_blocked_by_incomplete_subtasks(subtask_status: TaskStatus) -> None:
+def test_succeeded_candidate_requires_human_adjudication_for_incomplete_subtasks(subtask_status: TaskStatus) -> None:
     subtask = SubTask(
         id="subtask_1",
         title="Step",
@@ -327,7 +349,8 @@ def test_succeeded_candidate_is_blocked_by_incomplete_subtasks(subtask_status: T
         reason="Work completed",
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert subtask_status.value in report.evidence_summary
 
 
@@ -362,7 +385,8 @@ def test_completion_explicit_empty_artifact_selection_blocks_success() -> None:
         artifact_ids=[],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert len(task.artifacts) == 1
     assert report.artifact_ids == []
     assert "artifact" in report.evidence_summary.lower()
@@ -386,7 +410,8 @@ def test_completion_requires_selected_artifacts_to_cover_every_deliverable_requi
         artifact_ids=[subtask_artifact.id],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.artifact_ids == [subtask_artifact.id]
     assert "requirement_summary" in report.evidence_summary
     assert "requirement_risks" in report.evidence_summary
@@ -421,7 +446,8 @@ def test_completion_rejects_unknown_input_or_old_execution_artifact_ids(artifact
         artifact_ids=[artifact_id],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.artifact_ids == []
     assert artifact_id in report.evidence_summary
 
@@ -448,7 +474,8 @@ def test_completion_rejects_non_valid_selected_artifact(
         artifact_ids=[artifact.id],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.artifact_ids == []
     assert validation_status.value in report.evidence_summary
 
@@ -480,7 +507,8 @@ def test_completion_rejects_criterion_evidence_outside_selected_artifacts() -> N
         artifact_ids=[selected.id],
     )
 
-    assert task.task_status == TaskStatus.BLOCKED
+    assert task.task_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.artifact_ids == [selected.id]
     assert unselected.id in report.evidence_summary
 
@@ -529,7 +557,8 @@ def test_pdf_requirement_is_not_satisfied_by_generic_done_text(monkeypatch: pyte
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.deliverable_results[0].requirement_id == "requirement_pdf"
     assert report.deliverable_results[0].status == CriterionResultStatus.PENDING
 
@@ -669,7 +698,8 @@ def test_completion_drops_unselected_artifact_ids_from_nonpassed_deliverable_res
         artifact_ids=[selected.id],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.deliverable_results[0].status == CriterionResultStatus.PENDING
     assert report.deliverable_results[0].artifact_ids == []
     assert "artifact_not_selected" not in report.model_dump_json()
@@ -709,6 +739,7 @@ def test_completion_revalidates_selected_file_artifact_before_success(
         artifact_ids=[artifact.id],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
