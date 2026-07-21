@@ -82,6 +82,7 @@ class CompletionService:
         decided_by_type: str = "system",
         decided_by_id: str = "",
     ) -> CompletionReport:
+        criterion_results_supplied = criterion_results is not None
         normalized_output = (
             self.delivery_content(task, output)
             if candidate_status == TaskStatus.SUCCEEDED
@@ -202,6 +203,12 @@ class CompletionService:
             if artifact.validation_status == ArtifactValidationStatus.VALID
         ]
         selected_artifact_ids = {artifact.id for artifact in selected_artifacts}
+        if (
+            candidate_status == TaskStatus.SUCCEEDED
+            and not human_override
+            and not criterion_results_supplied
+        ):
+            normalized_results = self.evaluate_criteria(task, normalized_output)
         artifact_gaps.extend(
             f"artifact {artifact_id} is unknown or does not belong to the active execution"
             for artifact_id in unknown_artifact_ids
@@ -256,15 +263,11 @@ class CompletionService:
             if blocking_gaps:
                 gaps = list(dict.fromkeys([*gaps, *blocking_gaps]))
             if gaps:
-                if blocking_gaps:
-                    terminal_status = TaskStatus.BLOCKED
-                    normalized_reason = f"Completion blocked: {'; '.join(gaps)}"
-                else:
-                    if self._requires_human_acceptance(task, effective_human_acceptance):
-                        gaps.append("human acceptance is required")
-                    awaiting_human_decision = True
-                    terminal_status = TaskStatus.RUNNING
-                    normalized_reason = f"Awaiting human adjudication: {'; '.join(gaps)}"
+                if self._requires_human_acceptance(task, effective_human_acceptance):
+                    gaps.append("human acceptance is required")
+                awaiting_human_decision = True
+                terminal_status = TaskStatus.RUNNING
+                normalized_reason = f"Awaiting human adjudication: {'; '.join(gaps)}"
             elif self._requires_human_acceptance(task, effective_human_acceptance):
                 awaiting_human_acceptance = True
                 terminal_status = TaskStatus.RUNNING

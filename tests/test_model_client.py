@@ -31,6 +31,7 @@ from app.core.models import (
     TaskContract,
     TaskContractItem,
     TaskDraft,
+    TaskRound,
     ToolExecutionResult,
     utc_now,
 )
@@ -327,12 +328,45 @@ def test_model_intent_parses_suggested_contract_fields(monkeypatch: pytest.Monke
     assert draft.deliverable_kind == "file"
     assert draft.deliverable_format == "markdown"
     assert draft.deliverable_filename == "implementation-plan.md"
-    assert draft.deliverable_requirements == ["Markdown document", "Include milestones"]
-    assert draft.success_criteria == ["Reviewers can make an approval decision"]
+    assert draft.deliverable_requirements == []
+    assert draft.success_criteria == [
+        "Markdown document",
+        "Include milestones",
+        "Reviewers can make an approval decision",
+    ]
     assert draft.requires_human_acceptance is True
     assert '"deliverable_kind": "text|file"' in captured["system_prompt"]
     assert '"deliverable_format": "markdown|text|null"' in captured["system_prompt"]
     assert '"deliverable_filename": "..."' in captured["system_prompt"]
+    assert "1到4条统一验收标准" in captured["system_prompt"]
+
+
+def test_model_intent_limits_generated_acceptance_criteria_to_four(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.core.model_client.default_client.create",
+        lambda _system_prompt, _user_prompt: json.dumps(
+            {
+                "tasks": [
+                    {
+                        "title": "验收标准限制",
+                        "description": "验证模型验收标准数量限制",
+                        "success_criteria": [f"criterion-{index}" for index in range(1, 7)],
+                    }
+                ]
+            }
+        ),
+    )
+
+    draft = recognize_tasks_with_model("验证验收标准数量", [])[0]
+
+    assert draft.success_criteria == [
+        "criterion-1",
+        "criterion-2",
+        "criterion-3",
+        "criterion-4",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1736,6 +1770,76 @@ def test_model_evaluates_each_success_criterion_with_structured_evidence(
     assert results[0].criterion_id == "criterion_reviewable"
     assert results[0].status == CriterionResultStatus.PASSED
     assert results[0].evidence_text == "Delivery plan contains review sections"
+
+
+def test_model_success_criteria_evaluation_receives_complete_execution_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task_with_two_success_criteria()
+    task.active_execution_id = "execution_1"
+    task.context.summary = "已汇总技术方案和人工审核意见"
+    task.context.rounds = [
+        TaskRound(
+            round_index=1,
+            subtasks=[
+                SubTask(
+                    id="subtask_human_review",
+                    title="人工审核",
+                    description="审核方案",
+                    assignee_type="human",
+                    status=TaskStatus.SUCCEEDED,
+                    output="王大锤确认方案可执行",
+                    result_metadata={"decision": "approved", "comment": "同意上线"},
+                    tool_results=[
+                        ToolExecutionResult(
+                            tool_name="review_record",
+                            tool_type="mock",
+                            success=True,
+                            result="审核记录已保存",
+                        )
+                    ],
+                )
+            ],
+        )
+    ]
+    task.artifacts = [
+        Artifact(
+            id="artifact_plan",
+            task_id=task.id,
+            execution_id="execution_1",
+            kind=ArtifactKind.TEXT,
+            source_type=ArtifactSourceType.TASK_RESULT,
+            source_id=task.id,
+            name="技术方案",
+            content="完整技术方案内容",
+            validation_status=ArtifactValidationStatus.VALID,
+            created_at=utc_now(),
+        )
+    ]
+    captured: dict[str, str] = {}
+
+    def fake_create(_system_prompt: str, user_prompt: str) -> str:
+        captured["user_prompt"] = user_prompt
+        return json.dumps(
+            {
+                "criterion_results": [
+                    {"criterion_id": "criterion_reviewable", "status": "passed"},
+                    {"criterion_id": "criterion_complete", "status": "passed"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.core.model_client.default_client.create", fake_create)
+
+    model_client.evaluate_success_criteria_with_model(task, "最终交付结果")
+
+    evidence = json.loads(captured["user_prompt"])["execution_evidence"]
+    assert evidence["final_output"] == "最终交付结果"
+    assert evidence["context_summary"] == "已汇总技术方案和人工审核意见"
+    assert evidence["node_outputs"][0]["output"] == "王大锤确认方案可执行"
+    assert evidence["node_outputs"][0]["result_metadata"]["comment"] == "同意上线"
+    assert evidence["node_outputs"][0]["tool_results"][0]["result"] == "审核记录已保存"
+    assert evidence["valid_artifacts"][0]["artifact_id"] == "artifact_plan"
 
 
 def _task_with_two_success_criteria() -> Task:

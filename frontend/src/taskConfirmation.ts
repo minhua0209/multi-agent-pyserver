@@ -50,6 +50,8 @@ export interface TaskConfirmationRequest {
   payload: TaskConfirmPayload & { contract: ConfirmationContract }
 }
 
+export const MAX_ACCEPTANCE_CRITERIA = 10
+
 
 export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
   const suggestions = (task.draft || {}) as DraftSuggestions
@@ -73,10 +75,10 @@ export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
     && typeof suggestions.deliverable_filename === "string"
     ? cleanText(suggestions.deliverable_filename)
     : ""
-  const deliverableRequirements = cleanEntries(
-    suggestions.deliverable_requirements || [],
-  )
-  const suggestedSuccessCriteria = cleanEntries(suggestions.success_criteria || [])
+  const suggestedSuccessCriteria = uniqueEntries([
+    ...(suggestions.deliverable_requirements || []),
+    ...(suggestions.success_criteria || []),
+  ]).slice(0, MAX_ACCEPTANCE_CRITERIA)
   const successCriteria = suggestedSuccessCriteria.length
     ? suggestedSuccessCriteria
     : [`交付结果满足：${requestText || goal}`]
@@ -89,7 +91,7 @@ export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
     deliverableKind,
     deliverableFormat: deliverableFormatValue,
     deliverableFilename,
-    deliverableRequirements,
+    deliverableRequirements: [],
     successCriteria,
     requiresHumanAcceptance: Boolean(suggestions.requires_human_acceptance),
   }
@@ -100,7 +102,10 @@ export function validateConfirmationDraft(draft: ConfirmationDraft): string[] {
   if (!cleanText(draft.goal)) errors.push("请填写任务目标")
   if (!cleanText(draft.deliverableGoal)) errors.push("请填写交付物目标")
   if (!cleanEntries(draft.successCriteria).length) {
-    errors.push("请至少填写一条成功标准")
+    errors.push("请至少填写一条验收标准")
+  }
+  if (cleanEntries(draft.successCriteria).length > MAX_ACCEPTANCE_CRITERIA) {
+    errors.push(`验收标准最多填写 ${MAX_ACCEPTANCE_CRITERIA} 条`)
   }
   if (draft.deliverableKind === "file") {
     const format = deliverableFormat(draft.deliverableFormat)
@@ -160,10 +165,11 @@ export function buildTaskConfirmPayload(
       deliverable_kind: isFile ? "file" : "text",
       deliverable_format: isFile ? deliverableFormat(draft.deliverableFormat) : null,
       deliverable_filename: isFile ? cleanText(draft.deliverableFilename) : "",
-      deliverable_requirements: cleanEntries(draft.deliverableRequirements).map(
-        (description) => ({ id: "", description }),
-      ),
-      success_criteria: cleanEntries(draft.successCriteria).map((description) => ({
+      deliverable_requirements: [],
+      success_criteria: uniqueEntries([
+        ...draft.deliverableRequirements,
+        ...draft.successCriteria,
+      ]).slice(0, MAX_ACCEPTANCE_CRITERIA).map((description) => ({
         id: "",
         description,
       })),
@@ -250,6 +256,10 @@ export async function cancelTasksSequentially(
 
 function cleanEntries(values: string[]) {
   return values.map(cleanText).filter(Boolean)
+}
+
+function uniqueEntries(values: string[]) {
+  return [...new Set(cleanEntries(values))]
 }
 
 function cleanText(value: string) {

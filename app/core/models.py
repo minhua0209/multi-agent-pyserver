@@ -252,7 +252,7 @@ class TaskContractInput(BaseModel):
     deliverable_format: Literal["markdown", "text"] | None = None
     deliverable_filename: str = ""
     deliverable_requirements: list[TaskContractItem] = Field(default_factory=list)
-    success_criteria: list[TaskContractItem] = Field(min_length=1)
+    success_criteria: list[TaskContractItem] = Field(min_length=1, max_length=10)
     requires_human_acceptance: bool = False
 
     @field_validator("goal", "deliverable_goal")

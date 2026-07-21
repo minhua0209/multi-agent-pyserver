@@ -742,6 +742,7 @@ tr.selected td {
 }
 
 .confirmation-list-field {
+  grid-column: 1 / -1;
   display: grid;
   align-content: start;
   gap: 6px;

@@ -97,7 +97,6 @@ class WorkflowTemplateRunner:
             candidate_status=TaskStatus.SUCCEEDED,
             output=final_output,
             reason=f"Workflow {workflow.id} reached end node",
-            criterion_results=self.completion_service.evaluate_criteria(task, final_output),
             workflow_end_reached=True,
             workflow_end_node_id=end_node_id,
             decided_by_type="system",
@@ -123,7 +122,7 @@ class WorkflowTemplateRunner:
         message = f"Workflow {workflow.id} 没有可继续执行的节点，且未到达完成节点。待处理节点：{pending_text}"
         self.completion_service.finalize(
             task,
-            candidate_status=TaskStatus.FAILED,
+            candidate_status=TaskStatus.BLOCKED,
             output=message,
             reason=message,
             workflow_end_reached=False,

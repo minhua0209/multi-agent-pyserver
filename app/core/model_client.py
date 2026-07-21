@@ -7,9 +7,7 @@ import re
 from typing import Any
 from urllib import error, request
 
-from app.core.enums import TaskStatus
-from app.core.models import Agent, RoundPlan, SubTask, Task, TaskDraft, ToolCall, ToolExecutionResult, new_id
-from app.core.enums import CriterionResultStatus
+from app.core.enums import ArtifactValidationStatus, CriterionResultStatus, TaskStatus
 from app.core.models import (
     Agent,
     AgentTool,
@@ -168,6 +166,10 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
         "如果任务之间存在明确先后关系，必须拆成多个任务，并使用 draft_key 和 depends_on 表达依赖关系；"
         "depends_on 填前置任务的 draft_key。没有依赖则为空数组。"
         "如果没有合适 agent，处理方选择 human。"
+        "每个任务只生成1到4条统一验收标准，写入 success_criteria。"
+        "验收标准必须能由建议处理 agent 的能力、工具输出或人工确认结果证明；"
+        "如果当前没有文件写入、代码提交、邮件发送等能力，不得生成对应要求。"
+        "deliverable_requirements 固定返回空数组。"
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"tasks": [{"draft_key": "stable_key", "title": "...", "description": "...", '
         '"confidence": 0.0, "depends_on": ["other_draft_key"], '
@@ -184,6 +186,14 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
             "name": agent.name,
             "description": agent.description,
             "capabilities": agent.capabilities,
+            "tools": [
+                {
+                    "name": tool.name,
+                    "type": tool.type,
+                    "description": tool.description,
+                }
+                for tool in agent.tools
+            ],
         }
         for agent in agents
     ]
@@ -225,8 +235,13 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
                     deliverable_kind=deliverable_kind,
                     deliverable_format=deliverable_format,
                     deliverable_filename=deliverable_filename,
-                    deliverable_requirements=_string_list(item.get("deliverable_requirements")),
-                    success_criteria=_string_list(item.get("success_criteria")),
+                    deliverable_requirements=[],
+                    success_criteria=_unique_strings(
+                        [
+                            *_string_list(item.get("deliverable_requirements")),
+                            *_string_list(item.get("success_criteria")),
+                        ]
+                    )[:4],
                     requires_human_acceptance=item.get("requires_human_acceptance") is True,
                     suggested_assignee_type=_normalize_assignee_type(item.get("suggested_assignee_type")),
                     suggested_agent_id=_valid_agent_id(item.get("suggested_agent_id"), agents),
@@ -695,8 +710,10 @@ def evaluate_success_criteria_with_model(
     if task.contract is None:
         return []
     system_prompt = (
-        "你是任务成功标准评估 agent。必须逐项判断执行结果是否满足给定成功标准。"
-        "不能遗漏标准，也不能仅因为有输出就判定通过。只返回 JSON，不要返回 Markdown。"
+        "你是任务统一验收 agent。必须逐项判断完整执行证据是否满足给定验收标准。"
+        "证据包括最终输出、上下文摘要、各轮节点输出、人工意见、工具结果和有效交付物。"
+        "不能遗漏标准，也不能仅因为流程结束或有输出就判定通过。"
+        "引用交付物证据时必须填写输入中存在的 artifact_id。只返回 JSON，不要返回 Markdown。"
         '格式: {"criterion_results": [{"criterion_id": "...", '
         '"status": "passed|failed|pending", "evidence_text": "...", "reason": "..."}]}'
     )
@@ -707,10 +724,10 @@ def evaluate_success_criteria_with_model(
                 "goal": task.contract.goal,
                 "deliverable_goal": task.contract.deliverable_goal,
             },
-            "success_criteria": [
+            "acceptance_criteria": [
                 criterion.model_dump(mode="json") for criterion in task.contract.success_criteria
             ],
-            "execution_output": execution_output,
+            "execution_evidence": _completion_evidence_payload(task, execution_output),
         },
         ensure_ascii=False,
     )
@@ -780,7 +797,7 @@ def _artifact_evaluation_payload(artifact: Artifact) -> dict[str, Any]:
         "artifact_id": artifact.id,
         "kind": artifact.kind.value,
         "name": artifact.name,
-        "content": artifact.content,
+        "content": _bounded_text(artifact.content),
         "media_type": artifact.media_type,
         "metadata": {
             field: artifact.metadata[field]
@@ -788,6 +805,65 @@ def _artifact_evaluation_payload(artifact: Artifact) -> dict[str, Any]:
             if field in artifact.metadata
         },
     }
+
+
+def _completion_evidence_payload(task: Task, execution_output: str) -> dict[str, Any]:
+    active_execution_id = task.active_execution_id or ""
+    subtasks = [
+        (round_item.round_index, subtask)
+        for round_item in task.context.rounds
+        for subtask in round_item.subtasks
+    ][-40:]
+    valid_artifacts = [
+        artifact
+        for artifact in task.artifacts
+        if artifact.validation_status == ArtifactValidationStatus.VALID
+        and (not active_execution_id or artifact.execution_id == active_execution_id)
+    ][-30:]
+    return {
+        "final_output": _bounded_text(execution_output),
+        "context_summary": _bounded_text(task.context.summary),
+        "node_outputs": [
+            {
+                "round_index": round_index,
+                "title": subtask.title,
+                "assignee_type": subtask.assignee_type,
+                "status": subtask.status.value,
+                "output": _bounded_text(subtask.output),
+                "result_metadata": _bounded_json_value(subtask.result_metadata),
+                "tool_results": [
+                    {
+                        "tool_name": result.tool_name,
+                        "tool_type": result.tool_type,
+                        "success": result.success,
+                        "result": _bounded_json_value(result.result),
+                        "error": _bounded_text(result.error),
+                    }
+                    for result in subtask.tool_results[-10:]
+                ],
+            }
+            for round_index, subtask in subtasks
+        ],
+        "valid_artifacts": [
+            _artifact_evaluation_payload(artifact)
+            for artifact in valid_artifacts
+        ],
+    }
+
+
+def _bounded_text(value: Any, limit: int = 6000) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else f"{text[:limit]}...[truncated]"
+
+
+def _bounded_json_value(value: Any, limit: int = 4000) -> Any:
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return _bounded_text(value, limit)
+    if len(serialized) <= limit:
+        return value
+    return f"{serialized[:limit]}...[truncated]"
 
 
 def evaluate_deliverable_requirements_with_model(
@@ -1164,6 +1240,10 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
 def _valid_agent_id(value: Any, agents: list[Agent]) -> str | None:

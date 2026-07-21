@@ -4,8 +4,6 @@ import {
   Card,
   Input,
   Modal,
-  Segmented,
-  Select,
   Spin,
   Switch,
   Tag,
@@ -15,18 +13,18 @@ import {
 import { Plus, Trash2, XCircle } from "lucide-react"
 import { ReactNode, useEffect, useMemo, useState } from "react"
 
-import type { DeliverableFormat, DeliverableKind, Task } from "./api/taskhub"
+import type { Task } from "./api/taskhub"
 import { cancelTask, confirmTask, getTask } from "./api/taskhub"
 import { taskLabel } from "./intentDrafts"
 import {
   ConfirmationDraft,
   ConfirmOptions,
+  MAX_ACCEPTANCE_CRITERIA,
   buildTaskConfirmationRequests,
   cancelTasksSequentially,
   confirmTaskRequestsSequentially,
   confirmationTaskIdsToCancelOnClose,
   confirmationDraftFromTask,
-  setConfirmationDeliverableKind,
   validateConfirmationDraft,
 } from "./taskConfirmation"
 
@@ -52,7 +50,7 @@ export function TaskConfirmationModal({
   preparing = false,
   preparationError = "",
   title = "确认任务契约",
-  intro = "请确认任务目标、交付物和成功标准，确认后系统会异步执行。",
+  intro = "请确认任务目标、交付物和验收标准，确认后系统会异步执行。",
   beforeTasks,
   confirmOptions = { execution_mode: "async" },
   cancelOnClose = true,
@@ -112,6 +110,7 @@ export function TaskConfirmationModal({
   ) {
     const draft = drafts[taskId]
     if (!draft) return
+    if (field === "successCriteria" && draft[field].length >= MAX_ACCEPTANCE_CRITERIA) return
     updateDraft(taskId, { [field]: [...draft[field], ""] })
   }
 
@@ -271,7 +270,7 @@ export function TaskConfirmationModal({
                     <label className="field confirmation-wide-field">
                       <span>任务目标</span>
                       <Input.TextArea
-                        rows={2}
+                        rows={4}
                         value={draft.goal}
                         onChange={(event) => updateDraft(task.id, { goal: event.target.value })}
                       />
@@ -279,70 +278,18 @@ export function TaskConfirmationModal({
                     <label className="field confirmation-wide-field">
                       <span>交付物目标</span>
                       <Input.TextArea
-                        rows={2}
+                        rows={4}
                         value={draft.deliverableGoal}
                         onChange={(event) => updateDraft(task.id, { deliverableGoal: event.target.value })}
                       />
                     </label>
-                    <label className="field confirmation-wide-field">
-                      <span>交付方式</span>
-                      <Segmented
-                        block
-                        value={draft.deliverableKind}
-                        options={[
-                          { label: "页面文本", value: "text" },
-                          { label: "文件", value: "file" },
-                        ]}
-                        onChange={(value) => updateDraft(
-                          task.id,
-                          setConfirmationDeliverableKind(draft, value as DeliverableKind),
-                        )}
-                      />
-                    </label>
-                    {draft.deliverableKind === "file" && (
-                      <>
-                        <label className="field">
-                          <span>文件格式</span>
-                          <Select
-                            value={draft.deliverableFormat ?? undefined}
-                            options={[
-                              { label: "Markdown", value: "markdown" },
-                              { label: "纯文本", value: "text" },
-                            ]}
-                            onChange={(value) => updateDraft(task.id, {
-                              deliverableFormat: value as DeliverableFormat,
-                            })}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>文件名（可选）</span>
-                          <Input
-                            value={draft.deliverableFilename}
-                            placeholder="例如：plan.md"
-                            onChange={(event) => updateDraft(task.id, {
-                              deliverableFilename: event.target.value,
-                            })}
-                          />
-                        </label>
-                      </>
-                    )}
                     <ConfirmationListField
-                      title="交付要求（可选）"
-                      emptyText="暂无额外交付要求"
+                      title="验收标准"
                       addLabel="增加"
-                      deleteLabel="删除交付要求"
-                      placeholder="例如：包含实施步骤"
-                      values={draft.deliverableRequirements}
-                      onAdd={() => addListItem(task.id, "deliverableRequirements")}
-                      onChange={(index, value) => updateList(task.id, "deliverableRequirements", index, value)}
-                      onRemove={(index) => removeListItem(task.id, "deliverableRequirements", index)}
-                    />
-                    <ConfirmationListField
-                      title="成功标准"
-                      addLabel="增加"
-                      deleteLabel="删除成功标准"
-                      placeholder="例如：方案可以直接评审"
+                      deleteLabel="删除验收标准"
+                      placeholder="例如：方案包含实施步骤、风险说明，并可直接评审"
                       values={draft.successCriteria}
+                      maxItems={MAX_ACCEPTANCE_CRITERIA}
                       onAdd={() => addListItem(task.id, "successCriteria")}
                       onChange={(index, value) => updateList(task.id, "successCriteria", index, value)}
                       onRemove={(index) => removeListItem(task.id, "successCriteria", index)}
@@ -378,6 +325,7 @@ function ConfirmationListField({
   deleteLabel,
   placeholder,
   values,
+  maxItems,
   onAdd,
   onChange,
   onRemove,
@@ -388,6 +336,7 @@ function ConfirmationListField({
   deleteLabel: string
   placeholder: string
   values: string[]
+  maxItems?: number
   onAdd: () => void
   onChange: (index: number, value: string) => void
   onRemove: (index: number) => void
@@ -396,7 +345,13 @@ function ConfirmationListField({
     <div className="confirmation-list-field">
       <div className="confirmation-list-heading">
         <span>{title}</span>
-        <Button size="small" type="text" icon={<Plus size={14} />} onClick={onAdd}>
+        <Button
+          size="small"
+          type="text"
+          icon={<Plus size={14} />}
+          disabled={maxItems !== undefined && values.length >= maxItems}
+          onClick={onAdd}
+        >
           {addLabel}
         </Button>
       </div>

@@ -220,8 +220,14 @@ def test_succeeded_candidate_with_empty_output_waits_for_human_adjudication() ->
     assert "output" in report.evidence_summary.lower()
 
 
-def test_explicit_contract_requires_passed_evidence_for_every_criterion() -> None:
+def test_explicit_contract_requires_passed_evidence_for_every_criterion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task = _task(contract=_contract())
+    monkeypatch.setattr(
+        "app.services.completion_service.evaluate_success_criteria_with_model",
+        lambda *_args, **_kwargs: [],
+    )
 
     report = CompletionService().finalize(
         task,
@@ -1116,7 +1122,7 @@ def test_file_delivery_text_cannot_replace_explicitly_excluded_managed_file(
         artifact_ids=[text_artifact.id],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == [text_artifact.id]
     assert any(
         artifact.metadata.get("managed_final_delivery") is True
@@ -1146,7 +1152,7 @@ def test_file_delivery_materializer_oserror_becomes_sanitized_gap(
     )
 
     serialized_report = report.model_dump_json()
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert "could not be written" in report.evidence_summary.lower()
     assert str(sensitive_path) not in serialized_report
     assert task.artifacts == []
@@ -1174,7 +1180,7 @@ def test_file_delivery_blocks_when_secure_dir_fd_is_unavailable(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert "could not be written" in report.evidence_summary.lower()
     assert task.artifacts == []
     assert not output_root.exists()
@@ -1201,7 +1207,7 @@ def test_file_delivery_materializer_valueerror_becomes_sanitized_gap(
     )
 
     serialized_report = report.model_dump_json()
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert "materialization was rejected" in report.evidence_summary.lower()
     assert sensitive_value not in serialized_report
     assert task.artifacts == []
@@ -1317,7 +1323,7 @@ def test_file_delivery_gate_rejects_path_format_or_media_mismatch(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert expected_gap in report.evidence_summary.lower()
     if case == "outside_root":
         assert report.artifact_ids == []
@@ -1349,7 +1355,7 @@ def test_file_delivery_revalidation_invalidates_non_local_managed_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1378,7 +1384,7 @@ def test_file_delivery_revalidation_invalidates_managed_file_outside_output_root
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1408,7 +1414,7 @@ def test_file_delivery_revalidation_rejects_managed_file_from_sibling_task_direc
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1435,7 +1441,7 @@ def test_file_delivery_revalidation_rejects_managed_file_from_sibling_execution_
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1462,7 +1468,7 @@ def test_file_delivery_revalidation_rejects_filename_not_matching_contract(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "filename is invalid" in report.evidence_summary.lower()
@@ -1493,7 +1499,7 @@ def test_file_delivery_revalidation_rejects_artifact_name_not_matching_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "filename is invalid" in report.evidence_summary.lower()
@@ -1550,7 +1556,7 @@ def test_file_delivery_revalidation_rejects_dot_dot_managed_file_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1584,7 +1590,7 @@ def test_file_delivery_revalidation_rejects_managed_file_symlink(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1632,7 +1638,7 @@ def test_invalid_managed_location_is_rejected_before_file_read(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1703,7 +1709,7 @@ def test_file_delivery_rejects_materialized_file_symlink(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts == []
     assert symlink_path.is_symlink()
@@ -1744,7 +1750,7 @@ def test_file_delivery_does_not_materialize_through_managed_directory_symlink(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.terminal_status == TaskStatus.RUNNING
     assert report.artifact_ids == []
     assert task.artifacts == []
     assert not cross_directory_path.exists()
@@ -1996,8 +2002,8 @@ def test_file_delivery_human_acceptance_revalidates_reused_file(
         decided_by_id="user_1",
     )
 
-    assert accepted_report.terminal_status == TaskStatus.BLOCKED
-    assert accepted_report.awaiting_human_decision is False
+    assert accepted_report.terminal_status == TaskStatus.RUNNING
+    assert accepted_report.awaiting_human_decision is True
     assert accepted_report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "checksum" in accepted_report.evidence_summary.lower()
@@ -2046,7 +2052,7 @@ def test_file_delivery_human_acceptance_does_not_replace_preinvalidated_file(
         decided_by_id="user_1",
     )
 
-    assert accepted_report.terminal_status == TaskStatus.BLOCKED
+    assert accepted_report.terminal_status == TaskStatus.RUNNING
     assert accepted_report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert delivery_path.read_text(encoding="utf-8") == "Tampered delivery"

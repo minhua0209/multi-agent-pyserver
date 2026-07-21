@@ -195,7 +195,13 @@ def test_database_task_store_persists_confirmed_contract_across_app_instances(
     assert reloaded["contract"]["deliverable_kind"] == "file"
     assert reloaded["contract"]["deliverable_format"] == "text"
     assert reloaded["contract"]["deliverable_filename"] == "delivery.txt"
-    assert reloaded["contract"]["deliverable_requirements"][0]["id"]
+    assert reloaded["contract"]["version"] == 2
+    assert reloaded["contract"]["deliverable_requirements"] == []
+    assert [item["description"] for item in reloaded["contract"]["success_criteria"]] == [
+        "包含里程碑",
+        "可以进入评审",
+    ]
+    assert all(item["id"] for item in reloaded["contract"]["success_criteria"])
     assert reloaded["initial_context"] == confirmed_payload["initial_context"]
     assert reloaded["executions"] == confirmed_payload["executions"]
     assert reloaded["active_execution_id"] == confirmed_payload["active_execution_id"]

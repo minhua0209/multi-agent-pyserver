@@ -330,7 +330,6 @@ class TaskGraphRunner:
                 candidate_status=TaskStatus.SUCCEEDED,
                 output=final_output,
                 reason=plan.reason or "Dispatcher found no remaining subtasks",
-                criterion_results=self.completion_service.evaluate_criteria(task, final_output),
                 decided_by_type="system",
                 decided_by_id="task_graph",
             )

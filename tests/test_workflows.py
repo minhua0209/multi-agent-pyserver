@@ -1286,6 +1286,7 @@ def test_workflow_template_condition_node_fails_task_when_unable_to_judge(
     completed_titles = [subtask["title"] for subtask in all_subtasks if subtask["status"] == "succeeded"]
 
     assert resumed["task_status"] == "failed"
+    assert resumed["current_node"] == "completion_judge"
     assert condition_subtask["status"] == "failed"
     assert condition_subtask["output"] == "无法正常判断条件"
     assert condition_subtask["result_metadata"]["reason"] == "无法正常判断条件"
@@ -1357,10 +1358,11 @@ def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_pa
         },
     ).json()
 
-    assert resumed["task_status"] == "failed"
-    assert resumed["current_node"] == "completion_judge"
+    assert resumed["task_status"] == "running"
+    assert resumed["current_node"] == "human_intervention"
     assert "没有可继续执行的节点" in resumed["final_output"]
-    assert resumed["completion_report"]["terminal_status"] == "failed"
+    assert resumed["completion_report"]["terminal_status"] == "running"
+    assert resumed["completion_report"]["awaiting_human_decision"] is True
     assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 
@@ -1553,7 +1555,7 @@ def test_workflow_completion_normalizes_delivery_content_before_evaluation_and_f
         calls.append(("evaluate_criteria", output))
         return []
 
-    def _finalize(task_arg, *, output, criterion_results, **_kwargs):
+    def _finalize(task_arg, *, output, criterion_results=None, **_kwargs):
         calls.append(("finalize", output, criterion_results))
         task_arg.task_status = TaskStatus.SUCCEEDED
         return SimpleNamespace(terminal_status=TaskStatus.SUCCEEDED)
@@ -1566,8 +1568,7 @@ def test_workflow_completion_normalizes_delivery_content_before_evaluation_and_f
 
     assert calls == [
         ("delivery_content", "merged workflow delivery"),
-        ("evaluate_criteria", "normalized workflow delivery"),
-        ("finalize", "normalized workflow delivery", []),
+        ("finalize", "normalized workflow delivery", None),
     ]
 
 

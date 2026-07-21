@@ -231,13 +231,15 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     assert contract["deliverable_kind"] == "file"
     assert contract["deliverable_format"] == "markdown"
     assert contract["deliverable_filename"] == "implementation-plan.md"
-    assert contract["deliverable_requirements"][0] == {
+    assert contract["version"] == 2
+    assert contract["deliverable_requirements"] == []
+    assert contract["success_criteria"][0] == {
         "id": "requirement_markdown",
         "description": "Markdown 格式",
     }
-    assert contract["deliverable_requirements"][1]["id"]
-    assert contract["success_criteria"][0]["id"] == "criterion_reviewable"
     assert contract["success_criteria"][1]["id"]
+    assert contract["success_criteria"][2]["id"] == "criterion_reviewable"
+    assert contract["success_criteria"][3]["id"]
     assert contract["requires_human_acceptance"] is True
     assert contract["confirmed_by_user_id"] == user["id"]
     assert contract["confirmed_by_user_name"] == "张三"
@@ -377,6 +379,20 @@ def test_confirm_task_accepts_empty_deliverable_requirements(tmp_path: Path) -> 
 
     assert response.status_code == 200
     assert response.json()["contract"]["deliverable_requirements"] == []
+
+
+def test_task_contract_rejects_more_than_ten_acceptance_criteria() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(
+                success_criteria=[
+                    {"description": f"验收标准 {index}"}
+                    for index in range(1, 12)
+                ]
+            )
+        )
+
+    assert "List should have at most 10 items" in str(exc_info.value)
 
 
 def test_confirm_task_without_contract_records_legacy_inferred_contract(tmp_path: Path) -> None:

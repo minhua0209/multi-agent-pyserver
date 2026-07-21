@@ -42,8 +42,8 @@ describe("task confirmation draft", () => {
       deliverableKind: "file",
       deliverableFormat: "markdown",
       deliverableFilename: "implementation-plan.MD",
-      deliverableRequirements: ["包含架构图", "包含风险清单"],
-      successCriteria: ["评审通过", "关键风险有应对措施"],
+      deliverableRequirements: [],
+      successCriteria: ["包含架构图", "包含风险清单", "评审通过", "关键风险有应对措施"],
       requiresHumanAcceptance: true,
     })
   })
@@ -134,8 +134,28 @@ describe("task confirmation draft", () => {
     })).toEqual([
       "请填写任务目标",
       "请填写交付物目标",
-      "请至少填写一条成功标准",
+      "请至少填写一条验收标准",
     ])
+  })
+
+  it("limits manually edited acceptance criteria to ten entries", () => {
+    const draft = confirmationDraftFromTask({
+      id: "task_many_criteria",
+      title: "多验收标准任务",
+      draft: {
+        success_criteria: Array.from({ length: 12 }, (_, index) => `标准 ${index + 1}`),
+      },
+    } as unknown as Task)
+
+    expect(draft.successCriteria).toHaveLength(10)
+    expect(validateConfirmationDraft({
+      ...draft,
+      successCriteria: Array.from({ length: 11 }, (_, index) => `人工标准 ${index + 1}`),
+    })).toContain("验收标准最多填写 10 条")
+    expect(buildTaskConfirmPayload({
+      ...draft,
+      successCriteria: Array.from({ length: 11 }, (_, index) => `人工标准 ${index + 1}`),
+    }).contract.success_criteria).toHaveLength(10)
   })
 
   it("validates file format, plain filename and matching extension", () => {
@@ -274,11 +294,10 @@ describe("task confirmation draft", () => {
         deliverable_kind: "file",
         deliverable_format: "markdown",
         deliverable_filename: "PLAN.MD",
-        deliverable_requirements: [
+        deliverable_requirements: [],
+        success_criteria: [
           { id: "", description: "包含回滚步骤" },
           { id: "", description: "包含负责人" },
-        ],
-        success_criteria: [
           { id: "", description: "评审通过" },
           { id: "", description: "可按步骤执行" },
         ],
@@ -360,8 +379,11 @@ describe("task confirmation draft", () => {
             deliverable_kind: "text",
             deliverable_format: null,
             deliverable_filename: "",
-            deliverable_requirements: [{ id: "", description: "包含恢复说明" }],
-            success_criteria: [{ id: "", description: "可以继续执行" }],
+            deliverable_requirements: [],
+            success_criteria: [
+              { id: "", description: "包含恢复说明" },
+              { id: "", description: "可以继续执行" },
+            ],
             requires_human_acceptance: true,
           },
         },

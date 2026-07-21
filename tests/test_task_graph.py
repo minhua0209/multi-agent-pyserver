@@ -423,7 +423,7 @@ def test_followup_error_preserves_successful_file_tool_result_and_artifact(
         ("file", "markdown", "merged delivery body"),
     ],
 )
-def test_completion_judge_uses_delivery_content_for_criteria_and_finalize(
+def test_completion_judge_passes_normalized_delivery_content_to_finalize(
     tmp_path: Path,
     monkeypatch,
     deliverable_kind: str,
@@ -458,19 +458,13 @@ def test_completion_judge_uses_delivery_content_for_criteria_and_finalize(
         }
     )
     runner = TaskGraphRunner(registry)
-    evaluated_outputs = []
     finalized_outputs = []
 
-    def _evaluate(_task, output):
-        evaluated_outputs.append(output)
-        return []
-
-    def _finalize(task_arg, *, output, criterion_results, **_kwargs):
+    def _finalize(task_arg, *, output, criterion_results=None, **_kwargs):
         finalized_outputs.append((output, criterion_results))
         task_arg.task_status = TaskStatus.SUCCEEDED
         return SimpleNamespace(terminal_status=TaskStatus.SUCCEEDED)
 
-    monkeypatch.setattr(runner.completion_service, "evaluate_criteria", _evaluate)
     monkeypatch.setattr(runner.completion_service, "finalize", _finalize)
 
     runner._completion_judge(
@@ -486,8 +480,7 @@ def test_completion_judge_uses_delivery_content_for_criteria_and_finalize(
         }
     )
 
-    assert evaluated_outputs == [expected_output]
-    assert finalized_outputs == [(expected_output, [])]
+    assert finalized_outputs == [(expected_output, None)]
 
 
 def test_task_graph_passes_only_processing_agents_to_planner(tmp_path: Path, monkeypatch) -> None:
