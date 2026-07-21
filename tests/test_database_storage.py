@@ -20,7 +20,12 @@ from app.core.models import (
 )
 from app.main import create_app
 from app.services import storage as storage_module
-from app.services.storage import DatabaseAgentRegistry, DatabaseTaskAttachmentStore, DatabaseTaskStore
+from app.services.storage import (
+    DatabaseAgentRegistry,
+    DatabaseTaskAttachmentStore,
+    DatabaseTaskStore,
+    InMemoryTaskStore,
+)
 from app.services.artifact_service import ArtifactService
 from app.services.execution_service import ExecutionService
 
@@ -146,9 +151,17 @@ def test_database_task_store_restores_rerun_history_and_idempotency_across_insta
     assert replay.json()["execution"]["id"] == restored_rerun["id"]
 
 
-def test_database_task_store_persists_confirmed_contract_across_app_instances(tmp_path: Path) -> None:
+def test_database_task_store_persists_confirmed_contract_across_app_instances(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
     first_client = TestClient(create_app(database_url=database_url))
+    monkeypatch.setattr(
+        first_client.app.state.task_service,
+        "start_background_task",
+        lambda *_args, **_kwargs: None,
+    )
     created = first_client.post(
         "/api/v1/tasks/requests",
         json={"source_type": "business_system", "title": "交付方案", "content": "生成实施方案"},
@@ -162,21 +175,30 @@ def test_database_task_store_persists_confirmed_contract_across_app_instances(tm
             "contract": {
                 "goal": "明确实施路径",
                 "deliverable_goal": "交付实施方案",
+                "deliverable_kind": "file",
+                "deliverable_format": "text",
+                "deliverable_filename": "delivery.txt",
                 "deliverable_requirements": [{"description": "包含里程碑"}],
                 "success_criteria": [{"description": "可以进入评审"}],
                 "requires_human_acceptance": True,
             },
+            "execution_mode": "async",
         },
-    ).json()
+    )
+    assert confirmed.status_code == 200
+    confirmed_payload = confirmed.json()
 
     second_client = TestClient(create_app(database_url=database_url))
     reloaded = second_client.get(f"/api/v1/tasks/{created['id']}").json()
 
-    assert reloaded["contract"] == confirmed["contract"]
+    assert reloaded["contract"] == confirmed_payload["contract"]
+    assert reloaded["contract"]["deliverable_kind"] == "file"
+    assert reloaded["contract"]["deliverable_format"] == "text"
+    assert reloaded["contract"]["deliverable_filename"] == "delivery.txt"
     assert reloaded["contract"]["deliverable_requirements"][0]["id"]
-    assert reloaded["initial_context"] == confirmed["initial_context"]
-    assert reloaded["executions"] == confirmed["executions"]
-    assert reloaded["active_execution_id"] == confirmed["active_execution_id"]
+    assert reloaded["initial_context"] == confirmed_payload["initial_context"]
+    assert reloaded["executions"] == confirmed_payload["executions"]
+    assert reloaded["active_execution_id"] == confirmed_payload["active_execution_id"]
     assert reloaded["executions"][0]["context_snapshot"] == reloaded["context"]
     assert reloaded["executions"][0]["status"] == reloaded["task_status"]
     assert reloaded["executions"][0]["final_output"] == reloaded["final_output"]
@@ -313,6 +335,28 @@ def test_create_app_uses_database_url_from_environment(monkeypatch) -> None:
         ("user", database_url),
         ("attachment", database_url),
     ]
+
+
+def test_create_app_uses_in_memory_tasks_without_database_url(monkeypatch) -> None:
+    captured_urls = []
+
+    class FakeDatabaseStorage:
+        def __init__(self, database_url):
+            captured_urls.append(database_url)
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DISABLE_DEFAULT_DATABASE_URL", raising=False)
+    monkeypatch.setattr("app.main.DatabaseAgentRegistry", FakeDatabaseStorage)
+    monkeypatch.setattr("app.main.DatabaseTaskStore", FakeDatabaseStorage)
+    monkeypatch.setattr("app.main.DatabaseWorkflowRegistry", FakeDatabaseStorage)
+    monkeypatch.setattr("app.main.DatabaseUserRegistry", FakeDatabaseStorage)
+    monkeypatch.setattr("app.main.DatabaseTaskAttachmentStore", FakeDatabaseStorage)
+
+    app = create_app()
+
+    assert DEFAULT_DATABASE_URL is None
+    assert captured_urls == []
+    assert isinstance(app.state.task_store, InMemoryTaskStore)
 
 
 def test_create_app_database_storage_persists_workflow_templates(tmp_path: Path) -> None:

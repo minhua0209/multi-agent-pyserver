@@ -1,4 +1,9 @@
-import type { Task, TaskConfirmPayload } from "./api/taskhub"
+import type {
+  DeliverableFormat,
+  DeliverableKind,
+  Task,
+  TaskConfirmPayload,
+} from "./api/taskhub"
 
 
 export interface ConfirmationDraft {
@@ -6,6 +11,9 @@ export interface ConfirmationDraft {
   description: string
   goal: string
   deliverableGoal: string
+  deliverableKind: DeliverableKind
+  deliverableFormat: DeliverableFormat | null
+  deliverableFilename: string
   deliverableRequirements: string[]
   successCriteria: string[]
   requiresHumanAcceptance: boolean
@@ -16,6 +24,9 @@ interface DraftSuggestions {
   description?: string
   goal?: string
   deliverable_goal?: string
+  deliverable_kind?: unknown
+  deliverable_format?: unknown
+  deliverable_filename?: unknown
   deliverable_requirements?: string[]
   success_criteria?: string[]
   requires_human_acceptance?: boolean
@@ -24,6 +35,9 @@ interface DraftSuggestions {
 interface ConfirmationContract {
   goal: string
   deliverable_goal: string
+  deliverable_kind: DeliverableKind
+  deliverable_format: DeliverableFormat | null
+  deliverable_filename: string
   deliverable_requirements: Array<{ id: string; description: string }>
   success_criteria: Array<{ id: string; description: string }>
   requires_human_acceptance: boolean
@@ -48,6 +62,17 @@ export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
   const deliverableGoal = cleanText(
     suggestions.deliverable_goal || `形成可评审的${title}交付物`,
   )
+  const deliverableKind: DeliverableKind = suggestions.deliverable_kind === "file"
+    ? "file"
+    : "text"
+  const suggestedFormat = deliverableFormat(suggestions.deliverable_format)
+  const deliverableFormatValue = deliverableKind === "file"
+    ? suggestedFormat || "markdown"
+    : null
+  const deliverableFilename = deliverableKind === "file"
+    && typeof suggestions.deliverable_filename === "string"
+    ? cleanText(suggestions.deliverable_filename)
+    : ""
   const deliverableRequirements = cleanEntries(
     suggestions.deliverable_requirements || [],
   )
@@ -61,6 +86,9 @@ export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
     description,
     goal,
     deliverableGoal,
+    deliverableKind,
+    deliverableFormat: deliverableFormatValue,
+    deliverableFilename,
     deliverableRequirements,
     successCriteria,
     requiresHumanAcceptance: Boolean(suggestions.requires_human_acceptance),
@@ -74,13 +102,54 @@ export function validateConfirmationDraft(draft: ConfirmationDraft): string[] {
   if (!cleanEntries(draft.successCriteria).length) {
     errors.push("请至少填写一条成功标准")
   }
+  if (draft.deliverableKind === "file") {
+    const format = deliverableFormat(draft.deliverableFormat)
+    const filename = cleanText(draft.deliverableFilename)
+    if (!format) errors.push("请选择文件格式")
+    if (filename && isFilenamePath(filename)) {
+      errors.push("文件名不能包含路径")
+    } else if (filename && !isPlainFilename(filename)) {
+      errors.push("文件名不能包含路径或 Windows 非法字符")
+    } else if (filename && format) {
+      const expectedExtension = format === "markdown" ? ".md" : ".txt"
+      const extension = filenameExtension(filename)
+      if (extension && extension !== expectedExtension) {
+        errors.push(`文件扩展名与所选格式不匹配，应使用 ${expectedExtension}`)
+      } else {
+        const resolvedFilename = extension ? filename : `${filename}${expectedExtension}`
+        if (new TextEncoder().encode(resolvedFilename).length > 255) {
+          errors.push("文件名不能超过 255 个 UTF-8 字节")
+        }
+      }
+    }
+  }
   return errors
+}
+
+export function setConfirmationDeliverableKind(
+  draft: ConfirmationDraft,
+  kind: DeliverableKind,
+): ConfirmationDraft {
+  if (kind === "text") {
+    return {
+      ...draft,
+      deliverableKind: "text",
+      deliverableFormat: null,
+      deliverableFilename: "",
+    }
+  }
+  return {
+    ...draft,
+    deliverableKind: "file",
+    deliverableFormat: deliverableFormat(draft.deliverableFormat) || "markdown",
+  }
 }
 
 export function buildTaskConfirmPayload(
   draft: ConfirmationDraft,
   options: ConfirmOptions = {},
 ): TaskConfirmPayload & { contract: ConfirmationContract } {
+  const isFile = draft.deliverableKind === "file"
   return {
     title: cleanText(draft.title),
     description: cleanText(draft.description),
@@ -88,6 +157,9 @@ export function buildTaskConfirmPayload(
     contract: {
       goal: cleanText(draft.goal),
       deliverable_goal: cleanText(draft.deliverableGoal),
+      deliverable_kind: isFile ? "file" : "text",
+      deliverable_format: isFile ? deliverableFormat(draft.deliverableFormat) : null,
+      deliverable_filename: isFile ? cleanText(draft.deliverableFilename) : "",
       deliverable_requirements: cleanEntries(draft.deliverableRequirements).map(
         (description) => ({ id: "", description }),
       ),
@@ -182,4 +254,32 @@ function cleanEntries(values: string[]) {
 
 function cleanText(value: string) {
   return String(value || "").trim()
+}
+
+function deliverableFormat(value: unknown): DeliverableFormat | null {
+  return value === "markdown" || value === "text" ? value : null
+}
+
+function isPlainFilename(filename: string) {
+  if (
+    filename.endsWith(".")
+    || /[<>:"/\\|?*]/.test(filename)
+    || /[\u0000-\u001f\u007f-\u009f]/.test(filename)
+  ) {
+    return false
+  }
+  const deviceBasename = filename.split(".", 1)[0].toUpperCase()
+  return !(
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].includes(deviceBasename)
+    || /^(COM|LPT)[123456789¹²³]$/.test(deviceBasename)
+  )
+}
+
+function isFilenamePath(filename: string) {
+  return filename === "." || filename === ".." || /[/\\]/.test(filename)
+}
+
+function filenameExtension(filename: string) {
+  const dotIndex = filename.lastIndexOf(".")
+  return dotIndex > 0 ? filename.slice(dotIndex).toLowerCase() : ""
 }

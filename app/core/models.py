@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+from pathlib import PurePath
 from typing import Any, Literal
+import unicodedata
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,6 +22,9 @@ from app.core.enums import (
     TaskType,
     UserRole,
 )
+
+
+MAX_AGENT_MODEL_RETRIES = 3
 
 
 def new_id(prefix: str) -> str:
@@ -60,6 +65,25 @@ class Agent(AgentCreate):
     created_at: datetime
 
 
+class PublicAgentTool(BaseModel):
+    name: str
+    description: str = ""
+    type: str = "metadata"
+    input_schema: dict = Field(default_factory=dict)
+
+
+class PublicAgent(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    agent_type: str = "processing"
+    capabilities: list[str] = Field(default_factory=list)
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+    tools: list[PublicAgentTool] = Field(default_factory=list)
+    created_at: datetime
+
+
 class SimpleAgentCreate(BaseModel):
     ability: str = Field(min_length=1)
     name: str = ""
@@ -81,7 +105,7 @@ class MissingTool(BaseModel):
 class SimpleAgentCreateResponse(BaseModel):
     status: str
     message: str
-    agent: Agent | None = None
+    agent: PublicAgent | None = None
     matched_tools: list[str] = Field(default_factory=list)
     missing_tools: list[MissingTool] = Field(default_factory=list)
     guidance: list[str] = Field(default_factory=list)
@@ -92,7 +116,7 @@ class AgentExecutionConfig(BaseModel):
     model_name: str = ""
     temperature: float | None = None
     timeout_seconds: int = 60
-    max_retries: int = 0
+    max_retries: int = Field(default=0, ge=0, le=MAX_AGENT_MODEL_RETRIES)
     max_tool_calls: int = 5
 
 
@@ -224,6 +248,9 @@ class TaskContractInput(BaseModel):
 
     goal: str = Field(min_length=1)
     deliverable_goal: str = Field(min_length=1)
+    deliverable_kind: Literal["text", "file"] = "text"
+    deliverable_format: Literal["markdown", "text"] | None = None
+    deliverable_filename: str = ""
     deliverable_requirements: list[TaskContractItem] = Field(default_factory=list)
     success_criteria: list[TaskContractItem] = Field(min_length=1)
     requires_human_acceptance: bool = False
@@ -235,6 +262,53 @@ class TaskContractInput(BaseModel):
         if not cleaned:
             raise ValueError("must not be empty")
         return cleaned
+
+    @field_validator("deliverable_filename", mode="before")
+    @classmethod
+    def strip_deliverable_filename(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        if any(unicodedata.category(character) == "Cc" for character in value):
+            raise ValueError("deliverable_filename must be a plain filename")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_deliverable_fields(self) -> "TaskContractInput":
+        if self.deliverable_kind == "text":
+            if self.deliverable_format is not None or self.deliverable_filename:
+                raise ValueError("text deliverables cannot define file delivery fields")
+            return self
+
+        if self.deliverable_format is None:
+            raise ValueError("deliverable_format is required for file deliverables")
+
+        filename = self.deliverable_filename
+        if filename.endswith(".") or any(character in filename for character in '<>:"/\\|?*'):
+            raise ValueError("deliverable_filename must be a plain filename")
+
+        device_basename = filename.partition(".")[0].upper()
+        if device_basename in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} or (
+            len(device_basename) == 4
+            and device_basename[:3] in {"COM", "LPT"}
+            and device_basename[3] in "123456789¹²³"
+        ):
+            raise ValueError("deliverable_filename must be a plain filename")
+
+        expected_extension = ".md" if self.deliverable_format == "markdown" else ".txt"
+        extension = PurePath(filename).suffix.lower()
+        if extension and extension != expected_extension:
+            raise ValueError(f"deliverable_filename extension must be {expected_extension}")
+        if filename:
+            resolved_filename = filename if extension else f"{filename}{expected_extension}"
+            try:
+                encoded_filename = resolved_filename.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("deliverable_filename must be valid UTF-8") from exc
+            if len(encoded_filename) > 255:
+                raise ValueError(
+                    "deliverable_filename must be at most 255 UTF-8 bytes"
+                )
+        return self
 
     @model_validator(mode="after")
     def require_unique_item_ids(self) -> "TaskContractInput":
@@ -263,6 +337,9 @@ class TaskDraft(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     goal: str = ""
     deliverable_goal: str = ""
+    deliverable_kind: Literal["text", "file"] = "text"
+    deliverable_format: Literal["markdown", "text"] | None = None
+    deliverable_filename: str = ""
     deliverable_requirements: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     requires_human_acceptance: bool = False

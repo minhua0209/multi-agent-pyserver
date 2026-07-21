@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.api.auth import current_user, ensure_task_access, filter_tasks_for_user
+from app.api.serialization import sanitize_task, sanitize_task_request_response
 from app.core.enums import CurrentNode
 from app.core.models import ExecutionResultCreate, Task, TaskConfirm, TaskRequestCreate, TaskRequestResponse
 from app.services.task_service import (
@@ -21,7 +22,9 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 @router.post("/requests", response_model=TaskRequestResponse, status_code=status.HTTP_201_CREATED)
 def create_task_request(payload: TaskRequestCreate, request: Request) -> TaskRequestResponse:
     try:
-        return request.app.state.task_service.create_request(payload, current_user(request))
+        return sanitize_task_request_response(
+            request.app.state.task_service.create_request(payload, current_user(request))
+        )
     except AttachmentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Attachment not found: {exc}") from exc
     except WorkflowNotFoundError as exc:
@@ -46,9 +49,11 @@ def confirm_task(task_id: str, payload: TaskConfirm, request: Request) -> Task:
                     task.id,
                     expected_execution_id=execution_id,
                 )
-                return response_task
-            return task
-        return request.app.state.task_service.confirm_task(task_id, payload, confirmed_by=user)
+                return sanitize_task(response_task)
+            return sanitize_task(task)
+        return sanitize_task(
+            request.app.state.task_service.confirm_task(task_id, payload, confirmed_by=user)
+        )
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except TaskAlreadyConfirmedError as exc:
@@ -62,7 +67,9 @@ def submit_task_result(task_id: str, payload: ExecutionResultCreate, request: Re
     try:
         user = current_user(request)
         ensure_task_access(user, request.app.state.task_service.get_task(task_id))
-        return request.app.state.task_service.submit_result(task_id, payload, current_user=user)
+        return sanitize_task(
+            request.app.state.task_service.submit_result(task_id, payload, current_user=user)
+        )
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except TaskNotRunningError as exc:
@@ -100,11 +107,17 @@ def get_task(task_id: str, request: Request) -> Task:
     try:
         task = request.app.state.task_service.get_task(task_id)
         ensure_task_access(current_user(request), task)
-        return task
+        return sanitize_task(task)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 
 
 @router.get("", response_model=list[Task])
 def list_tasks(request: Request) -> list[Task]:
-    return filter_tasks_for_user(current_user(request), request.app.state.task_service.list_tasks())
+    return [
+        sanitize_task(task)
+        for task in filter_tasks_for_user(
+            current_user(request),
+            request.app.state.task_service.list_tasks(),
+        )
+    ]

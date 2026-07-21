@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
+import re
 from typing import Any
-from urllib import request
+from urllib import error, request
 
 from app.core.enums import TaskStatus
 from app.core.models import Agent, RoundPlan, SubTask, Task, TaskDraft, ToolCall, ToolExecutionResult, new_id
 from app.core.enums import CriterionResultStatus
 from app.core.models import (
     Agent,
+    AgentTool,
     Artifact,
     CriterionResult,
     DeliverableResult,
+    MAX_AGENT_MODEL_RETRIES,
     RoundPlan,
     SubTask,
     Task,
@@ -23,18 +27,27 @@ from app.core.models import (
 )
 
 
-DEFAULT_RESPONSES_API_URL = ""
+DEFAULT_RESPONSES_API_URL = "http://127.0.0.1:8001/v1/responses"
 DEFAULT_MODEL_NAME = "qwen3.6-35b"
 RESPONSES_API_URL = os.getenv("MODEL_RESPONSES_API_URL", DEFAULT_RESPONSES_API_URL)
 RESPONSES_API_KEY = os.getenv("MODEL_API_KEY", "")
 CHAT_COMPLETIONS_API_URL = RESPONSES_API_URL.replace("/v1/responses", "/v1/chat/completions")
 MODEL_NAME = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
 REQUEST_TIMEOUT_SECONDS = 60
-MAX_OUTPUT_TOKENS = int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", "4096"))
+DEFAULT_MAX_OUTPUT_TOKENS = 1_024_000
+MAX_OUTPUT_TOKENS = int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", str(DEFAULT_MAX_OUTPUT_TOKENS)))
 
 
 class ModelCallError(Exception):
     pass
+
+
+class AgentModelExecutionError(ModelCallError):
+    def __init__(self, attempts: int, last_error: Exception | str) -> None:
+        self.attempts = attempts
+        error_text = str(last_error) or type(last_error).__name__
+        self.last_error = _sanitize_error_text(error_text)
+        super().__init__(f"Agent model execution failed after {attempts} attempts: {self.last_error}")
 
 
 class OpenAIResponsesClient:
@@ -81,6 +94,16 @@ class OpenAIResponsesClient:
         except Exception as exc:
             raise ModelCallError(_format_request_error(exc)) from exc
 
+        choices = body.get("choices")
+        if (
+            isinstance(choices, list)
+            and any(
+                isinstance(choice, dict) and choice.get("finish_reason") == "length"
+                for choice in choices
+            )
+        ):
+            raise ModelCallError("Chat completion response was truncated (finish_reason=length)")
+
         text = self.extract_text(body)
         if not text:
             raise ModelCallError("Responses API returned empty text")
@@ -112,12 +135,9 @@ class OpenAIResponsesClient:
         for output in response_body.get("output", []):
             if not isinstance(output, dict):
                 continue
-            for content in output.get("content", []):
-                if not isinstance(content, dict):
-                    continue
-                text = content.get("text")
-                if isinstance(text, str):
-                    return text.strip()
+            text = _extract_content_text(output.get("content"))
+            if text:
+                return text
 
         for choice in response_body.get("choices", []):
             if not isinstance(choice, dict):
@@ -125,9 +145,9 @@ class OpenAIResponsesClient:
             message = choice.get("message")
             if not isinstance(message, dict):
                 continue
-            content = message.get("content")
-            if isinstance(content, str):
-                return content.strip()
+            text = _extract_content_text(message.get("content"))
+            if text:
+                return text
         return ""
 
 
@@ -152,6 +172,8 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
         '格式: {"tasks": [{"draft_key": "stable_key", "title": "...", "description": "...", '
         '"confidence": 0.0, "depends_on": ["other_draft_key"], '
         '"goal": "...", "deliverable_goal": "...", '
+        '"deliverable_kind": "text|file", "deliverable_format": "markdown|text|null", '
+        '"deliverable_filename": "...", '
         '"deliverable_requirements": ["..."], "success_criteria": ["..."], '
         '"requires_human_acceptance": false, '
         '"suggested_assignee_type": "agent|human", "suggested_agent_id": "agent_id 或 null"}]}'
@@ -188,6 +210,9 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
             description = str(item.get("description", "")).strip()
             if not title or not description:
                 continue
+            deliverable_kind, deliverable_format, deliverable_filename = (
+                _normalize_suggested_delivery(item)
+            )
             drafts.append(
                 TaskDraft(
                     title=title,
@@ -197,6 +222,9 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
                     depends_on=_string_list(item.get("depends_on")),
                     goal=_optional_string(item.get("goal")) or "",
                     deliverable_goal=_optional_string(item.get("deliverable_goal")) or "",
+                    deliverable_kind=deliverable_kind,
+                    deliverable_format=deliverable_format,
+                    deliverable_filename=deliverable_filename,
                     deliverable_requirements=_string_list(item.get("deliverable_requirements")),
                     success_criteria=_string_list(item.get("success_criteria")),
                     requires_human_acceptance=item.get("requires_human_acceptance") is True,
@@ -247,6 +275,78 @@ def dispatch_with_model(task: Task, agents: list[Agent]) -> Agent | None:
     return next((agent for agent in agents if agent.id == agent_id), None)
 
 
+def model_tool_payload(tool: AgentTool) -> dict[str, Any]:
+    return {
+        "name": tool.name,
+        "description": tool.description,
+        "type": tool.type,
+        "input_schema": _model_tool_input_schema(tool),
+    }
+
+
+def model_agent_payload(
+    agent: Agent,
+    tools: list[AgentTool] | None = None,
+) -> dict[str, Any]:
+    selected_tools = agent.tools if tools is None else tools
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "description": agent.description,
+        "agent_type": agent.agent_type,
+        "capabilities": deepcopy(agent.capabilities),
+        "input_schema": deepcopy(agent.input_schema),
+        "output_schema": deepcopy(agent.output_schema),
+        "tools": [model_tool_payload(tool) for tool in selected_tools],
+    }
+
+
+def _model_tool_input_schema(tool: AgentTool) -> dict[str, Any]:
+    if tool.input_schema:
+        return deepcopy(tool.input_schema)
+    if tool.type == "file_write":
+        return {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["filename", "content"],
+        }
+    if tool.type == "smtp_email":
+        return {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["to", "subject", "body"],
+        }
+
+    template_fields = ("url",) if tool.type == "http" else ("query",) if tool.type == "mysql" else ()
+    placeholder_names: list[str] = []
+    for field in template_fields:
+        template = str(tool.config.get(field, ""))
+        for name in re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template):
+            if name not in placeholder_names:
+                placeholder_names.append(name)
+    if not placeholder_names:
+        return {}
+    return {
+        "type": "object",
+        "properties": {name: {"type": "string"} for name in placeholder_names},
+        "required": placeholder_names,
+    }
+
+
+def _agent_system_prompt(base_prompt: str, agent: Agent | None) -> str:
+    custom_prompt = agent.execution_config.system_prompt.strip() if agent else ""
+    if not custom_prompt:
+        return base_prompt
+    return f"{custom_prompt}\n\n{base_prompt}"
+
+
 def execute_agent_with_model(task: Task, agent: Agent) -> str | None:
     system_prompt = (
         "你是被分配到任务的执行 agent。请基于任务信息给出执行结果。"
@@ -260,18 +360,12 @@ def execute_agent_with_model(task: Task, agent: Agent) -> str | None:
                 "description": task.description,
                 "content": task.content,
             },
-            "agent": {
-                "id": agent.id,
-                "name": agent.name,
-                "description": agent.description,
-                "capabilities": agent.capabilities,
-                "tools": [tool.model_dump(mode="json") for tool in agent.tools],
-            },
+            "agent": model_agent_payload(agent),
         },
         ensure_ascii=False,
     )
     try:
-        return default_client.create(system_prompt, user_prompt)
+        return default_client.create(_agent_system_prompt(system_prompt, agent), user_prompt)
     except Exception:
         return None
 
@@ -291,13 +385,31 @@ def execute_subtask_with_tools_model(
     subtask: SubTask,
     agent: Agent | None,
     tool_results: list[ToolExecutionResult],
-) -> tuple[list[ToolCall], str] | None:
-    system_prompt = (
-        "你是被分配到子任务的执行 agent。必须基于主任务当前上下文和子任务描述完成任务。"
-        "如果需要使用 agent 提供的 tools，返回 tool_calls 数组；系统会真实执行工具并把 tool_results 再传给你。"
-        "如果 tool_results 已经足够完成任务，返回空 tool_calls 和最终 output。"
-        "如果上下文里包含前置任务结果，需要显式利用这些结果。只返回简短可读文本，不要返回 Markdown。"
-        '返回 JSON 格式: {"tool_calls": [{"tool_name": "...", "arguments": {}}], "output": "..."}'
+) -> tuple[list[ToolCall], str]:
+    managed_file = _is_managed_file_delivery(task)
+    execution_tools = _execution_tools(agent, managed_file)
+    if managed_file:
+        system_prompt = (
+            "你是被分配到子任务的执行 agent。必须基于主任务当前上下文和子任务描述完成任务。"
+            "当前主任务使用系统托管文件交付，禁止调用任何 file_write 工具；系统会在任务成功后统一落盘。"
+            "如果需要使用可见的辅助工具，只返回简短 JSON tool_calls 请求，系统会真实执行工具并把 tool_results 再传给你。"
+            '辅助工具请求格式: {"tool_calls": [{"tool_name": "...", "arguments": {}}], "output": ""}。'
+            "如果无需辅助工具或 tool_results 已经足够，直接返回完整 Markdown/TXT 正文。"
+            "最终正文不要包装在 JSON、output 字段或代码围栏中。"
+            "如果上下文里包含前置任务结果，需要显式利用这些结果。"
+        )
+    else:
+        system_prompt = (
+            "你是被分配到子任务的执行 agent。必须基于主任务当前上下文和子任务描述完成任务。"
+            "如果需要使用 agent 提供的 tools，返回 tool_calls 数组；系统会真实执行工具并把 tool_results 再传给你。"
+            "如果 tool_results 已经足够完成任务，返回空 tool_calls 和最终 output。"
+            "如果上下文里包含前置任务结果，需要显式利用这些结果。只返回简短可读文本，不要返回 Markdown。"
+            '返回 JSON 格式: {"tool_calls": [{"tool_name": "...", "arguments": {}}], "output": "..."}'
+        )
+    agent_payload = (
+        model_agent_payload(agent, execution_tools)
+        if agent
+        else None
     )
     user_prompt = json.dumps(
         {
@@ -307,31 +419,44 @@ def execute_subtask_with_tools_model(
                 "description": task.description,
                 "content": task.content,
                 "request_metadata": task.request_metadata,
+                "contract": task.contract.model_dump(mode="json") if task.contract else None,
                 "context_summary": task.context.summary,
                 "context_artifacts": task.context.artifacts,
                 "rounds": [round_item.model_dump(mode="json") for round_item in task.context.rounds],
             },
             "subtask": subtask.model_dump(mode="json"),
-            "agent": agent.model_dump(mode="json") if agent else None,
+            "agent": agent_payload,
             "tool_results": [result.model_dump(mode="json") for result in tool_results],
         },
         ensure_ascii=False,
     )
-    try:
-        data = _loads_json(default_client.create(system_prompt, user_prompt))
-    except Exception:
-        return None
+    configured_retries = agent.execution_config.max_retries if agent else 0
+    if not isinstance(configured_retries, int):
+        configured_retries = 0
+    max_retries = min(MAX_AGENT_MODEL_RETRIES, max(0, configured_retries))
+    total_attempts = 1 + max_retries
+    attempts_made = 0
+    last_error: Exception | str = "Unknown agent model execution error"
+    for attempt in range(1, total_attempts + 1):
+        attempts_made = attempt
+        try:
+            response_text = default_client.create(
+                _agent_system_prompt(system_prompt, agent),
+                user_prompt,
+            )
+            return _parse_subtask_execution_response_for_delivery(
+                response_text,
+                agent=agent,
+                managed_file=managed_file,
+                execution_tools=execution_tools,
+            )
+        except (ModelCallError, error.HTTPError, ValueError) as exc:
+            last_error = exc
+        except Exception as exc:
+            last_error = exc
+            break
 
-    tool_calls = []
-    for item in data.get("tool_calls", []):
-        if not isinstance(item, dict):
-            continue
-        tool_name = str(item.get("tool_name", "")).strip()
-        if not tool_name:
-            continue
-        arguments = item.get("arguments", {})
-        tool_calls.append(ToolCall(tool_name=tool_name, arguments=arguments if isinstance(arguments, dict) else {}))
-    return tool_calls, str(data.get("output", "")).strip()
+    raise AgentModelExecutionError(attempts=attempts_made, last_error=last_error)
 
 
 def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | None:
@@ -355,16 +480,7 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
         '"assignee_type": "agent|human", "assigned_agent_id": "agent_id 或 null", '
         '"assignee_user_id": "审核人ID或空", "assignee_user_name": "审核人姓名或空", "assignee_role": "审核角色或空"}]}'
     )
-    agents_payload = [
-        {
-            "id": agent.id,
-            "name": agent.name,
-            "description": agent.description,
-            "capabilities": agent.capabilities,
-            "tools": [tool.model_dump(mode="json") for tool in agent.tools],
-        }
-        for agent in agents
-    ]
+    agents_payload = [model_agent_payload(agent) for agent in agents]
     user_prompt = json.dumps(
         {
             "task": {
@@ -377,6 +493,7 @@ def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | N
                 "loop_count": task.loop_count,
                 "max_loop_count": task.max_loop_count,
                 "draft": task.draft.model_dump(mode="json") if task.draft else None,
+                "contract": task.contract.model_dump(mode="json") if task.contract else None,
             },
             "context": task.context.model_dump(mode="json"),
             "available_agents": agents_payload,
@@ -651,6 +768,28 @@ def evaluate_success_criteria_with_model(
     ]
 
 
+def _artifact_evaluation_payload(artifact: Artifact) -> dict[str, Any]:
+    metadata_fields = (
+        "tool_name",
+        "tool_type",
+        "managed_final_delivery",
+        "deliverable_format",
+        "content_length",
+    )
+    return {
+        "artifact_id": artifact.id,
+        "kind": artifact.kind.value,
+        "name": artifact.name,
+        "content": artifact.content,
+        "media_type": artifact.media_type,
+        "metadata": {
+            field: artifact.metadata[field]
+            for field in metadata_fields
+            if field in artifact.metadata
+        },
+    }
+
+
 def evaluate_deliverable_requirements_with_model(
     task: Task,
     selected_artifacts: list[Artifact],
@@ -677,15 +816,7 @@ def evaluate_deliverable_requirements_with_model(
                 requirement.model_dump(mode="json") for requirement in requirements
             ],
             "selected_artifacts": [
-                {
-                    "artifact_id": artifact.id,
-                    "kind": artifact.kind.value,
-                    "name": artifact.name,
-                    "content": artifact.content,
-                    "uri": artifact.uri,
-                    "media_type": artifact.media_type,
-                    "metadata": artifact.metadata,
-                }
+                _artifact_evaluation_payload(artifact)
                 for artifact in selected_artifacts
             ],
         },
@@ -773,8 +904,253 @@ def _loads_json(text: str) -> dict[str, Any]:
     return data
 
 
+def _parse_subtask_execution_response(text: str) -> tuple[list[ToolCall], str]:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Agent model response was empty")
+
+    cleaned = text.strip()
+    json_envelope = _json_object_envelope(cleaned)
+    if json_envelope is None:
+        return [], cleaned
+    data = json.loads(json_envelope)
+    if not isinstance(data, dict):
+        raise ValueError("Agent model response JSON must be an object")
+    raw_tool_calls = data.get("tool_calls")
+    output = data.get("output")
+    if not isinstance(raw_tool_calls, list):
+        raise ValueError("Agent model response field 'tool_calls' must be a list")
+    if not isinstance(output, str):
+        raise ValueError("Agent model response field 'output' must be a string")
+
+    tool_calls = []
+    for index, item in enumerate(raw_tool_calls):
+        if not isinstance(item, dict):
+            raise ValueError(f"Agent model response tool_calls[{index}] must be an object")
+        tool_name = item.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ValueError(f"Agent model response tool_calls[{index}].tool_name must be a non-empty string")
+        arguments = item.get("arguments")
+        if not isinstance(arguments, dict):
+            raise ValueError(f"Agent model response tool_calls[{index}].arguments must be an object")
+        tool_calls.append(ToolCall(tool_name=tool_name.strip(), arguments=arguments))
+    return tool_calls, output.strip()
+
+
+def _parse_subtask_execution_response_for_delivery(
+    text: str,
+    *,
+    agent: Agent | None,
+    managed_file: bool,
+    execution_tools: list[AgentTool],
+) -> tuple[list[ToolCall], str]:
+    if managed_file and not execution_tools:
+        if _looks_like_tool_calls_json(text):
+            tool_calls, _ = _parse_subtask_execution_response(text)
+            _validate_managed_tool_calls(tool_calls, agent, execution_tools)
+            raise ValueError("Managed file delivery final response must be returned as direct body text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Agent model response was empty")
+        return [], text.strip()
+
+    tool_calls, output = _parse_subtask_execution_response(text)
+    if managed_file:
+        _validate_managed_tool_calls(tool_calls, agent, execution_tools)
+    return tool_calls, output
+
+
+def _looks_like_tool_calls_json(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    cleaned = text.strip()
+    if cleaned.startswith("{"):
+        candidate = cleaned
+    else:
+        first_line, separator, fenced_body = cleaned.partition("\n")
+        if first_line.strip().lower() != "```json" or not separator:
+            return False
+        closing_fence = re.search(r"(?m)^[ \t]*```[ \t]*\r?$", fenced_body)
+        if closing_fence is not None:
+            if fenced_body[closing_fence.end() :].strip():
+                return False
+            fenced_body = fenced_body[: closing_fence.start()]
+        candidate = fenced_body.lstrip()
+    if not candidate.startswith("{"):
+        return False
+    has_tool_calls, root_end = _scan_top_level_object(candidate, "tool_calls")
+    if not has_tool_calls:
+        return False
+    return root_end is None or not candidate[root_end + 1 :].strip()
+
+
+def _scan_top_level_object(candidate: str, expected_key: str) -> tuple[bool, int | None]:
+    depth = 0
+    quote = ""
+    escaped = False
+    string_start = 0
+    has_expected_key = False
+    for index, character in enumerate(candidate):
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                closed_quote = quote
+                quote = ""
+                if depth != 1:
+                    continue
+                next_index = index + 1
+                while next_index < len(candidate) and candidate[next_index].isspace():
+                    next_index += 1
+                if next_index >= len(candidate) or candidate[next_index] != ":":
+                    continue
+                if closed_quote == '"':
+                    try:
+                        key = json.loads(candidate[string_start : index + 1])
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    key = candidate[string_start + 1 : index]
+                if key == expected_key:
+                    has_expected_key = True
+            continue
+
+        if character in {'"', "'"}:
+            quote = character
+            string_start = index
+        elif character in "[{":
+            depth += 1
+        elif character in "]}":
+            depth -= 1
+            if depth <= 0:
+                return has_expected_key, index
+    return has_expected_key, None
+
+
+def _validate_managed_tool_calls(
+    tool_calls: list[ToolCall],
+    agent: Agent | None,
+    execution_tools: list[AgentTool],
+) -> None:
+    visible_tool_names = {tool.name for tool in execution_tools}
+    for tool_call in tool_calls:
+        tool = next(
+            (candidate for candidate in agent.tools if candidate.name == tool_call.tool_name),
+            None,
+        ) if agent else None
+        if (
+            tool is None
+            or tool.type == "file_write"
+            or tool_call.tool_name not in visible_tool_names
+        ):
+            raise ValueError("Managed file delivery received a non-visible tool call")
+
+
+def _json_object_envelope(text: str) -> str | None:
+    if text.startswith("{"):
+        return text
+    if not text.startswith("```"):
+        return None
+
+    first_line, separator, fenced_body = text.partition("\n")
+    if first_line.strip().lower() != "```json":
+        return None
+    if not separator or not fenced_body.rstrip().endswith("```"):
+        raise ValueError("Agent model JSON fence must wrap a complete object")
+
+    json_text = fenced_body.rstrip()[:-3].strip()
+    if not json_text.startswith("{"):
+        return None
+    return json_text
+
+
+def _extract_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts).strip()
+
+
+def _is_managed_file_delivery(task: Task) -> bool:
+    return bool(task.contract and task.contract.deliverable_kind == "file")
+
+
+def _execution_tools(agent: Agent | None, managed_file: bool) -> list[AgentTool]:
+    tools = list(agent.tools) if agent else []
+    if not managed_file:
+        return tools
+
+    visible_tools = []
+    seen_names = set()
+    for tool in tools:
+        if tool.name in seen_names:
+            continue
+        seen_names.add(tool.name)
+        if tool.type != "file_write":
+            visible_tools.append(tool)
+    return visible_tools
+
+
+def _sanitize_error_text(text: str) -> str:
+    credential_labels = (
+        r"(?:model[ _-]?api[ _-]?key|api[ _-]?key|access[ _-]?token|"
+        r"refresh[ _-]?token|client[ _-]?secret|credential|token|password|secret|cookie)"
+    )
+    separator_sensitive_labels = rf"(?:authorization|{credential_labels})"
+    sensitive_value_pattern = re.compile(
+        rf"(?i)(\b{separator_sensitive_labels}\b[\"']?"
+        r"(?:\s+(?:provided(?:\s+is)?|is))?\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\r\n,;]+)"
+    )
+    bare_sensitive_value_pattern = re.compile(
+        rf"(?i)(\b{credential_labels}\b[\"']?"
+        r"(?:\s+(?:provided(?:\s+is)?|is))?\s+)"
+        r"(?!(?:limit|count|expired|expiration|quota|budget|usage|window|length|"
+        r"maximum|max|minimum|min|invalid|missing)\b)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;\"']+)"
+    )
+    sanitized = re.sub(r"(?i)\bsk-[a-z0-9._-]{6,}\b", "[REDACTED]", text)
+    sanitized = re.sub(
+        r"(?i)\b(bearer|basic)\s+(?:\"[^\"]*\"|'[^']*'|[^\s,;\"']+)",
+        r"\1 [REDACTED]",
+        sanitized,
+    )
+    sanitized = sensitive_value_pattern.sub(r"\1[REDACTED]", sanitized)
+    sanitized = bare_sensitive_value_pattern.sub(r"\1[REDACTED]", sanitized)
+    return sanitized[:1000]
+
+
 def _normalize_assignee_type(value: Any) -> str:
     return "agent" if value == "agent" else "human"
+
+
+def _normalize_suggested_delivery(item: dict[str, Any]) -> tuple[str, str | None, str]:
+    deliverable_kind = item.get("deliverable_kind")
+    kind = (
+        deliverable_kind
+        if isinstance(deliverable_kind, str) and deliverable_kind in {"text", "file"}
+        else "text"
+    )
+    if kind == "text":
+        return "text", None, ""
+
+    deliverable_format = item.get("deliverable_format")
+    normalized_format = (
+        deliverable_format
+        if isinstance(deliverable_format, str) and deliverable_format in {"markdown", "text"}
+        else None
+    )
+    filename = item.get("deliverable_filename")
+    return "file", normalized_format, filename.strip() if isinstance(filename, str) else ""
 
 
 def _optional_string(value: Any) -> str | None:

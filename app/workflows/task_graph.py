@@ -9,13 +9,14 @@ from langgraph.graph import END, StateGraph
 from app.core.config import is_system_mock_fallback_enabled, require_system_mock_fallback_enabled
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
-from app.core.model_client import execute_subtask_with_tools_model, judge_condition_with_model
-from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, ToolCall, User, scoped_subtask_id, utc_now
+from app.core.model_client import AgentModelExecutionError, execute_subtask_with_tools_model, judge_condition_with_model
+from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, ToolCall, User, utc_now
 from app.planners.factory import get_task_planner
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry, UserRegistry
 from app.services.tool_executor import ToolExecutor
+from app.workflows.subtask_identity import build_subtask_id
 
 
 class TaskGraphState(TypedDict):
@@ -172,13 +173,7 @@ class TaskGraphRunner:
                 logical_key = f"round_{round_index}_{ordinal}_{digest}"
             subtask.execution_id = execution_id
             subtask.logical_key = logical_key
-            subtask.id = scoped_subtask_id(
-                task.id,
-                execution_id,
-                logical_key,
-                round_index=round_index,
-                ordinal=ordinal,
-            )
+            subtask.id = build_subtask_id(task.id, execution_id, logical_key)
 
     @staticmethod
     def _should_create_draft_human_gate(task: Task, plan: RoundPlan) -> bool:
@@ -325,7 +320,11 @@ class TaskGraphRunner:
         task.current_node = CurrentNode.COMPLETION_JUDGE
         plan = state["round_plan"]
         if not plan.should_continue or not plan.subtasks:
-            final_output = plan.final_output or task.context.summary
+            proposed_output = plan.final_output or task.context.summary
+            final_output = self.completion_service.delivery_content(
+                task,
+                proposed_output,
+            )
             report = self.completion_service.finalize(
                 task,
                 candidate_status=TaskStatus.SUCCEEDED,
@@ -372,7 +371,10 @@ class TaskGraphRunner:
 
     def _execute_subtask(self, task: Task, subtask: SubTask, agent) -> SubTaskExecutionOutcome:
         if agent:
-            execution_result = execute_subtask_with_tools_model(task, subtask, agent, [])
+            try:
+                execution_result = execute_subtask_with_tools_model(task, subtask, agent, [])
+            except AgentModelExecutionError as exc:
+                return self._handle_agent_model_execution_error(task, agent, exc, phase="initial execution")
             if execution_result is None:
                 deterministic_outcome = self._execute_deterministic_tool_subtask(task, subtask, agent)
                 if deterministic_outcome is not None:
@@ -388,7 +390,13 @@ class TaskGraphRunner:
             if tool_calls:
                 subtask.tool_calls = tool_calls
                 subtask.tool_results = [self.tool_executor.execute(agent, tool_call) for tool_call in tool_calls]
-                followup_result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+                try:
+                    followup_result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
+                except AgentModelExecutionError as exc:
+                    tool_error = self._tool_failure_error(subtask.tool_results)
+                    if tool_error:
+                        return SubTaskExecutionOutcome(completed=False, error=tool_error)
+                    return self._handle_agent_model_execution_error(task, agent, exc, phase="followup execution")
                 if followup_result is None:
                     file_write_output = self._completed_file_write_output(subtask)
                     if file_write_output:
@@ -403,10 +411,9 @@ class TaskGraphRunner:
                 tool_calls, output = followup_result
                 if tool_calls:
                     subtask.tool_calls.extend(tool_calls)
-            failed_tools = [result for result in subtask.tool_results if not result.success]
-            if failed_tools:
-                error = "; ".join(result.error or f"Tool {result.tool_name} failed" for result in failed_tools)
-                return SubTaskExecutionOutcome(completed=False, error=error)
+            tool_error = self._tool_failure_error(subtask.tool_results)
+            if tool_error:
+                return SubTaskExecutionOutcome(completed=False, error=tool_error)
             if not output:
                 return SubTaskExecutionOutcome(completed=False, error="Agent returned no output")
             return SubTaskExecutionOutcome(completed=True, output=output)
@@ -485,6 +492,32 @@ class TaskGraphRunner:
         if not written_paths:
             return ""
         return "文档已写入：" + "，".join(written_paths)
+
+    @staticmethod
+    def _handle_agent_model_execution_error(
+        task: Task,
+        agent,
+        error: AgentModelExecutionError,
+        *,
+        phase: str,
+    ) -> SubTaskExecutionOutcome:
+        if is_system_mock_fallback_enabled():
+            return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
+        return SubTaskExecutionOutcome(
+            completed=False,
+            error=(
+                f"Agent model execution failed during {phase} "
+                f"after {error.attempts} attempts: {error.last_error}"
+            ),
+        )
+
+    @staticmethod
+    def _tool_failure_error(tool_results) -> str:
+        return "; ".join(
+            result.error or f"Tool {result.tool_name} failed"
+            for result in tool_results
+            if not result.success
+        )
 
     def _execute_condition_subtask(self, task: Task, subtask: SubTask) -> SubTaskExecutionOutcome:
         config = subtask.result_metadata.get("config", {})

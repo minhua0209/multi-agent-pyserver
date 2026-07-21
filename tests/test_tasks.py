@@ -4,6 +4,7 @@ from threading import Event, Lock, Thread
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.core.enums import CriterionResultStatus, CurrentNode, TaskStatus, TaskType
 from app.main import create_app
@@ -13,7 +14,9 @@ from app.core.models import (
     Task,
     TaskConfirm,
     TaskContract,
+    TaskContractInput,
     TaskContractItem,
+    TaskDraft,
     TaskRequestCreate,
     utc_now,
 )
@@ -172,8 +175,13 @@ def test_first_confirmation_creates_exactly_one_initial_execution(tmp_path: Path
     assert execution["completion_report"] is None
 
 
-def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Path) -> None:
+def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Path, monkeypatch) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    monkeypatch.setattr(
+        client.app.state.task_service,
+        "start_background_task",
+        lambda *_args, **_kwargs: None,
+    )
     user = client.post(
         "/api/v1/users",
         json={"name": "张三", "phone": "13800000001", "email": "alice@example.com", "role": "user"},
@@ -198,6 +206,9 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
             "contract": {
                 "goal": "形成客户认可的实施路径",
                 "deliverable_goal": "交付一份实施方案文档",
+                "deliverable_kind": "file",
+                "deliverable_format": "markdown",
+                "deliverable_filename": "  implementation-plan.md  ",
                 "deliverable_requirements": [
                     {"id": "requirement_markdown", "description": "Markdown 格式"},
                     {"description": "包含风险与里程碑"},
@@ -208,6 +219,7 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
                 ],
                 "requires_human_acceptance": True,
             },
+            "execution_mode": "async",
         },
     )
 
@@ -216,6 +228,9 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     contract = confirmed["contract"]
     assert contract["goal"] == "形成客户认可的实施路径"
     assert contract["deliverable_goal"] == "交付一份实施方案文档"
+    assert contract["deliverable_kind"] == "file"
+    assert contract["deliverable_format"] == "markdown"
+    assert contract["deliverable_filename"] == "implementation-plan.md"
     assert contract["deliverable_requirements"][0] == {
         "id": "requirement_markdown",
         "description": "Markdown 格式",
@@ -230,6 +245,7 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     assert contract["legacy_inferred"] is False
     assert confirmed["executions"][0]["triggered_by_user_id"] == user["id"]
     assert confirmed["executions"][0]["triggered_by_user_name"] == "张三"
+    assert confirmed["executions"][0]["contract_snapshot"] == contract
 
 
 def test_confirmed_task_waiting_for_dependencies_uses_initial_execution(tmp_path: Path) -> None:
@@ -599,6 +615,255 @@ def test_confirm_task_rejects_invalid_contract(tmp_path: Path, contract: dict) -
     assert response.status_code == 422
 
 
+def _contract_input(**overrides) -> dict:
+    payload = {
+        "goal": "形成实施路径",
+        "deliverable_goal": "交付实施方案",
+        "success_criteria": [{"description": "可以评审"}],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_file_contract_requires_deliverable_format() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(deliverable_kind="file", deliverable_filename="plan.md")
+        )
+
+    assert "deliverable_format is required for file deliverables" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        ".",
+        "..",
+        "../plan.md",
+        "folder/plan.md",
+        "folder\\plan.md",
+        "D:plan.md",
+        "CON.md",
+        "con.MD",
+        "LPT9.md",
+        "plan?.md",
+        "plan|draft.md",
+        "plan\x00.md",
+        "plan\x1f.md",
+        "plan\x7f.md",
+        "plan\x85.md",
+        "plan.md.",
+    ],
+)
+def test_file_contract_rejects_non_plain_filename(filename: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(
+                deliverable_kind="file",
+                deliverable_format="markdown",
+                deliverable_filename=filename,
+            )
+        )
+
+    assert "deliverable_filename must be a plain filename" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["a" * 253, "文" * 85],
+)
+def test_file_contract_rejects_filename_over_255_utf8_bytes_after_extension(
+    filename: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(
+                deliverable_kind="file",
+                deliverable_format="markdown",
+                deliverable_filename=filename,
+            )
+        )
+
+    assert "deliverable_filename must be at most 255 UTF-8 bytes" in str(
+        exc_info.value
+    )
+
+
+@pytest.mark.parametrize(
+    ("deliverable_format", "filename"),
+    [
+        ("markdown", "CONIN$.md"),
+        ("text", "conout$.txt"),
+        ("markdown", "COM¹.md"),
+        ("text", "com².txt"),
+        ("markdown", "Com³.md"),
+        ("text", "LPT¹.txt"),
+        ("markdown", "lpt².md"),
+        ("text", "LpT³.txt"),
+    ],
+)
+def test_file_contract_rejects_additional_windows_device_names(
+    deliverable_format: str,
+    filename: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(
+                deliverable_kind="file",
+                deliverable_format=deliverable_format,
+                deliverable_filename=filename,
+            )
+        )
+
+    assert "deliverable_filename must be a plain filename" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("deliverable_format", "filename", "expected_extension"),
+    [
+        ("markdown", "plan.txt", ".md"),
+        ("text", "plan.md", ".txt"),
+        ("text", "plan.pdf", ".txt"),
+    ],
+)
+def test_file_contract_rejects_wrong_extension(
+    deliverable_format: str,
+    filename: str,
+    expected_extension: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(
+            _contract_input(
+                deliverable_kind="file",
+                deliverable_format=deliverable_format,
+                deliverable_filename=filename,
+            )
+        )
+
+    assert f"deliverable_filename extension must be {expected_extension}" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_filename"),
+    [
+        ("", ""),
+        ("   ", ""),
+        ("delivery", "delivery"),
+        ("  PLAN.MD  ", "PLAN.MD"),
+        ("文" * 84, "文" * 84),
+    ],
+)
+def test_file_contract_accepts_empty_extensionless_and_matching_filename(
+    filename: str,
+    expected_filename: str,
+) -> None:
+    contract = TaskContractInput.model_validate(
+        _contract_input(
+            deliverable_kind="file",
+            deliverable_format="markdown",
+            deliverable_filename=filename,
+        )
+    )
+
+    assert contract.deliverable_filename == expected_filename
+
+
+@pytest.mark.parametrize(
+    "deliverable_fields",
+    [
+        {"deliverable_format": "markdown"},
+        {"deliverable_filename": "plan"},
+    ],
+)
+def test_text_contract_rejects_file_delivery_fields(deliverable_fields: dict) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TaskContractInput.model_validate(_contract_input(**deliverable_fields))
+
+    assert "text deliverables cannot define file delivery fields" in str(exc_info.value)
+
+
+def test_legacy_contract_and_draft_default_to_text_deliverable() -> None:
+    contract = TaskContract.model_validate(
+        {
+            "goal": "Prepare delivery",
+            "deliverable_goal": "Reviewable delivery",
+            "success_criteria": [{"description": "Reviewable"}],
+            "confirmed_at": "2026-07-20T00:00:00Z",
+        }
+    )
+    draft = TaskDraft.model_validate(
+        {
+            "title": "Prepare delivery",
+            "description": "Prepare a reviewable delivery",
+            "confidence": 0.8,
+        }
+    )
+
+    for item in (contract, draft):
+        assert item.deliverable_kind == "text"
+        assert item.deliverable_format is None
+        assert item.deliverable_filename == ""
+
+
+def test_merge_drafts_uses_first_explicit_file_deliverable(tmp_path: Path) -> None:
+    service = TestClient(create_app(agent_file=tmp_path / "agents.json")).app.state.task_service
+
+    merged = service._merge_drafts(
+        "Prepare delivery",
+        [
+            {
+                "title": "Analyze",
+                "description": "Analyze requirements",
+                "confidence": 0.9,
+            },
+            {
+                "title": "Write plan",
+                "description": "Write the plan",
+                "confidence": 0.8,
+                "deliverable_kind": "file",
+                "deliverable_format": "markdown",
+                "deliverable_filename": "first-plan.md",
+            },
+            {
+                "title": "Write notes",
+                "description": "Write notes",
+                "confidence": 0.7,
+                "deliverable_kind": "file",
+                "deliverable_format": "text",
+                "deliverable_filename": "later-notes.txt",
+            },
+        ],
+    )
+
+    assert merged.deliverable_kind == "file"
+    assert merged.deliverable_format == "markdown"
+    assert merged.deliverable_filename == "first-plan.md"
+
+
+def test_merge_drafts_defaults_to_text_without_explicit_file(tmp_path: Path) -> None:
+    service = TestClient(create_app(agent_file=tmp_path / "agents.json")).app.state.task_service
+
+    merged = service._merge_drafts(
+        "Prepare delivery",
+        [
+            {
+                "title": "Markdown report",
+                "description": "Create a markdown file",
+                "confidence": 0.9,
+            },
+            {
+                "title": "Plain text notes",
+                "description": "Create a text document",
+                "confidence": 0.8,
+            },
+        ],
+    )
+
+    assert merged.deliverable_kind == "text"
+    assert merged.deliverable_format is None
+    assert merged.deliverable_filename == ""
+
+
 def test_task_list_and_detail_are_scoped_to_normal_user(tmp_path: Path) -> None:
     client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
     alice = client.post(
@@ -966,6 +1231,103 @@ def test_background_task_failure_is_persisted_on_task(tmp_path: Path, monkeypatc
     assert result.final_output == "model execution failed"
     assert result.events[-1].type == "task_failed"
     assert service.get_task(created["id"]).task_status == "failed"
+
+
+def test_run_confirmed_task_preserves_working_task_after_followup_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.core.enums import ArtifactKind, ArtifactSourceType
+    from app.core.model_client import AgentModelExecutionError
+    from app.core.models import RoundPlan, SubTask, ToolCall
+
+    output_path = tmp_path / "outputs" / "working-draft.md"
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    agent = client.post(
+        "/api/v1/agents",
+        json={
+            "name": "Persistence Agent",
+            "description": "Writes delivery drafts",
+            "capabilities": ["delivery"],
+            "tools": [
+                {
+                    "name": "write_delivery",
+                    "type": "file_write",
+                    "config": {"base_dir": str(output_path.parent)},
+                }
+            ],
+        },
+    ).json()
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "content": "Write a delivery draft and continue processing",
+        },
+    ).json()["tasks"][0]
+    service = client.app.state.task_service
+    service.confirm_task_details(
+        created["id"],
+        payload=TaskConfirm(
+            title="Persist working delivery",
+            description="Write a delivery draft and continue processing",
+        ),
+        confirmed_by=client.app.state.user_registry.get_user("root"),
+    )
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Write the delivery draft",
+                subtasks=[
+                    SubTask(
+                        id="persist_draft",
+                        title="Persist draft",
+                        description="Write the draft before follow-up processing",
+                        assigned_agent_id=agent["id"],
+                    )
+                ],
+            )
+        raise AssertionError("planner must not run again after follow-up failure")
+
+    def _execute(_task, _subtask, _agent, tool_results):
+        if not tool_results:
+            return [
+                ToolCall(
+                    tool_name="write_delivery",
+                    arguments={
+                        "filename": "working-draft.md",
+                        "content": "persisted draft body",
+                    },
+                )
+            ], ""
+        raise AgentModelExecutionError(attempts=2, last_error="followup model failure")
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    returned = service.run_confirmed_task(created["id"])
+    persisted = service.get_task(created["id"])
+
+    assert returned == persisted
+    assert persisted.task_status == TaskStatus.FAILED
+    assert len(persisted.context.rounds) == 1
+    failed_subtask = persisted.context.rounds[0].subtasks[0]
+    assert failed_subtask.status == TaskStatus.FAILED
+    assert failed_subtask.output.startswith("Agent model execution failed during followup execution")
+    assert len(failed_subtask.tool_results) == 1
+    assert failed_subtask.tool_results[0].result == str(output_path.resolve())
+    assert output_path.read_text(encoding="utf-8") == "persisted draft body"
+    file_artifact = next(
+        artifact
+        for artifact in persisted.artifacts
+        if artifact.kind == ArtifactKind.FILE
+        and artifact.source_type == ArtifactSourceType.TOOL_RESULT
+    )
+    assert file_artifact.uri == output_path.resolve().as_uri()
+    assert persisted.executions[0].artifacts == persisted.artifacts
 
 
 def test_task_request_merges_identified_steps_into_one_main_task(tmp_path: Path, monkeypatch) -> None:

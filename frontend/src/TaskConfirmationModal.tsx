@@ -1,8 +1,22 @@
-import { Alert, Button, Card, Input, Modal, Spin, Switch, Tag, Tooltip, Typography } from "antd"
+import {
+  Alert,
+  Button,
+  Card,
+  Input,
+  Modal,
+  Segmented,
+  Select,
+  Spin,
+  Switch,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd"
 import { Plus, Trash2, XCircle } from "lucide-react"
 import { ReactNode, useEffect, useMemo, useState } from "react"
 
-import { Task, cancelTask, confirmTask, getTask } from "./api/taskhub"
+import type { DeliverableFormat, DeliverableKind, Task } from "./api/taskhub"
+import { cancelTask, confirmTask, getTask } from "./api/taskhub"
 import { taskLabel } from "./intentDrafts"
 import {
   ConfirmationDraft,
@@ -12,6 +26,7 @@ import {
   confirmTaskRequestsSequentially,
   confirmationTaskIdsToCancelOnClose,
   confirmationDraftFromTask,
+  setConfirmationDeliverableKind,
   validateConfirmationDraft,
 } from "./taskConfirmation"
 
@@ -269,6 +284,48 @@ export function TaskConfirmationModal({
                         onChange={(event) => updateDraft(task.id, { deliverableGoal: event.target.value })}
                       />
                     </label>
+                    <label className="field confirmation-wide-field">
+                      <span>交付方式</span>
+                      <Segmented
+                        block
+                        value={draft.deliverableKind}
+                        options={[
+                          { label: "页面文本", value: "text" },
+                          { label: "文件", value: "file" },
+                        ]}
+                        onChange={(value) => updateDraft(
+                          task.id,
+                          setConfirmationDeliverableKind(draft, value as DeliverableKind),
+                        )}
+                      />
+                    </label>
+                    {draft.deliverableKind === "file" && (
+                      <>
+                        <label className="field">
+                          <span>文件格式</span>
+                          <Select
+                            value={draft.deliverableFormat ?? undefined}
+                            options={[
+                              { label: "Markdown", value: "markdown" },
+                              { label: "纯文本", value: "text" },
+                            ]}
+                            onChange={(value) => updateDraft(task.id, {
+                              deliverableFormat: value as DeliverableFormat,
+                            })}
+                          />
+                        </label>
+                        <label className="field">
+                          <span>文件名（可选）</span>
+                          <Input
+                            value={draft.deliverableFilename}
+                            placeholder="例如：plan.md"
+                            onChange={(event) => updateDraft(task.id, {
+                              deliverableFilename: event.target.value,
+                            })}
+                          />
+                        </label>
+                      </>
+                    )}
                     <ConfirmationListField
                       title="交付要求（可选）"
                       emptyText="暂无额外交付要求"

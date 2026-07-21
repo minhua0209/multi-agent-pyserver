@@ -1,14 +1,22 @@
 from fastapi import APIRouter, Request, Response, status
 
-from app.core.models import Agent, AgentCreate, HumanNodeCreate, SimpleAgentCreate, SimpleAgentCreateResponse, Task
+from app.api.serialization import public_agent, sanitize_task
+from app.core.models import (
+    AgentCreate,
+    HumanNodeCreate,
+    PublicAgent,
+    SimpleAgentCreate,
+    SimpleAgentCreateResponse,
+    Task,
+)
 from app.services.agent_profile_builder import AgentProfileBuilder
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
-@router.post("", response_model=Agent, status_code=status.HTTP_201_CREATED)
-def create_agent(payload: AgentCreate, request: Request) -> Agent:
-    return request.app.state.agent_registry.create_agent(payload)
+@router.post("", response_model=PublicAgent, status_code=status.HTTP_201_CREATED)
+def create_agent(payload: AgentCreate, request: Request) -> PublicAgent:
+    return public_agent(request.app.state.agent_registry.create_agent(payload))
 
 
 @router.post("/simple", response_model=SimpleAgentCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -28,7 +36,7 @@ def create_simple_agent(payload: SimpleAgentCreate, request: Request, response: 
     return SimpleAgentCreateResponse(
         status="created",
         message=result.message,
-        agent=agent,
+        agent=public_agent(agent),
         matched_tools=result.matched_tools,
         missing_tools=result.missing_tools,
         guidance=result.guidance,
@@ -54,16 +62,16 @@ def create_human_node(payload: HumanNodeCreate, request: Request) -> SimpleAgent
     return SimpleAgentCreateResponse(
         status="created",
         message="人工节点已创建。",
-        agent=agent,
+        agent=public_agent(agent),
     )
 
 
-@router.get("", response_model=list[Agent])
-def list_agents(request: Request) -> list[Agent]:
-    return request.app.state.agent_registry.list_agents()
+@router.get("", response_model=list[PublicAgent])
+def list_agents(request: Request) -> list[PublicAgent]:
+    return [public_agent(agent) for agent in request.app.state.agent_registry.list_agents()]
 
 
 @router.post("/{agent_id}/poll", response_model=list[Task])
 def poll_agent_tasks(agent_id: str, request: Request) -> list[Task]:
     tasks = request.app.state.task_service.list_tasks()
-    return [task for task in tasks if task.assigned_agent_id == agent_id]
+    return [sanitize_task(task) for task in tasks if task.assigned_agent_id == agent_id]

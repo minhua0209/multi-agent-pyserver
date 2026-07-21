@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from app.core.enums import CurrentNode, TaskStatus
-from app.core.models import RoundPlan, SubTask, Task, WorkflowEdge, WorkflowNode, WorkflowTemplate, scoped_subtask_id
+from app.core.models import RoundPlan, SubTask, Task, WorkflowEdge, WorkflowNode, WorkflowTemplate
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry
+from app.workflows.subtask_identity import build_subtask_id
 from app.workflows.task_graph import TaskGraphRunner
 
 
@@ -79,10 +80,18 @@ class WorkflowTemplateRunner:
             return state["task"]
         if state["paused"]:
             return state["task"]
+        if (
+            state["task"].task_status != TaskStatus.RUNNING
+            or state["task"].current_node == CurrentNode.COMPLETION_JUDGE
+        ):
+            return state["task"]
         return runner._context_update(state)["task"]
 
     def _complete_workflow(self, task: Task, workflow: WorkflowTemplate, end_node_id: str) -> Task:
-        final_output = task.context.summary
+        final_output = self.completion_service.delivery_content(
+            task,
+            task.context.summary,
+        )
         report = self.completion_service.finalize(
             task,
             candidate_status=TaskStatus.SUCCEEDED,
@@ -129,11 +138,7 @@ class WorkflowTemplateRunner:
         assignee = WorkflowTemplateRunner._human_assignee_from_config(node.config, task) if node.type == "human" else {}
         execution_id = task.active_execution_id or ""
         subtask = SubTask(
-            id=(
-                scoped_subtask_id(task.id, execution_id, node.id)
-                if execution_id
-                else scoped_subtask_id(task.id, "", node.id)
-            ),
+            id=build_subtask_id(task.id, execution_id, node.id),
             execution_id=execution_id,
             logical_key=node.id,
             title=node.title or node.id,

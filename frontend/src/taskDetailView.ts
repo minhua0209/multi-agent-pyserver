@@ -133,11 +133,17 @@ type TaskDetailSource = Task & {
   contract?: {
     goal?: unknown
     deliverable_goal?: unknown
+    deliverable_kind?: unknown
+    deliverable_format?: unknown
+    deliverable_filename?: unknown
     requires_human_acceptance?: unknown
   } | null
   draft?: (NonNullable<Task["draft"]> & {
     goal?: unknown
     deliverable_goal?: unknown
+    deliverable_kind?: unknown
+    deliverable_format?: unknown
+    deliverable_filename?: unknown
   }) | null
   executions?: TaskExecutionSource[]
 }
@@ -176,6 +182,7 @@ export function taskFourQuestions(task: Task): TaskFourQuestion[] {
       : cleanText(task.final_output)
         ? `未记录结束原因；最终输出：${cleanText(task.final_output)}`
         : `未记录结束原因；任务终态为 ${status}`)
+  const deliverableText = taskDeliverableText(source)
 
   return [
     {
@@ -187,11 +194,25 @@ export function taskFourQuestions(task: Task): TaskFourQuestion[] {
     {
       key: "deliverable",
       title: "交付物是什么",
-      text: firstText(source.contract?.deliverable_goal, source.draft?.deliverable_goal)
-        || "历史任务未单独记录交付物目标",
+      text: deliverableText,
     },
     { key: "completion", title: "为什么可以结束", text: completionText },
   ]
+}
+
+function taskDeliverableText(source: TaskDetailSource) {
+  const contractGoal = cleanText(source.contract?.deliverable_goal)
+  const draftGoal = cleanText(source.draft?.deliverable_goal)
+  const goal = contractGoal || draftGoal
+  if (!goal) return "历史任务未单独记录交付物目标"
+
+  const deliverySource = contractGoal ? source.contract : source.draft
+  if (deliverySource?.deliverable_kind !== "file") return goal
+
+  const format = deliverySource.deliverable_format === "text" ? "纯文本" : "Markdown"
+  const filename = cleanText(deliverySource.deliverable_filename)
+  const details = filename ? ["文件", format, filename] : ["文件", format]
+  return `${goal}（${details.join(" / ")}）`
 }
 
 export function isTaskAwaitingHumanAcceptance(task: Task) {

@@ -35,6 +35,7 @@ from app.main import create_app
 from app.services.execution_service import ExecutionService
 from app.services.storage import AgentRegistry, InMemoryTaskStore
 from app.services.task_service import TaskService
+from app.workflows.subtask_identity import build_subtask_id
 from app.workflows.task_graph import TaskGraphRunner
 from app.workflows.template_runner import WorkflowTemplateRunner
 
@@ -988,8 +989,12 @@ def test_workflow_subtask_ids_change_per_execution_but_keep_logical_key() -> Non
     )
     second = WorkflowTemplateRunner._node_to_subtask(task, node)
 
-    assert first.id.startswith("subtask_")
-    assert second.id.startswith("subtask_")
+    assert first.id == build_subtask_id(task.id, "execution_1", "approval")
+    assert second.id == build_subtask_id(
+        task.id,
+        task.active_execution_id or "",
+        "approval",
+    )
     assert len(first.id) <= 64
     assert len(second.id) <= 64
     assert second.id != first.id
