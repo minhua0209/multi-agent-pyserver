@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.core.model_client import _loads_json, default_client
+from app.core.model_client import _loads_json, default_client, model_agent_payload
 from app.core.models import Agent, RoundPlan, Task
 from app.planners.base import round_plan_from_dict
 
@@ -31,6 +31,7 @@ class LLMTaskPlanner:
                     "content": task.content,
                     "loop_count": task.loop_count,
                     "max_loop_count": task.max_loop_count,
+                    "contract": task.contract.model_dump(mode="json") if task.contract else None,
                 },
                 "context": task.context.model_dump(mode="json"),
                 "available_agents": [self._agent_payload(agent) for agent in agents],
@@ -44,10 +45,4 @@ class LLMTaskPlanner:
 
     @staticmethod
     def _agent_payload(agent: Agent) -> dict:
-        return {
-            "id": agent.id,
-            "name": agent.name,
-            "description": agent.description,
-            "capabilities": agent.capabilities,
-            "tools": [tool.model_dump(mode="json") for tool in agent.tools],
-        }
+        return model_agent_payload(agent)

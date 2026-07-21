@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from app.core.model_client import MODEL_NAME, RESPONSES_API_KEY, RESPONSES_API_URL, _loads_json
+from app.core.model_client import (
+    MODEL_NAME,
+    RESPONSES_API_KEY,
+    RESPONSES_API_URL,
+    _loads_json,
+    model_agent_payload,
+)
 from app.core.models import Agent, RoundPlan, Task
 from app.planners.base import round_plan_from_dict
 
@@ -84,6 +90,7 @@ class CrewAITaskPlanner:
                     "Use parallel execution only for independent subtasks.",
                     "Use sequential execution when the next subtask depends on current context.",
                     "Preserve human nodes by returning assignee_type=human.",
+                    "Treat the confirmed task contract as the authoritative execution basis.",
                     "For human subtasks, infer assignee_user_id and assignee_user_name from the task text when a reviewer name is mentioned.",
                     "Return should_continue=false when no remaining subtasks exist.",
                     "Write all user-facing text fields in Chinese: reason, final_output, subtasks.title, subtasks.description.",
@@ -96,18 +103,10 @@ class CrewAITaskPlanner:
                     "content": task.content,
                     "loop_count": task.loop_count,
                     "max_loop_count": task.max_loop_count,
+                    "contract": task.contract.model_dump(mode="json") if task.contract else None,
                 },
                 "context": task.context.model_dump(mode="json"),
-                "available_agents": [
-                    {
-                        "id": agent.id,
-                        "name": agent.name,
-                        "description": agent.description,
-                        "capabilities": agent.capabilities,
-                        "tools": [tool.model_dump(mode="json") for tool in agent.tools],
-                    }
-                    for agent in agents
-                ],
+                "available_agents": [model_agent_payload(agent) for agent in agents],
             },
             ensure_ascii=False,
         )

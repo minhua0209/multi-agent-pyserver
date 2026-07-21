@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 
-DEFAULT_DATABASE_URL = "mysql+pymysql://root:rootroot@localhost:3306/demo_db?charset=utf8mb4"
+DEFAULT_DATABASE_URL: str | None = None
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_AGENT_OUTPUT_DIR = PROJECT_ROOT / "runtime" / "agent_outputs"
+
+
+def get_agent_output_dir() -> Path:
+    configured_path = os.getenv("AGENT_OUTPUT_DIR", "").strip()
+    if not configured_path:
+        return DEFAULT_AGENT_OUTPUT_DIR.resolve()
+
+    output_dir = Path(configured_path).expanduser()
+    if not output_dir.is_absolute():
+        output_dir = PROJECT_ROOT / output_dir
+    return output_dir.resolve()
 
 
 def get_task_planner_type() -> str:

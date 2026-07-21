@@ -24,6 +24,7 @@ from app.core.models import (
     ToolExecutionResult,
     utc_now,
 )
+from app.services.deliverable_materializer import MaterializedDeliverable
 
 
 def test_artifact_model_is_strict_and_requires_content_or_uri() -> None:
@@ -70,11 +71,26 @@ def _artifact_service():
     return ArtifactService()
 
 
-def _task_with_execution(*, input_artifacts: list[str] | None = None) -> Task:
+def _file_uri_module():
+    try:
+        from app.services import file_uri
+    except ImportError:
+        pytest.fail("file URI conversion helper is not implemented")
+    return file_uri
+
+
+def _task_with_execution(
+    *,
+    input_artifacts: list[str] | None = None,
+    file_delivery: bool = False,
+) -> Task:
     now = utc_now()
     contract = TaskContract(
         goal="Prepare delivery",
         deliverable_goal="Reviewable delivery",
+        deliverable_kind="file" if file_delivery else "text",
+        deliverable_format="markdown" if file_delivery else None,
+        deliverable_filename="delivery.md" if file_delivery else "",
         deliverable_requirements=[
             TaskContractItem(id="requirement_summary", description="Contains summary"),
             TaskContractItem(id="requirement_risks", description="Contains risks"),
@@ -131,6 +147,259 @@ def test_register_task_output_creates_valid_text_artifact_covering_all_requireme
     assert artifact.validation_status == ArtifactValidationStatus.VALID
     assert artifact.deliverable_requirement_ids == []
     assert service.current(task) == [artifact]
+
+
+def test_register_task_file_output_creates_managed_valid_artifact(
+    tmp_path: Path,
+) -> None:
+    task = _task_with_execution(file_delivery=True)
+    service = _artifact_service()
+    delivery_path = tmp_path / "delivery.md"
+    delivery_path.write_text("Final delivery", encoding="utf-8")
+    materialized = MaterializedDeliverable(
+        path=delivery_path,
+        content="Final delivery",
+        media_type="text/markdown",
+        delivery_format="markdown",
+    )
+
+    artifact = service.register_task_file_output(task, materialized)
+    repeated = service.register_task_file_output(task, materialized)
+
+    assert artifact is not None
+    assert repeated is artifact
+    assert service.current(task) == [artifact]
+    assert artifact.kind == ArtifactKind.FILE
+    assert artifact.source_type == ArtifactSourceType.TASK_RESULT
+    assert artifact.source_id == f"{task.id}:file"
+    assert artifact.name == "delivery.md"
+    assert artifact.content == "Final delivery"
+    assert artifact.uri == delivery_path.resolve().as_uri()
+    assert artifact.media_type == "text/markdown"
+    assert artifact.checksum == "sha256:" + hashlib.sha256(b"Final delivery").hexdigest()
+    assert artifact.validation_status == ArtifactValidationStatus.VALID
+    assert artifact.metadata == {
+        "managed_final_delivery": True,
+        "deliverable_format": "markdown",
+        "content_length": len("Final delivery"),
+    }
+
+
+def test_register_task_file_output_does_not_reopen_materialized_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task_with_execution(file_delivery=True)
+    service = _artifact_service()
+    delivery_path = tmp_path / "delivery.md"
+    delivery_path.write_text("Final delivery", encoding="utf-8")
+
+    def reject_path_read(_path: Path) -> bytes:
+        raise AssertionError("managed artifact registration must use its content snapshot")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_path_read)
+
+    artifact = service.register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content="Final delivery",
+            media_type="text/markdown",
+            delivery_format="markdown",
+        ),
+    )
+
+    assert artifact.checksum == "sha256:" + hashlib.sha256(b"Final delivery").hexdigest()
+
+
+def test_register_task_file_output_updates_existing_snapshot_in_place(
+    tmp_path: Path,
+) -> None:
+    task = _task_with_execution(file_delivery=True)
+    service = _artifact_service()
+    delivery_path = tmp_path / "delivery.md"
+    delivery_path.write_text("First delivery", encoding="utf-8")
+    first = service.register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content="First delivery",
+            media_type="text/markdown",
+            delivery_format="markdown",
+        ),
+    )
+    task.artifacts[0] = first.model_copy(
+        update={"deliverable_requirement_ids": ["requirement_summary"]}
+    )
+    original_id = first.id
+    original_created_at = first.created_at
+
+    delivery_path.write_text("Updated delivery", encoding="utf-8")
+    updated = service.register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content="Updated delivery",
+            media_type="text/markdown",
+            delivery_format="markdown",
+        ),
+    )
+
+    assert updated.id == original_id
+    assert updated.created_at == original_created_at
+    assert updated.content == "Updated delivery"
+    assert updated.checksum == "sha256:" + hashlib.sha256(b"Updated delivery").hexdigest()
+    assert updated.deliverable_requirement_ids == ["requirement_summary"]
+    assert updated.validation_status == ArtifactValidationStatus.VALID
+    assert service.current(task) == [updated]
+
+
+def test_local_file_uri_to_path_passes_encoded_path_to_url2pathname(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_uri = _file_uri_module()
+    converted_path = tmp_path / "converted report.md"
+    converted_inputs: list[str] = []
+
+    def convert(path: str) -> str:
+        converted_inputs.append(path)
+        return str(converted_path)
+
+    monkeypatch.setattr(file_uri, "url2pathname", convert)
+
+    result = file_uri.local_file_uri_to_path(
+        "file:///C:/Reports/final%20report.md"
+    )
+
+    assert converted_inputs == ["/C:/Reports/final%20report.md"]
+    assert result == converted_path
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["literal%2F report.md", "\u4ea4\u4ed8 \u62a5\u544a.md"],
+)
+def test_local_file_uri_to_path_round_trips_encoded_filename(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    file_uri = _file_uri_module()
+    delivery_path = tmp_path / filename
+    uri = delivery_path.as_uri()
+
+    if "%2F" in filename:
+        assert "%252F" in uri
+    assert file_uri.local_file_uri_to_path(uri) == delivery_path
+
+
+def test_local_file_uri_to_path_preserves_posix_path(tmp_path: Path) -> None:
+    file_uri = _file_uri_module()
+    delivery_path = tmp_path / "final report.md"
+
+    assert file_uri.local_file_uri_to_path(delivery_path.as_uri()) == delivery_path
+    assert file_uri.local_file_uri_to_path("https://example.invalid/report.md") is None
+    assert file_uri.local_file_uri_to_path("file://server/share/report.md") is None
+
+
+def test_artifact_revalidation_uses_shared_file_uri_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_uri = _file_uri_module()
+    task = _task_with_execution(file_delivery=True)
+    service = _artifact_service()
+    delivery_path = tmp_path / "delivery.md"
+    delivery_path.write_text("Final delivery", encoding="utf-8")
+    artifact = service.register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content="Final delivery",
+            media_type="text/markdown",
+            delivery_format="markdown",
+        ),
+    )
+    artifact = service.replace_current(
+        task,
+        artifact.model_copy(
+            update={
+                "uri": "file:///C:/managed/delivery.md",
+                "validation_status": ArtifactValidationStatus.PENDING,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        file_uri,
+        "url2pathname",
+        lambda _path: str(delivery_path),
+    )
+
+    revalidated = service.revalidate(task, artifact)
+
+    assert revalidated.validation_status == ArtifactValidationStatus.VALID
+
+
+@pytest.mark.parametrize("change", ["delete", "modify", "empty", "snapshot"])
+def test_revalidate_file_output_rejects_file_or_snapshot_mismatch(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    task = _task_with_execution(file_delivery=True)
+    service = _artifact_service()
+    delivery_path = tmp_path / "delivery.md"
+    delivery_path.write_text("Final delivery", encoding="utf-8")
+    artifact = service.register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content="Final delivery",
+            media_type="text/markdown",
+            delivery_format="markdown",
+        ),
+    )
+    assert artifact is not None
+
+    if change == "delete":
+        delivery_path.unlink()
+    elif change == "modify":
+        delivery_path.write_text("Changed delivery", encoding="utf-8")
+    elif change == "empty":
+        delivery_path.write_bytes(b"")
+    else:
+        task.artifacts[0] = artifact.model_copy(update={"content": "Different snapshot"})
+        artifact = task.artifacts[0]
+
+    revalidated = service.revalidate(task, artifact)
+
+    assert revalidated.validation_status == ArtifactValidationStatus.INVALID
+    assert service.current(task)[0].validation_status == ArtifactValidationStatus.INVALID
+
+
+def test_revalidate_file_write_without_content_snapshot_remains_valid(
+    tmp_path: Path,
+) -> None:
+    task = _task_with_execution()
+    service = _artifact_service()
+    delivery_path = tmp_path / "tool-output.txt"
+    delivery_path.write_text("Tool output", encoding="utf-8")
+    artifact = service.register_tool_result(
+        task,
+        SubTask(id="subtask_tools", title="Use tools", description="Produce outputs"),
+        ToolExecutionResult(
+            tool_execution_id="tool_file",
+            tool_name="write_file",
+            tool_type="file_write",
+            success=True,
+            result=str(delivery_path),
+        ),
+    )
+    assert artifact is not None
+    artifact.validation_status = ArtifactValidationStatus.PENDING
+
+    revalidated = service.revalidate(task, artifact)
+
+    assert revalidated.validation_status == ArtifactValidationStatus.VALID
 
 
 def test_subtask_output_registration_is_idempotent_but_does_not_merge_different_sources() -> None:

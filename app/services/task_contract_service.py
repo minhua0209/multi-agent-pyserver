@@ -15,6 +15,9 @@ class TaskContractService:
         return TaskContract(
             goal=contract.goal,
             deliverable_goal=contract.deliverable_goal,
+            deliverable_kind=contract.deliverable_kind,
+            deliverable_format=contract.deliverable_format,
+            deliverable_filename=contract.deliverable_filename,
             deliverable_requirements=self._items_with_ids(contract.deliverable_requirements, "requirement"),
             success_criteria=self._items_with_ids(contract.success_criteria, "criterion"),
             requires_human_acceptance=contract.requires_human_acceptance,

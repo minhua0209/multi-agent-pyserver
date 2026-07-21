@@ -10,11 +10,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: "mysql+pymysql://root:demo_root_123@host.docker.internal:3306/demo_db?charset=utf8mb4"
-      MODEL_RESPONSES_API_URL: "http://192.168.18.94:30377/v1/responses"
-      MODEL_API_KEY: "sk-E9MC2lEwebGvBKUNwrcSOnZK7j98xOWrtofNZWst9Avj08AA"
+      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL before starting Docker Compose}"
+      MODEL_RESPONSES_API_URL: "${MODEL_RESPONSES_API_URL:?Set MODEL_RESPONSES_API_URL before starting Docker Compose}"
+      MODEL_API_KEY: "${MODEL_API_KEY:?Set MODEL_API_KEY before starting Docker Compose}"
       MODEL_NAME: qwen3.6-35b
-      MODEL_MAX_OUTPUT_TOKENS: "4096"
+      MODEL_MAX_OUTPUT_TOKENS: "1024000"
       ENABLE_SYSTEM_MOCK_FALLBACK: "false"
       TASK_PLANNER_TYPE: crewai
     restart: unless-stopped

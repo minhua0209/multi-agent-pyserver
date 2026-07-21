@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+
 from app.core.config import require_system_mock_fallback_enabled
-from app.core.enums import ArtifactValidationStatus, CriterionResultStatus, CurrentNode, TaskStatus, TaskType
+from app.core.enums import (
+    ArtifactKind,
+    ArtifactSourceType,
+    ArtifactValidationStatus,
+    CriterionResultStatus,
+    CurrentNode,
+    TaskStatus,
+    TaskType,
+)
 from app.core.model_client import (
     evaluate_deliverable_requirements_with_model,
     evaluate_success_criteria_with_model,
@@ -16,10 +26,21 @@ from app.core.models import (
     utc_now,
 )
 from app.services.artifact_service import ArtifactService
+from app.services.deliverable_materializer import (
+    DeliverableMaterializer,
+    ManagedDeliveryPathError,
+)
 from app.services.execution_service import ExecutionService
+from app.services import file_uri
 
 
 class CompletionService:
+    _invalid_managed_filename_reason = (
+        "Managed final delivery filename is invalid"
+    )
+    _invalid_managed_location_reason = (
+        "Managed final delivery location is invalid"
+    )
     _non_success_statuses = {
         TaskStatus.FAILED,
         TaskStatus.BLOCKED,
@@ -37,9 +58,13 @@ class CompletionService:
         self,
         execution_service: ExecutionService | None = None,
         artifact_service: ArtifactService | None = None,
+        deliverable_materializer: DeliverableMaterializer | None = None,
     ) -> None:
         self.execution_service = execution_service or ExecutionService()
         self.artifact_service = artifact_service or ArtifactService()
+        self.deliverable_materializer = (
+            deliverable_materializer or DeliverableMaterializer()
+        )
 
     def finalize(
         self,
@@ -56,10 +81,65 @@ class CompletionService:
         decided_by_type: str = "system",
         decided_by_id: str = "",
     ) -> CompletionReport:
-        normalized_output = output.strip()
+        normalized_output = (
+            self.delivery_content(task, output)
+            if candidate_status == TaskStatus.SUCCEEDED
+            else output.strip()
+        )
         normalized_reason = reason.strip() or self._default_reason(candidate_status)
         normalized_results = [result.model_copy(deep=True) for result in criterion_results or []]
-        if normalized_output and task.active_execution_id is not None:
+        artifact_gaps: list[str] = []
+        reuse_managed_file = bool(
+            human_accepted
+            and any(
+                self._is_managed_file_candidate(task, artifact)
+                for artifact in self.artifact_service.current(task)
+            )
+        )
+        if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
+            if not reuse_managed_file:
+                try:
+                    materialized = self.deliverable_materializer.materialize(
+                        task,
+                        normalized_output,
+                    )
+                    try:
+                        content_bytes = (
+                            self.deliverable_materializer.read_managed_delivery(
+                                task,
+                                materialized.path.as_uri(),
+                            )
+                        )
+                    except ValueError:
+                        self.artifact_service.register_task_file_output(
+                            task,
+                            materialized,
+                        )
+                    except OSError:
+                        artifact_gaps.append(
+                            self._invalid_managed_location_reason
+                        )
+                    else:
+                        if content_bytes != materialized.content.encode("utf-8"):
+                            artifact_gaps.append(
+                                "managed final delivery checksum does not match its content snapshot"
+                            )
+                        else:
+                            self.artifact_service.register_task_file_output(
+                                task,
+                                materialized,
+                            )
+                except ManagedDeliveryPathError:
+                    artifact_gaps.append(self._invalid_managed_location_reason)
+                except ValueError:
+                    artifact_gaps.append(
+                        "managed final delivery materialization was rejected"
+                    )
+                except OSError:
+                    artifact_gaps.append(
+                        "managed final delivery could not be written"
+                    )
+        elif normalized_output and task.active_execution_id is not None:
             self.artifact_service.register_task_output(task, normalized_output)
         current_artifacts = self.artifact_service.current(task)
         requested_artifact_ids = (
@@ -75,8 +155,40 @@ class CompletionService:
             if artifact_id not in resolved_ids
         ]
         for artifact in resolved_artifacts:
+            if self._is_managed_file_candidate(task, artifact):
+                if not self._managed_file_location_is_valid(task, artifact.uri):
+                    self._invalidate_managed_file(
+                        task,
+                        artifact,
+                        self._invalid_managed_location_reason,
+                    )
+                elif not self._managed_file_uri_name_is_valid(task, artifact):
+                    self._revalidate_managed_file_name(task, artifact)
+                elif artifact.validation_status != ArtifactValidationStatus.INVALID:
+                    revalidated = self._revalidate_managed_file(task, artifact)
+                    if (
+                        revalidated.validation_status
+                        == ArtifactValidationStatus.VALID
+                        and not self._managed_file_name_is_valid(task, revalidated)
+                    ):
+                        self._revalidate_managed_file_name(task, revalidated)
+                continue
             self.artifact_service.revalidate(task, artifact)
         resolved_artifacts = self.artifact_service.resolve(task, requested_artifact_ids)
+        file_delivery_gaps: list[str] = []
+        if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
+            file_delivery_gaps = self._file_delivery_gaps(
+                task,
+                [
+                    artifact
+                    for artifact in resolved_artifacts
+                    if artifact.validation_status == ArtifactValidationStatus.VALID
+                ],
+            )
+            resolved_artifacts = self.artifact_service.resolve(
+                task,
+                requested_artifact_ids,
+            )
         non_valid_artifacts = [
             artifact
             for artifact in resolved_artifacts
@@ -88,14 +200,15 @@ class CompletionService:
             if artifact.validation_status == ArtifactValidationStatus.VALID
         ]
         selected_artifact_ids = {artifact.id for artifact in selected_artifacts}
-        artifact_gaps = [
+        artifact_gaps.extend(
             f"artifact {artifact_id} is unknown or does not belong to the active execution"
             for artifact_id in unknown_artifact_ids
-        ]
+        )
         artifact_gaps.extend(
             f"artifact {artifact.id} is {artifact.validation_status.value}: {artifact.validation_reason}"
             for artifact in non_valid_artifacts
         )
+        artifact_gaps.extend(file_delivery_gaps)
         for result in normalized_results:
             invalid_evidence_ids = [
                 artifact_id
@@ -173,6 +286,30 @@ class CompletionService:
         task.updated_at = report.decided_at
         self.execution_service.sync_projection(task)
         return report
+
+    @staticmethod
+    def delivery_content(task: Task, output: str) -> str:
+        normalized_output = output.strip()
+        if (
+            CompletionService._is_file_delivery(task)
+            and CompletionService._has_completed_round_content(task)
+        ):
+            return task.context.summary.strip() or normalized_output
+        return normalized_output
+
+    @staticmethod
+    def _has_completed_round_content(task: Task) -> bool:
+        subtasks = [
+            subtask
+            for round_item in task.context.rounds
+            for subtask in round_item.subtasks
+        ]
+        if any(subtask.status == TaskStatus.RUNNING for subtask in subtasks):
+            return False
+        return any(
+            subtask.status == TaskStatus.SUCCEEDED and subtask.output.strip()
+            for subtask in subtasks
+        )
 
     def evaluate_criteria(self, task: Task, output: str) -> list[CriterionResult]:
         if task.contract is None or task.contract.legacy_inferred:
@@ -266,12 +403,18 @@ class CompletionService:
         if contract is None or not contract.deliverable_requirements:
             return [], selected_artifacts
 
+        deliverable_artifacts = (
+            self._managed_file_artifacts(task, selected_artifacts)
+            if self._is_file_delivery(task)
+            else selected_artifacts
+        )
+
         results: list[DeliverableResult] = []
         uncovered_requirements = []
         for requirement in contract.deliverable_requirements:
             artifact_ids = [
                 artifact.id
-                for artifact in selected_artifacts
+                for artifact in deliverable_artifacts
                 if requirement.id in artifact.deliverable_requirement_ids
             ]
             if artifact_ids:
@@ -298,7 +441,7 @@ class CompletionService:
             )
             evaluated = evaluate_deliverable_requirements_with_model(
                 evaluation_task,
-                selected_artifacts,
+                deliverable_artifacts,
             )
             if evaluated is None:
                 evaluated = [
@@ -316,7 +459,7 @@ class CompletionService:
             }
 
         explicit_by_id = {result.requirement_id: result for result in results}
-        selected_ids = {artifact.id for artifact in selected_artifacts}
+        selected_ids = {artifact.id for artifact in deliverable_artifacts}
         normalized_results: list[DeliverableResult] = []
         requirement_updates: dict[str, list[str]] = {}
         for requirement in contract.deliverable_requirements:
@@ -349,7 +492,7 @@ class CompletionService:
                 for artifact_id in result.artifact_ids:
                     requirement_updates.setdefault(artifact_id, []).append(requirement.id)
 
-        for artifact in selected_artifacts:
+        for artifact in deliverable_artifacts:
             added_requirement_ids = requirement_updates.get(artifact.id, [])
             if not added_requirement_ids:
                 continue
@@ -369,6 +512,266 @@ class CompletionService:
         return normalized_results, self.artifact_service.resolve(
             task,
             [artifact.id for artifact in selected_artifacts],
+        )
+
+    def _file_delivery_gaps(
+        self,
+        task: Task,
+        selected_artifacts: list[Artifact],
+    ) -> list[str]:
+        managed_files = self._managed_file_artifacts(task, selected_artifacts)
+        if not managed_files:
+            return ["a valid managed final delivery file must be selected"]
+
+        contract = task.contract
+        if contract is None:
+            return ["managed final delivery contract is missing"]
+        try:
+            expected_filename = self.deliverable_materializer.expected_filename(task)
+        except ValueError:
+            return [self._invalid_managed_filename_reason]
+        expected_extension = (
+            ".md" if contract.deliverable_format == "markdown" else ".txt"
+        )
+        expected_media_type = (
+            "text/markdown"
+            if contract.deliverable_format == "markdown"
+            else "text/plain"
+        )
+        gaps: list[str] = []
+        for artifact in managed_files:
+            artifact_gaps: list[str] = []
+            if (
+                not artifact.name.lower().endswith(expected_extension)
+                or artifact.metadata.get("deliverable_format")
+                != contract.deliverable_format
+            ):
+                artifact_gaps.append(
+                    "managed final delivery format does not match the task contract"
+                )
+            if artifact.media_type != expected_media_type:
+                artifact_gaps.append(
+                    "managed final delivery media type does not match the task contract"
+                )
+            if artifact.name != expected_filename:
+                artifact_gaps.append(self._invalid_managed_filename_reason)
+            try:
+                content_bytes = self.deliverable_materializer.read_managed_delivery(
+                    task,
+                    artifact.uri,
+                )
+            except ValueError:
+                artifact_gaps.append(self._invalid_managed_location_reason)
+                self._invalidate_managed_file(
+                    task,
+                    artifact,
+                    self._invalid_managed_location_reason,
+                )
+            except OSError:
+                artifact_gaps.append("managed final delivery file could not be read")
+                self._invalidate_managed_file(
+                    task,
+                    artifact,
+                    self._invalid_managed_location_reason,
+                )
+            else:
+                if not content_bytes:
+                    artifact_gaps.append("managed final delivery file is empty")
+                file_checksum = self._bytes_checksum(content_bytes)
+                if not artifact.checksum or artifact.checksum != file_checksum:
+                    artifact_gaps.append(
+                        "managed final delivery checksum does not match the file"
+                    )
+                if (
+                    not artifact.content
+                    or self._bytes_checksum(artifact.content.encode("utf-8"))
+                    != file_checksum
+                ):
+                    artifact_gaps.append(
+                        "managed final delivery checksum does not match its content snapshot"
+                    )
+                if artifact_gaps:
+                    self._invalidate_managed_file(
+                        task,
+                        artifact,
+                        artifact_gaps[0],
+                    )
+            if not artifact_gaps:
+                return []
+            gaps.extend(artifact_gaps)
+        return gaps
+
+    def _revalidate_managed_file(
+        self,
+        task: Task,
+        artifact: Artifact,
+    ) -> Artifact:
+        if not self._is_managed_file_candidate(task, artifact):
+            return artifact
+        try:
+            content_bytes = self.deliverable_materializer.read_managed_delivery(
+                task,
+                artifact.uri,
+            )
+        except (OSError, ValueError):
+            return self._invalidate_managed_file(
+                task,
+                artifact,
+                self._invalid_managed_location_reason,
+            )
+
+        if not content_bytes:
+            return self._invalidate_managed_file(
+                task,
+                artifact,
+                "Managed final delivery file is empty",
+            )
+        file_checksum = self._bytes_checksum(content_bytes)
+        if not artifact.checksum or artifact.checksum != file_checksum:
+            return self._invalidate_managed_file(
+                task,
+                artifact,
+                "Managed final delivery checksum does not match registration",
+            )
+        try:
+            snapshot_checksum = self._bytes_checksum(artifact.content.encode("utf-8"))
+        except UnicodeEncodeError:
+            snapshot_checksum = ""
+        if not artifact.content or snapshot_checksum != file_checksum:
+            return self._invalidate_managed_file(
+                task,
+                artifact,
+                "Managed final delivery content snapshot does not match the file",
+            )
+        if artifact.validation_status == ArtifactValidationStatus.VALID:
+            return artifact
+        return self.artifact_service.replace_current(
+            task,
+            artifact.model_copy(
+                update={
+                    "validation_status": ArtifactValidationStatus.VALID,
+                    "validation_reason": (
+                        "Managed final delivery exists and checksum matches registration"
+                    ),
+                }
+            ),
+        )
+
+    def _invalidate_managed_file(
+        self,
+        task: Task,
+        artifact: Artifact,
+        reason: str,
+    ) -> Artifact:
+        if (
+            artifact.validation_status == ArtifactValidationStatus.INVALID
+            and artifact.validation_reason == reason
+        ):
+            return artifact
+        return self.artifact_service.replace_current(
+            task,
+            artifact.model_copy(
+                update={
+                    "validation_status": ArtifactValidationStatus.INVALID,
+                    "validation_reason": reason,
+                }
+            ),
+        )
+
+    def _revalidate_managed_file_name(
+        self,
+        task: Task,
+        artifact: Artifact,
+    ) -> Artifact:
+        if (
+            not self._is_managed_file_candidate(task, artifact)
+            or self._managed_file_name_is_valid(task, artifact)
+        ):
+            return artifact
+        return self.artifact_service.replace_current(
+            task,
+            artifact.model_copy(
+                update={
+                    "validation_status": ArtifactValidationStatus.INVALID,
+                    "validation_reason": self._invalid_managed_filename_reason,
+                }
+            ),
+        )
+
+    def _managed_file_name_is_valid(
+        self,
+        task: Task,
+        artifact: Artifact,
+    ) -> bool:
+        path = file_uri.local_file_uri_to_path(artifact.uri)
+        if path is None:
+            return False
+        try:
+            expected_filename = self.deliverable_materializer.expected_filename(task)
+        except ValueError:
+            return False
+        return path.name == expected_filename and artifact.name == path.name
+
+    def _managed_file_uri_name_is_valid(
+        self,
+        task: Task,
+        artifact: Artifact,
+    ) -> bool:
+        path = file_uri.local_file_uri_to_path(artifact.uri)
+        if path is None:
+            return False
+        try:
+            expected_filename = self.deliverable_materializer.expected_filename(task)
+        except ValueError:
+            return False
+        return path.name == expected_filename
+
+    def _managed_file_location_is_valid(self, task: Task, uri: str) -> bool:
+        path = file_uri.local_file_uri_to_path(uri)
+        if path is None or ".." in path.parts:
+            return False
+        active_execution_id = task.active_execution_id
+        if active_execution_id is None:
+            return False
+        expected_parent = (
+            self.deliverable_materializer.output_root
+            / task.id
+            / active_execution_id
+        )
+        return path.parent == expected_parent
+
+    @staticmethod
+    def _is_managed_file_candidate(task: Task, artifact: Artifact) -> bool:
+        return bool(
+            artifact.task_id == task.id
+            and artifact.execution_id == task.active_execution_id
+            and artifact.kind == ArtifactKind.FILE
+            and artifact.source_type == ArtifactSourceType.TASK_RESULT
+            and artifact.source_id == f"{task.id}:file"
+            and artifact.metadata.get("managed_final_delivery") is True
+        )
+
+    @staticmethod
+    def _managed_file_artifacts(
+        task: Task,
+        artifacts: list[Artifact],
+    ) -> list[Artifact]:
+        return [
+            artifact
+            for artifact in artifacts
+            if CompletionService._is_managed_file_candidate(task, artifact)
+            and artifact.validation_status == ArtifactValidationStatus.VALID
+        ]
+
+    @staticmethod
+    def _bytes_checksum(content: bytes) -> str:
+        return "sha256:" + hashlib.sha256(content).hexdigest()
+
+    @staticmethod
+    def _is_file_delivery(task: Task) -> bool:
+        return bool(
+            task.contract is not None
+            and task.contract.deliverable_kind == "file"
         )
 
     @staticmethod

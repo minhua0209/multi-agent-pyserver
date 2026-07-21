@@ -1,8 +1,106 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.core.enums import (
+    ArtifactSourceType,
+    CurrentNode,
+    ExecutionTriggerType,
+    SourceType,
+    TaskStatus,
+)
+from app.core.model_client import AgentModelExecutionError
+from app.core.models import (
+    AgentCreate,
+    Task,
+    TaskContract,
+    TaskContractItem,
+    TaskExecution,
+    WorkflowDefinition,
+    WorkflowTemplate,
+    utc_now,
+)
 from app.main import create_app
+from app.services.completion_service import CompletionService
+from app.services.storage import AgentRegistry
+from app.workflows.template_runner import WorkflowTemplateRunner
+
+
+def _running_workflow_task(task_id: str) -> Task:
+    now = utc_now()
+    execution = TaskExecution(
+        id=f"execution_{task_id}",
+        task_id=task_id,
+        attempt_no=1,
+        trigger_type=ExecutionTriggerType.INITIAL,
+        status=TaskStatus.RUNNING,
+        start_node=CurrentNode.DISPATCH_DECISION,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        created_at=now,
+    )
+    return Task(
+        id=task_id,
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Run workflow",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.DISPATCH_DECISION,
+        title="Run workflow",
+        description="Run workflow",
+        executions=[execution],
+        active_execution_id=execution.id,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _workflow_runner_context(
+    tmp_path: Path,
+    *,
+    task_id: str,
+    node_ids: list[str],
+) -> tuple[AgentRegistry, WorkflowTemplate, Task]:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Workflow Agent",
+            description="Runs workflow steps",
+            capabilities=["workflow"],
+        )
+    )
+    now = utc_now()
+    workflow = WorkflowTemplate(
+        id=f"workflow_{task_id}",
+        name="Workflow runner test",
+        definition=WorkflowDefinition(
+            nodes=[
+                {"id": "start", "type": "start"},
+                *[
+                    {
+                        "id": node_id,
+                        "type": "agent",
+                        "agent_id": agent.id,
+                        "title": node_id.replace("_", " ").title(),
+                    }
+                    for node_id in node_ids
+                ],
+                {"id": "end", "type": "end"},
+            ],
+            edges=[
+                *[
+                    {"from": "start", "to": node_id}
+                    for node_id in node_ids
+                ],
+                *[
+                    {"from": node_id, "to": "end"}
+                    for node_id in node_ids
+                ],
+            ],
+        ),
+        created_at=now,
+        updated_at=now,
+    )
+    return registry, workflow, _running_workflow_task(task_id)
 
 
 def test_create_and_update_workflow_template_persists_definition(tmp_path: Path) -> None:
@@ -759,6 +857,161 @@ def test_workflow_completion_records_the_actual_ready_end_node(tmp_path: Path) -
 
     assert completed["task_status"] == "succeeded"
     assert completed["completion_report"]["workflow_end_node_id"] == "end_approved"
+
+
+def test_workflow_runner_stops_after_agent_model_execution_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry, workflow, task = _workflow_runner_context(
+        tmp_path,
+        task_id="task_workflow_model_failure",
+        node_ids=["failing_step"],
+    )
+    model_calls = 0
+
+    def _execute(*_args):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls > 1:
+            raise AssertionError("failed workflow node must not be executed again")
+        raise AgentModelExecutionError(attempts=3, last_error="workflow model failure")
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _execute,
+    )
+
+    result = WorkflowTemplateRunner(registry).run(task, workflow)
+
+    assert result.task_status == TaskStatus.FAILED
+    assert result.loop_count == 1
+    assert model_calls == 1
+    assert len(result.context.rounds) == 1
+    assert result.context.rounds[0].round_index == 1
+    assert len(result.context.rounds[0].subtasks) == 1
+    assert result.context.rounds[0].subtasks[0].status == TaskStatus.FAILED
+    event_types = [event.type for event in result.events]
+    assert "context_updated" not in event_types
+    assert "workflow_completed" not in event_types
+
+
+def test_workflow_runner_preserves_successful_parallel_artifact_when_peer_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry, workflow, task = _workflow_runner_context(
+        tmp_path,
+        task_id="task_workflow_parallel_failure",
+        node_ids=["successful_step", "failed_step"],
+    )
+    model_calls: list[str] = []
+
+    def _execute(_task, subtask, _agent, _tool_results):
+        model_calls.append(subtask.logical_key)
+        if model_calls.count(subtask.logical_key) > 1:
+            raise AssertionError("failed workflow node must not be executed again")
+        if subtask.logical_key == "successful_step":
+            return [], "successful output"
+        raise AgentModelExecutionError(attempts=3, last_error="parallel model failure")
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _execute,
+    )
+
+    result = WorkflowTemplateRunner(registry).run(task, workflow)
+
+    assert result.task_status == TaskStatus.FAILED
+    assert result.loop_count == 1
+    assert sorted(model_calls) == ["failed_step", "successful_step"]
+    assert len(result.context.rounds) == 1
+    subtasks = result.context.rounds[0].subtasks
+    assert [subtask.status for subtask in subtasks] == [
+        TaskStatus.SUCCEEDED,
+        TaskStatus.FAILED,
+    ]
+    successful_artifact = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
+        and artifact.source_id == subtasks[0].id
+    )
+    assert successful_artifact.content == "successful output"
+    assert "context_updated" not in [event.type for event in result.events]
+
+
+def test_workflow_completion_normalizes_delivery_content_before_evaluation_and_finalize(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = utc_now()
+    task = Task(
+        id="task_workflow_delivery_content",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Prepare a workflow delivery",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.COMPLETION_JUDGE,
+        title="Workflow delivery",
+        description="Prepare a workflow delivery",
+        contract=TaskContract(
+            goal="Prepare a workflow delivery",
+            deliverable_goal="Markdown delivery",
+            deliverable_kind="file",
+            deliverable_format="markdown",
+            deliverable_filename="workflow-delivery.md",
+            success_criteria=[
+                TaskContractItem(
+                    id="criterion_workflow_delivery",
+                    description="Workflow delivery is complete",
+                )
+            ],
+            confirmed_at=now,
+        ),
+        created_at=now,
+        updated_at=now,
+    )
+    task.context.summary = "merged workflow delivery"
+    workflow = WorkflowTemplate(
+        id="workflow_delivery_content",
+        name="Workflow delivery",
+        definition=WorkflowDefinition(nodes=[], edges=[]),
+        created_at=now,
+        updated_at=now,
+    )
+    completion_service = CompletionService()
+    runner = WorkflowTemplateRunner(
+        AgentRegistry(tmp_path / "agents.json"),
+        completion_service=completion_service,
+    )
+    calls = []
+
+    def _delivery_content(_task, output):
+        calls.append(("delivery_content", output))
+        return "normalized workflow delivery"
+
+    def _evaluate(_task, output):
+        calls.append(("evaluate_criteria", output))
+        return []
+
+    def _finalize(task_arg, *, output, criterion_results, **_kwargs):
+        calls.append(("finalize", output, criterion_results))
+        task_arg.task_status = TaskStatus.SUCCEEDED
+        return SimpleNamespace(terminal_status=TaskStatus.SUCCEEDED)
+
+    monkeypatch.setattr(completion_service, "delivery_content", _delivery_content)
+    monkeypatch.setattr(completion_service, "evaluate_criteria", _evaluate)
+    monkeypatch.setattr(completion_service, "finalize", _finalize)
+
+    runner._complete_workflow(task, workflow, "end")
+
+    assert calls == [
+        ("delivery_content", "merged workflow delivery"),
+        ("evaluate_criteria", "normalized workflow delivery"),
+        ("finalize", "normalized workflow delivery", []),
+    ]
 
 
 def test_workflow_human_acceptance_preserves_end_evidence_until_approved(

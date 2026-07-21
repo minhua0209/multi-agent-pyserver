@@ -188,6 +188,43 @@ describe("task detail view helpers", () => {
     ])
   })
 
+  it("describes file delivery metadata without changing page-text delivery", () => {
+    const markdownFile = taskFourQuestions({
+      ...task,
+      contract: {
+        goal: "形成方案",
+        deliverable_goal: "一份可评审的需求方案",
+        deliverable_kind: "file",
+        deliverable_format: "markdown",
+        deliverable_filename: "requirements.md",
+      },
+    } as Task)[2]
+    const textFileWithoutName = taskFourQuestions({
+      ...task,
+      contract: {
+        goal: "形成纪要",
+        deliverable_goal: "会议纪要",
+        deliverable_kind: "file",
+        deliverable_format: "text",
+        deliverable_filename: "",
+      },
+    } as Task)[2]
+    const pageText = taskFourQuestions({
+      ...task,
+      contract: {
+        goal: "形成摘要",
+        deliverable_goal: "页面摘要",
+        deliverable_kind: "text",
+        deliverable_format: null,
+        deliverable_filename: "",
+      },
+    } as Task)[2]
+
+    expect(markdownFile.text).toBe("一份可评审的需求方案（文件 / Markdown / requirements.md）")
+    expect(textFileWithoutName.text).toBe("会议纪要（文件 / 纯文本）")
+    expect(pageText.text).toBe("页面摘要")
+  })
+
   it("uses explicit legacy and running fallbacks for the four task questions", () => {
     const runningLegacyTask = {
       id: "task_legacy_running",

@@ -24,6 +24,7 @@ def test_create_simple_agent_from_file_writing_ability(tmp_path: Path) -> None:
     assert body["agent"]["agent_type"] == "processing"
     assert "write_report" in body["agent"]["capabilities"]
     assert body["agent"]["tools"][0]["type"] == "file_write"
+    assert "config" not in body["agent"]["tools"][0]
     assert body["matched_tools"] == ["file_write"]
     assert body["missing_tools"] == []
 
@@ -123,6 +124,8 @@ def test_create_agent_accepts_tool_definitions(tmp_path: Path) -> None:
     assert body["tools"][0]["name"] == "crm_query"
     assert body["tools"][0]["type"] == "http"
     assert body["tools"][0]["input_schema"]["properties"]["customer_id"]["type"] == "string"
+    assert "config" not in body["tools"][0]
+    assert client.app.state.agent_registry.list_agents()[0].tools[0].config["method"] == "GET"
 
 
 def test_create_agent_accepts_agent_type(tmp_path: Path) -> None:
@@ -166,8 +169,10 @@ def test_create_human_agent_persists_default_assignee_metadata(tmp_path: Path) -
     assert response.status_code == 201
     body = response.json()
     assert body["agent_type"] == "human"
-    assert body["metadata"]["assignee_user_id"] == "user_001"
-    assert body["metadata"]["assignee_user_name"] == "张三"
+    assert "metadata" not in body
+    internal = client.app.state.agent_registry.list_agents()[0]
+    assert internal.metadata["assignee_user_id"] == "user_001"
+    assert internal.metadata["assignee_user_name"] == "张三"
 
 
 def test_create_human_node_persists_explicit_assignee_name(tmp_path: Path) -> None:
@@ -187,10 +192,12 @@ def test_create_human_node_persists_explicit_assignee_name(tmp_path: Path) -> No
     assert body["status"] == "created"
     assert body["agent"]["agent_type"] == "human"
     assert body["agent"]["description"] == "人工审批节点，审批人：王大锤"
-    assert body["agent"]["metadata"]["assignee_user_id"] == "王大锤"
-    assert body["agent"]["metadata"]["assignee_user_name"] == "王大锤"
-    assert body["agent"]["metadata"]["assignee_role"] == "approver"
-    assert client.get("/api/v1/agents").json()[0]["metadata"]["assignee_user_name"] == "王大锤"
+    assert "metadata" not in body["agent"]
+    assert "metadata" not in client.get("/api/v1/agents").json()[0]
+    internal = client.app.state.agent_registry.list_agents()[0]
+    assert internal.metadata["assignee_user_id"] == "王大锤"
+    assert internal.metadata["assignee_user_name"] == "王大锤"
+    assert internal.metadata["assignee_role"] == "approver"
 
 
 def test_create_human_node_accepts_custom_assignee_role(tmp_path: Path) -> None:
@@ -207,7 +214,8 @@ def test_create_human_node_accepts_custom_assignee_role(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 201
-    metadata = response.json()["agent"]["metadata"]
+    assert "metadata" not in response.json()["agent"]
+    metadata = client.app.state.agent_registry.list_agents()[0].metadata
     assert metadata["assignee_user_id"] == "王大锤"
     assert metadata["assignee_user_name"] == "王大锤"
     assert metadata["assignee_role"] == "quote_approver"
@@ -262,6 +270,8 @@ def test_create_agent_accepts_execution_config_and_io_schema(tmp_path: Path) -> 
     body = response.json()
     assert body["input_schema"]["properties"]["customer_id"]["type"] == "string"
     assert body["output_schema"]["properties"]["quote_amount"]["type"] == "number"
-    assert body["execution_config"]["system_prompt"] == "你是报价 agent"
-    assert body["execution_config"]["model_name"] == "qwen3.6-35b"
-    assert body["execution_config"]["max_tool_calls"] == 3
+    assert "execution_config" not in body
+    internal = client.app.state.agent_registry.list_agents()[0]
+    assert internal.execution_config.system_prompt == "你是报价 agent"
+    assert internal.execution_config.model_name == "qwen3.6-35b"
+    assert internal.execution_config.max_tool_calls == 3

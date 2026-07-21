@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from app.core.enums import ArtifactKind, ArtifactSourceType, ArtifactValidationStatus
 from app.core.models import Artifact, SubTask, Task, ToolExecutionResult, new_id, utc_now
+from app.services import file_uri
+from app.services.deliverable_materializer import MaterializedDeliverable
 
 
 class ArtifactRegistrationClosedError(RuntimeError):
@@ -35,6 +36,64 @@ class ArtifactService:
             validation_reason="Text content checksum calculated",
             deliverable_requirement_ids=[],
         )
+
+    def register_task_file_output(
+        self,
+        task: Task,
+        materialized: MaterializedDeliverable,
+    ) -> Artifact:
+        path = materialized.path.expanduser()
+        if not path.is_absolute():
+            raise ValueError("managed final delivery path must be absolute")
+        checksum = self._content_checksum(materialized.content)
+        metadata = {
+            "managed_final_delivery": True,
+            "deliverable_format": materialized.delivery_format,
+            "content_length": len(materialized.content),
+        }
+        existing = next(
+            (
+                artifact
+                for artifact in self.current(task)
+                if artifact.source_type == ArtifactSourceType.TASK_RESULT
+                and artifact.source_id == f"{task.id}:file"
+            ),
+            None,
+        )
+        if existing is not None:
+            updated = existing.model_copy(
+                update={
+                    "kind": ArtifactKind.FILE,
+                    "name": path.name,
+                    "content": materialized.content,
+                    "uri": path.as_uri(),
+                    "media_type": materialized.media_type,
+                    "checksum": checksum,
+                    "validation_status": ArtifactValidationStatus.VALID,
+                    "validation_reason": "Managed final delivery checksum calculated",
+                    "metadata": metadata,
+                }
+            )
+            if updated == existing:
+                return existing
+            return self.replace_current(task, updated)
+        artifact = self._register(
+            task,
+            kind=ArtifactKind.FILE,
+            source_type=ArtifactSourceType.TASK_RESULT,
+            source_id=f"{task.id}:file",
+            name=path.name,
+            content=materialized.content,
+            uri=path.as_uri(),
+            media_type=materialized.media_type,
+            checksum=checksum,
+            validation_status=ArtifactValidationStatus.VALID,
+            validation_reason="Managed final delivery checksum calculated",
+            deliverable_requirement_ids=[],
+            metadata=metadata,
+        )
+        assert artifact is not None
+        return artifact
 
     def register_subtask_output(
         self,
@@ -134,8 +193,8 @@ class ArtifactService:
     def revalidate(self, task: Task, artifact: Artifact) -> Artifact:
         if artifact.kind != ArtifactKind.FILE:
             return artifact
-        parsed = urlparse(artifact.uri)
-        if parsed.scheme != "file":
+        path = file_uri.local_file_uri_to_path(artifact.uri)
+        if path is None:
             return self.replace_current(
                 task,
                 artifact.model_copy(
@@ -145,7 +204,6 @@ class ArtifactService:
                     }
                 ),
             )
-        path = Path(unquote(parsed.path))
         if not path.is_file():
             return self.replace_current(
                 task,
@@ -157,14 +215,24 @@ class ArtifactService:
                 ),
             )
         try:
+            if path.stat().st_size == 0:
+                return self.replace_current(
+                    task,
+                    artifact.model_copy(
+                        update={
+                            "validation_status": ArtifactValidationStatus.INVALID,
+                            "validation_reason": "File artifact is empty",
+                        }
+                    ),
+                )
             current_checksum = self._file_checksum(path)
-        except OSError as exc:
+        except OSError:
             return self.replace_current(
                 task,
                 artifact.model_copy(
                     update={
                         "validation_status": ArtifactValidationStatus.INVALID,
-                        "validation_reason": f"File artifact could not be read: {exc}",
+                        "validation_reason": "File artifact could not be read",
                     }
                 ),
             )
@@ -175,6 +243,16 @@ class ArtifactService:
                     update={
                         "validation_status": ArtifactValidationStatus.INVALID,
                         "validation_reason": "File artifact checksum does not match registration",
+                    }
+                ),
+            )
+        if artifact.content and self._content_checksum(artifact.content) != current_checksum:
+            return self.replace_current(
+                task,
+                artifact.model_copy(
+                    update={
+                        "validation_status": ArtifactValidationStatus.INVALID,
+                        "validation_reason": "File artifact content snapshot does not match the file",
                     }
                 ),
             )

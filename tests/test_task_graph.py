@@ -1,5 +1,6 @@
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.core.enums import (
     SourceType,
     TaskStatus,
 )
+from app.core.model_client import AgentModelExecutionError
 from app.core.models import (
     AgentCreate,
     AgentTool,
@@ -20,6 +22,7 @@ from app.core.models import (
     TaskContract,
     TaskContractItem,
     TaskExecution,
+    TaskRound,
     ToolCall,
     new_id,
     utc_now,
@@ -67,6 +70,30 @@ def _task_with_active_execution(task_id: str) -> Task:
         created_at=now,
         updated_at=now,
     )
+
+
+def _agent_execution_context(
+    tmp_path: Path,
+    *,
+    tools: list[AgentTool] | None = None,
+):
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Execution Agent",
+            description="Handles model execution tests",
+            capabilities=["execution"],
+            tools=tools or [],
+        )
+    )
+    task = _task_with_active_execution(new_id("task"))
+    subtask = SubTask(
+        id="subtask_execution",
+        title="Execute model task",
+        description="Execute model task",
+        assigned_agent_id=agent.id,
+    )
+    return TaskGraphRunner(registry), task, subtask, agent
 
 
 def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -> None:
@@ -153,6 +180,314 @@ def test_task_graph_does_not_use_round_plan_mock_when_system_fallback_disabled(
 
     with pytest.raises(RuntimeError, match="System mock fallback is disabled"):
         TaskGraphRunner(registry).run(task)
+
+
+def test_agent_model_execution_error_uses_mock_when_system_fallback_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner, task, subtask, agent = _agent_execution_context(tmp_path)
+
+    def _raise_execution_error(*args):
+        raise AgentModelExecutionError(attempts=3, last_error="temporary model failure")
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _raise_execution_error,
+    )
+
+    outcome = runner._execute_subtask(task, subtask, agent)
+
+    assert outcome.completed is True
+    assert outcome.output == f"{agent.name} completed task {task.id}"
+
+
+def test_agent_model_execution_error_returns_failed_outcome_when_fallback_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    runner, task, subtask, agent = _agent_execution_context(tmp_path)
+    sensitive_value = "workflow-test-sensitive-token"
+
+    def _raise_execution_error(*args):
+        raise AgentModelExecutionError(
+            attempts=3,
+            last_error=f"Authorization: Bearer {sensitive_value}",
+        )
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _raise_execution_error,
+    )
+
+    outcome = runner._execute_subtask(task, subtask, agent)
+
+    assert outcome.completed is False
+    message = outcome.error
+    assert message.startswith("Agent model execution failed")
+    assert "initial execution" in message
+    assert "3 attempts" in message
+    assert "[REDACTED]" in message
+    assert sensitive_value not in message
+    assert "System mock fallback is disabled" not in message
+
+
+def test_agent_model_followup_error_uses_mock_when_system_fallback_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner, task, subtask, agent = _agent_execution_context(
+        tmp_path,
+        tools=[AgentTool(name="lookup", type="mock", config={"response": "lookup result"})],
+    )
+    model_calls = 0
+
+    def _execute(*args):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return [ToolCall(tool_name="lookup", arguments={"query": "customer"})], ""
+        raise AgentModelExecutionError(attempts=2, last_error="followup model failure")
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _execute,
+    )
+
+    outcome = runner._execute_subtask(task, subtask, agent)
+
+    assert outcome.completed is True
+    assert outcome.output == f"{agent.name} completed task {task.id}"
+    assert model_calls == 2
+    assert len(subtask.tool_results) == 1
+
+
+def test_agent_model_followup_error_does_not_override_failed_tool_with_mock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "true")
+    runner, task, subtask, agent = _agent_execution_context(tmp_path)
+    model_calls = 0
+
+    def _execute(_task, _subtask, _agent, tool_results):
+        nonlocal model_calls
+        model_calls += 1
+        if not tool_results:
+            return [
+                ToolCall(
+                    tool_name="missing_tool",
+                    arguments={"query": "customer"},
+                )
+            ], ""
+        assert tool_results[0].success is False
+        raise AgentModelExecutionError(attempts=2, last_error="followup model failure")
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _execute,
+    )
+
+    outcome = runner._execute_subtask(task, subtask, agent)
+
+    expected_error = f"Tool missing_tool is not registered for agent {agent.id}"
+    assert outcome.completed is False
+    assert outcome.error == expected_error
+    assert outcome.output == ""
+    assert model_calls == 2
+    assert len(subtask.tool_results) == 1
+    assert subtask.tool_results[0].error == expected_error
+
+
+def test_agent_model_followup_error_returns_failed_outcome_without_reexecuting_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    runner, task, subtask, agent = _agent_execution_context(
+        tmp_path,
+        tools=[AgentTool(name="lookup", type="mock", config={"response": "lookup result"})],
+    )
+    model_calls = 0
+    tool_executions = 0
+    original_execute = runner.tool_executor.execute
+
+    def _execute_model(*args):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return [ToolCall(tool_name="lookup", arguments={"query": "customer"})], ""
+        raise AgentModelExecutionError(attempts=2, last_error="followup model failure")
+
+    def _execute_tool(agent_arg, tool_call):
+        nonlocal tool_executions
+        tool_executions += 1
+        return original_execute(agent_arg, tool_call)
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        _execute_model,
+    )
+    monkeypatch.setattr(runner.tool_executor, "execute", _execute_tool)
+
+    outcome = runner._execute_subtask(task, subtask, agent)
+
+    assert outcome.completed is False
+    message = outcome.error
+    assert message.startswith("Agent model execution failed")
+    assert "followup execution" in message
+    assert "2 attempts" in message
+    assert "followup model failure" in message
+    assert "System mock fallback is disabled" not in message
+    assert model_calls == 2
+    assert tool_executions == 1
+
+
+def test_followup_error_preserves_successful_file_tool_result_and_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    output_path = tmp_path / "outputs" / "draft.md"
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Delivery Agent",
+            description="Writes draft deliveries",
+            capabilities=["delivery"],
+            tools=[
+                AgentTool(
+                    name="write_delivery",
+                    type="file_write",
+                    config={"base_dir": str(output_path.parent)},
+                )
+            ],
+        )
+    )
+    task = _task_with_active_execution("task_followup_file_failure")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                reason="Write delivery draft",
+                subtasks=[
+                    SubTask(
+                        id="write_draft",
+                        title="Write delivery draft",
+                        description="Write the delivery draft",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        raise AssertionError("planner must not run again after follow-up failure")
+
+    def _execute(_task, _subtask, _agent, tool_results):
+        if not tool_results:
+            return [
+                ToolCall(
+                    tool_name="write_delivery",
+                    arguments={"filename": "draft.md", "content": "draft body"},
+                )
+            ], ""
+        raise AgentModelExecutionError(attempts=2, last_error="followup model failure")
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    result = TaskGraphRunner(registry).run(task)
+
+    assert result.task_status == TaskStatus.FAILED
+    assert len(result.context.rounds) == 1
+    failed_subtask = result.context.rounds[0].subtasks[0]
+    assert failed_subtask.status == TaskStatus.FAILED
+    assert failed_subtask.output.startswith("Agent model execution failed during followup execution")
+    assert len(failed_subtask.tool_results) == 1
+    assert failed_subtask.tool_results[0].success is True
+    assert failed_subtask.tool_results[0].result == str(output_path.resolve())
+    assert output_path.read_text(encoding="utf-8") == "draft body"
+    file_artifact = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.kind == ArtifactKind.FILE
+        and artifact.source_type == ArtifactSourceType.TOOL_RESULT
+    )
+    assert file_artifact.uri == output_path.resolve().as_uri()
+
+
+@pytest.mark.parametrize(
+    ("deliverable_kind", "deliverable_format", "expected_output"),
+    [
+        ("text", None, "short completion conclusion"),
+        ("file", "markdown", "merged delivery body"),
+    ],
+)
+def test_completion_judge_uses_delivery_content_for_criteria_and_finalize(
+    tmp_path: Path,
+    monkeypatch,
+    deliverable_kind: str,
+    deliverable_format: str | None,
+    expected_output: str,
+) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    task = _task_with_active_execution(f"task_completion_{deliverable_kind}")
+    task.context.summary = "merged delivery body"
+    task.context.rounds.append(
+        TaskRound(
+            round_index=1,
+            execution_mode="sequential",
+            reason="Delivery body completed",
+            subtasks=[
+                SubTask(
+                    id=f"subtask_completion_{deliverable_kind}",
+                    title="Complete delivery",
+                    description="Complete the delivery body",
+                    status=TaskStatus.SUCCEEDED,
+                    output="merged delivery body",
+                )
+            ],
+            context_after="merged delivery body",
+        )
+    )
+    task.contract = task.contract.model_copy(
+        update={
+            "deliverable_kind": deliverable_kind,
+            "deliverable_format": deliverable_format,
+            "deliverable_filename": "delivery.md" if deliverable_kind == "file" else "",
+        }
+    )
+    runner = TaskGraphRunner(registry)
+    evaluated_outputs = []
+    finalized_outputs = []
+
+    def _evaluate(_task, output):
+        evaluated_outputs.append(output)
+        return []
+
+    def _finalize(task_arg, *, output, criterion_results, **_kwargs):
+        finalized_outputs.append((output, criterion_results))
+        task_arg.task_status = TaskStatus.SUCCEEDED
+        return SimpleNamespace(terminal_status=TaskStatus.SUCCEEDED)
+
+    monkeypatch.setattr(runner.completion_service, "evaluate_criteria", _evaluate)
+    monkeypatch.setattr(runner.completion_service, "finalize", _finalize)
+
+    runner._completion_judge(
+        {
+            "task": task,
+            "round_plan": RoundPlan(
+                should_continue=False,
+                reason="Work completed",
+                final_output="short completion conclusion",
+            ),
+            "round_outputs": [],
+            "paused": False,
+        }
+    )
+
+    assert evaluated_outputs == [expected_output]
+    assert finalized_outputs == [(expected_output, [])]
 
 
 def test_task_graph_passes_only_processing_agents_to_planner(tmp_path: Path, monkeypatch) -> None:
@@ -459,6 +794,77 @@ def test_empty_agent_output_marks_task_failed_and_records_failed_round(tmp_path:
     assert "Create quote: Agent returned no output" in result.final_output
 
 
+def test_failed_subtask_after_success_preserves_failure_output_for_file_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Report Agent",
+            description="Prepares reports",
+            capabilities=["report"],
+        )
+    )
+    task = _task_with_active_execution("task_failed_after_success")
+    task.contract = task.contract.model_copy(
+        update={
+            "deliverable_kind": "file",
+            "deliverable_format": "markdown",
+            "deliverable_filename": "delivery.md",
+        }
+    )
+    task.executions[0].contract_snapshot = task.contract.model_copy(deep=True)
+    task.context.rounds = [
+        TaskRound(
+            round_index=1,
+            subtasks=[
+                SubTask(
+                    id="historical_success",
+                    title="Draft report",
+                    description="Draft report",
+                    status=TaskStatus.SUCCEEDED,
+                    output="Historical report body",
+                )
+            ],
+            context_after="Historical report body",
+        )
+    ]
+    task.context.summary = "Historical report body"
+    task.loop_count = 2
+    failing_subtask = SubTask(
+        id="failing_subtask",
+        title="Finalize report",
+        description="Finalize report",
+        assigned_agent_id=agent.id,
+    )
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda *_args: ([], ""),
+    )
+
+    state = TaskGraphRunner(registry)._subtask_execution(
+        {
+            "task": task,
+            "round_plan": RoundPlan(
+                should_continue=True,
+                subtasks=[failing_subtask],
+            ),
+            "round_outputs": [],
+            "paused": False,
+        }
+    )
+
+    result = state["task"]
+    failure_output = "Finalize report: Agent returned no output"
+    assert result.task_status == TaskStatus.FAILED
+    assert result.final_output == failure_output
+    artifact = result.artifacts[-1]
+    assert artifact.kind == ArtifactKind.TEXT
+    assert artifact.source_type == ArtifactSourceType.TASK_RESULT
+    assert artifact.content == failure_output
+
+
 def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_order(
     tmp_path: Path,
     monkeypatch,
@@ -516,6 +922,76 @@ def test_parallel_agent_subtasks_execute_concurrently_and_merge_context_in_plan_
     assert elapsed < 0.35
     assert result.context.summary == "slow output\nfast output"
     assert [subtask.output for subtask in result.context.rounds[0].subtasks] == ["slow output", "fast output"]
+
+
+def test_parallel_model_failure_preserves_plan_order_and_successful_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="Parallel Agent",
+            description="Runs parallel delivery steps",
+            capabilities=["delivery"],
+        )
+    )
+    task = _task_with_active_execution("task_parallel_model_failure")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                execution_mode="parallel",
+                reason="Run independent delivery steps",
+                subtasks=[
+                    SubTask(
+                        id="successful_step",
+                        title="Successful step",
+                        description="Produce a successful output",
+                        assigned_agent_id=agent.id,
+                    ),
+                    SubTask(
+                        id="failed_step",
+                        title="Failed step",
+                        description="Fail during model execution",
+                        assigned_agent_id=agent.id,
+                    ),
+                ],
+            )
+        raise AssertionError("planner must not run again after parallel model failure")
+
+    def _execute(_task, subtask, _agent, _tool_results):
+        if subtask.logical_key == "successful_step":
+            return [], "successful output"
+        raise AgentModelExecutionError(attempts=3, last_error="parallel model failure")
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", _execute)
+
+    result = TaskGraphRunner(registry).run(task)
+
+    assert result.task_status == TaskStatus.FAILED
+    assert len(result.context.rounds) == 1
+    subtasks = result.context.rounds[0].subtasks
+    assert [subtask.logical_key for subtask in subtasks] == [
+        "successful_step",
+        "failed_step",
+    ]
+    assert [subtask.status for subtask in subtasks] == [
+        TaskStatus.SUCCEEDED,
+        TaskStatus.FAILED,
+    ]
+    assert subtasks[0].output == "successful output"
+    assert subtasks[1].output.startswith("Agent model execution failed during initial execution")
+    successful_artifact = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
+        and artifact.source_id == subtasks[0].id
+    )
+    assert successful_artifact.content == "successful output"
 
 
 def test_task_graph_registers_agent_output_file_and_tool_receipt_artifacts(
@@ -616,10 +1092,12 @@ def test_task_graph_registers_condition_subtask_output_artifact(tmp_path: Path, 
 
     result = TaskGraphRunner(registry, artifact_service=artifact_service).run(task)
 
+    condition_subtask = result.context.rounds[0].subtasks[0]
     condition_artifact = next(
         artifact
         for artifact in result.artifacts
-        if artifact.source_id.endswith("_condition_artifact")
+        if artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
+        and artifact.source_id == condition_subtask.id
     )
     assert condition_artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
     assert condition_artifact.content == "Condition decision: approved"

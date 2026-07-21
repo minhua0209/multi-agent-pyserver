@@ -15,13 +15,19 @@ local demo data.
 python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
-export MODEL_RESPONSES_API_URL="http://192.168.18.94:30377/v1/responses"
-export MODEL_API_KEY="replace-with-your-model-api-key"
+export MODEL_RESPONSES_API_URL="https://model.example.com/v1/responses"
+export MODEL_API_KEY="replace-with-model-api-key"
 export MODEL_NAME="qwen3.6-35b"
+export MODEL_MAX_OUTPUT_TOKENS="1024000"
+export AGENT_OUTPUT_DIR="./runtime/agent_outputs"
 export ENABLE_SYSTEM_MOCK_FALLBACK="false"
 export TASK_PLANNER_TYPE="llm"
 uvicorn app.main:app --reload
 ```
+
+`MODEL_RESPONSES_API_URL` should be set explicitly for the model service you
+intend to use. The code default is a credential-free loopback placeholder and
+only works when a compatible local service is listening there.
 
 `TASK_PLANNER_TYPE` controls how the dispatch planner creates the next
 `RoundPlan`:
@@ -33,22 +39,39 @@ CrewAI only replaces the round planning decision. LangGraph still owns task
 state transitions, human-node pause/resume, context merge, and MySQL
 persistence.
 
-By default, the app connects to the local MySQL demo database:
-
-```text
-mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4
-```
-
-To override it, set `DATABASE_URL` before starting the service:
+Set `DATABASE_URL` explicitly to enable database storage:
 
 ```bash
-export DATABASE_URL="mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"
+export DATABASE_URL="mysql+pymysql://<user>:<password>@<host>:3306/<database>?charset=utf8mb4"
 uvicorn app.main:app --reload
 ```
 
 When database mode is enabled, the service creates the required agent, task,
 round, subtask, event, snapshot, tool execution, and workflow template tables
 automatically.
+
+When `DATABASE_URL` is unset, the service does not attempt a database
+connection. Agents, workflows, users, and attachments use their local JSON
+registries, while tasks use in-memory storage and are lost when the process
+restarts. `DISABLE_DEFAULT_DATABASE_URL` remains accepted for compatibility,
+but this distribution has no built-in database URL.
+
+## Managed file delivery
+
+Relative `AGENT_OUTPUT_DIR` values resolve from the project root. Managed files
+are written to `<root>/<task_id>/<execution_id>/<filename>`. Markdown (`.md`)
+and plain text (`.txt`) are supported.
+
+After file delivery is confirmed, completion requires a managed `FILE` Artifact
+for the current execution whose path is inside the output root and whose file is
+non-empty. Its extension and MIME type must match the confirmed format, and its
+checksum must match both the file and stored body snapshot. The system writes
+the final body deterministically and atomically; the model returns the document
+body directly and does not depend on `file_write`. Each rerun uses a separate
+execution directory.
+
+`MODEL_MAX_OUTPUT_TOKENS` sets the maximum output-token budget requested from
+the model. The current example value is `1024000`.
 
 `ENABLE_SYSTEM_MOCK_FALLBACK` controls only system-level fallback behavior for
 intent recognition, round dispatch, agent execution, and human-node fallback.

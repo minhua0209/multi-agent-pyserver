@@ -37,6 +37,7 @@ from app.services.execution_service import (
 )
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
+from app.services.deliverable_materializer import DeliverableMaterializer
 from app.services.storage import AgentRegistry, InMemoryTaskStore, UserRegistry, WorkflowRegistry
 from app.services.task_contract_service import TaskContractService
 from app.workflows.task_graph import TaskGraphRunner
@@ -112,9 +113,11 @@ class TaskService:
         self.task_contract_service = TaskContractService()
         self.execution_service = ExecutionService()
         self.artifact_service = ArtifactService()
+        self.deliverable_materializer = DeliverableMaterializer()
         self.completion_service = CompletionService(
             self.execution_service,
             self.artifact_service,
+            self.deliverable_materializer,
         )
         self.task_graph = TaskGraphRunner(
             agent_registry,
@@ -946,6 +949,7 @@ class TaskService:
             return TaskDraft(title=content, description=content, confidence=0.5)
         if len(drafts) == 1:
             return drafts[0]
+        file_draft = next((draft for draft in drafts if draft.deliverable_kind == "file"), None)
         return TaskDraft(
             title="; ".join(draft.title for draft in drafts),
             description="\n".join(f"- {draft.title}: {draft.description}" for draft in drafts),
@@ -954,6 +958,9 @@ class TaskService:
             suggested_agent_id=drafts[0].suggested_agent_id,
             goal=content,
             deliverable_goal="; ".join(draft.deliverable_goal or draft.title for draft in drafts),
+            deliverable_kind=file_draft.deliverable_kind if file_draft else "text",
+            deliverable_format=file_draft.deliverable_format if file_draft else None,
+            deliverable_filename=file_draft.deliverable_filename if file_draft else "",
             deliverable_requirements=[
                 requirement
                 for draft in drafts

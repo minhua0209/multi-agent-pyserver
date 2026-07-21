@@ -1,5 +1,7 @@
 export type TaskStatus = "running" | "succeeded" | "failed" | "blocked" | "partial" | "cancelled"
 export type TaskType = "auto_planning" | "manual_orchestration"
+export type DeliverableKind = "text" | "file"
+export type DeliverableFormat = "markdown" | "text"
 export type CriterionResultStatus = "passed" | "failed" | "pending"
 export type ArtifactKind = "text" | "file" | "tool_result"
 export type ArtifactSourceType = "task_result" | "subtask_output" | "tool_result"
@@ -25,6 +27,9 @@ export interface TaskContractItem {
 export interface TaskContractInput {
   goal: string
   deliverable_goal: string
+  deliverable_kind?: DeliverableKind
+  deliverable_format?: DeliverableFormat | null
+  deliverable_filename?: string
   deliverable_requirements?: TaskContractItem[]
   success_criteria: TaskContractItem[]
   requires_human_acceptance?: boolean
@@ -33,6 +38,9 @@ export interface TaskContractInput {
 export interface TaskContract {
   goal: string
   deliverable_goal: string
+  deliverable_kind?: DeliverableKind
+  deliverable_format?: DeliverableFormat | null
+  deliverable_filename?: string
   deliverable_requirements: TaskContractItem[]
   success_criteria: TaskContractItem[]
   requires_human_acceptance: boolean
@@ -47,7 +55,6 @@ export interface AgentTool {
   name: string
   description?: string
   type: string
-  config?: Record<string, string>
   input_schema?: Record<string, unknown>
 }
 
@@ -57,7 +64,6 @@ export interface Agent {
   description?: string
   agent_type?: string
   capabilities?: string[]
-  metadata?: Record<string, string>
   tools?: AgentTool[]
   created_at?: string
 }
@@ -276,6 +282,9 @@ export interface Task {
     description?: string
     goal?: string
     deliverable_goal?: string
+    deliverable_kind?: DeliverableKind
+    deliverable_format?: DeliverableFormat | null
+    deliverable_filename?: string
     deliverable_requirements?: string[]
     success_criteria?: string[]
     requires_human_acceptance?: boolean

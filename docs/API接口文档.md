@@ -209,28 +209,11 @@ X-User-Id: user_xxx
   "capabilities": ["email", "notification", "send_email"],
   "input_schema": {},
   "output_schema": {},
-  "execution_config": {
-    "system_prompt": "你是邮件发送 agent",
-    "model_name": "qwen3.6-35b",
-    "temperature": 0.2,
-    "timeout_seconds": 60,
-    "max_retries": 0,
-    "max_tool_calls": 5
-  },
   "tools": [
     {
       "name": "send_email",
       "description": "Send email through SMTP",
       "type": "smtp_email",
-      "config": {
-        "smtp_host": "smtp.example.com",
-        "smtp_port": "587",
-        "username": "sender@example.com",
-        "password": "replace-with-smtp-password",
-        "from": "sender@example.com",
-        "use_tls": "true",
-        "timeout_seconds": "30"
-      },
       "input_schema": {
         "type": "object",
         "properties": {
@@ -246,18 +229,21 @@ X-User-Id: user_xxx
 }
 ```
 
-字段说明：
+公开响应字段说明。创建请求仍可传入 `execution_config` 和工具 `config`，但公开响应不会回显这些内部配置：
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `name` | string | 是 | agent 名称 |
-| `description` | string | 否 | agent 描述，分发 agent 会参考 |
-| `agent_type` | string | 否 | agent 类型，默认 `processing`。可用于标识 `processing`、`condition`、`system` 等类型 |
-| `capabilities` | string[] | 否 | 能力标签，分发 agent 会参考 |
-| `input_schema` | object | 否 | 期望输入结构 |
-| `output_schema` | object | 否 | 期望输出结构 |
-| `execution_config` | object | 否 | 执行配置 |
-| `tools` | AgentTool[] | 否 | agent 可调用工具 |
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | agent ID |
+| `name` | string | agent 名称 |
+| `description` | string | agent 描述，分发 agent 会参考 |
+| `agent_type` | string | agent 类型，默认 `processing` |
+| `capabilities` | string[] | 能力标签，分发 agent 会参考 |
+| `input_schema` | object | 期望输入结构 |
+| `output_schema` | object | 期望输出结构 |
+| `tools` | PublicAgentTool[] | 可公开的工具描述 |
+| `created_at` | datetime | 创建时间 |
+
+`PublicAgentTool` 仅包含 `name`、`description`、`type` 和 `input_schema`，不包含工具 `config`。
 
 当前支持的工具类型：
 
@@ -302,21 +288,20 @@ X-User-Id: user_xxx
     "description": "根据用户诉求自动生成：帮我创建一个可以向指定目录写入文章或者报告总结的agent",
     "agent_type": "processing",
     "capabilities": ["write_article", "write_report", "summarize", "save_file"],
-    "execution_config": {
-      "system_prompt": "你是一个将文章、报告、总结写入本地指定目录的处理 agent...",
-      "model_name": "",
-      "temperature": null,
-      "timeout_seconds": 60,
-      "max_retries": 1,
-      "max_tool_calls": 5
-    },
+    "input_schema": {},
+    "output_schema": {},
     "tools": [
       {
         "name": "file_write",
         "description": "将文章、报告、总结写入本地指定目录",
         "type": "file_write",
-        "config": {
-          "base_dir": "./runtime/agent_outputs"
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "filename": {"type": "string"},
+            "content": {"type": "string"}
+          },
+          "required": ["filename", "content"]
         }
       }
     ],
@@ -379,14 +364,6 @@ X-User-Id: user_xxx
     "capabilities": ["email"],
     "input_schema": {},
     "output_schema": {},
-    "execution_config": {
-      "system_prompt": "",
-      "model_name": "",
-      "temperature": null,
-      "timeout_seconds": 60,
-      "max_retries": 0,
-      "max_tool_calls": 5
-    },
     "tools": [],
     "created_at": "2026-07-14T00:00:00Z"
   }
