@@ -18,9 +18,9 @@ import {
   Select,
   Space,
   Spin,
-  Statistic,
   Table,
   Tag,
+  theme as antdTheme,
   Tooltip,
   Typography,
 } from "antd"
@@ -93,6 +93,14 @@ import {
   uploadTaskAttachment,
 } from "./api/taskhub"
 import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
+import type { OverviewRange } from "./overviewSummary"
+import {
+  buildOverviewSummary,
+  buildOverviewTrend,
+  filterOverviewTasks,
+  overviewRecentEvents,
+  overviewRiskTasks,
+} from "./overviewSummary"
 import { PageId, canNavigateToPage, refreshTargetsForPage } from "./pageRefresh"
 import { initialPublishForm, validatePublishForm, validateWorkflowBuilderOpen } from "./publishForm"
 import {
@@ -155,10 +163,6 @@ const navGroups = [
     ],
   },
 ] as const
-
-function toneColor(tone: string) {
-  return { info: "#2563eb", success: "#16a34a", warning: "#d97706", danger: "#dc2626" }[tone] || "#2563eb"
-}
 
 function taskTitle(task: Task) {
   return task.title || task.draft?.title || task.content || task.id
@@ -385,19 +389,32 @@ export default function App() {
   return (
     <ConfigProvider
       theme={{
+        algorithm: antdTheme.darkAlgorithm,
         token: {
-          colorPrimary: "#4f46e5",
-          colorInfo: "#0891b2",
-          colorSuccess: "#16a34a",
-          colorWarning: "#f59e0b",
-          colorError: "#e11d48",
+          colorPrimary: "#22c7b8",
+          colorInfo: "#38bdf8",
+          colorSuccess: "#34d399",
+          colorWarning: "#fbbf24",
+          colorError: "#fb7185",
+          colorBgBase: "#080f1d",
+          colorBgLayout: "#080f1d",
+          colorBgContainer: "#121c2d",
+          colorBgElevated: "#18243a",
+          colorBgSpotlight: "#1b2a40",
+          colorText: "#f8fafc",
+          colorTextSecondary: "#b4c0d4",
+          colorTextTertiary: "#8190a8",
+          colorBorder: "#2a3950",
+          colorBorderSecondary: "#223047",
           borderRadius: 8,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
         components: {
-          Layout: { bodyBg: "#eef2ff", siderBg: "#111827", headerBg: "rgba(255,255,255,0.9)" },
-          Card: { borderRadiusLG: 8 },
-          Menu: { darkItemBg: "#111827", darkSubMenuItemBg: "#111827", darkItemSelectedBg: "#4338ca" },
+          Layout: { bodyBg: "#080f1d", siderBg: "#0b1323", headerBg: "#0d1728" },
+          Card: { borderRadiusLG: 8, headerBg: "#121c2d" },
+          Table: { headerBg: "#0e1828", rowHoverBg: "#17243a", borderColor: "#24334a" },
+          Modal: { headerBg: "#121c2d", contentBg: "#121c2d" },
+          Menu: { darkItemBg: "#0b1323", darkSubMenuItemBg: "#0b1323", darkItemSelectedBg: "#153a42" },
         },
       }}
     >
@@ -493,40 +510,144 @@ function Overview({
   events: Array<Record<string, unknown>>
   setPage: (page: PageId) => void
 }) {
-  const running = tasks.filter((task) => taskStatus(task) === "running").length
-  const succeeded = tasks.filter((task) => taskStatus(task) === "succeeded").length
-  const failed = tasks.filter((task) => taskStatus(task) === "failed").length
+  const [range, setRange] = useState<OverviewRange>("7d")
+  const filteredTasks = useMemo(() => filterOverviewTasks(tasks, range), [range, tasks])
+  const summary = useMemo(() => buildOverviewSummary(filteredTasks), [filteredTasks])
+  const trend = useMemo(() => buildOverviewTrend(filteredTasks), [filteredTasks])
+  const risks = useMemo(() => overviewRiskTasks(filteredTasks), [filteredTasks])
+  const recentTasks = useMemo(
+    () => filteredTasks
+      .slice()
+      .sort((left, right) => new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime())
+      .slice(0, 5),
+    [filteredTasks],
+  )
+  const recentEvents = useMemo(
+    () => overviewRecentEvents(events),
+    [events],
+  )
+  const statusItems = [
+    { key: "running", label: "运行中", count: summary.running, color: "#38bdf8" },
+    { key: "succeeded", label: "已完成", count: summary.succeeded, color: "#34d399" },
+    { key: "failed", label: "失败", count: summary.failed, color: "#fb7185" },
+    { key: "blocked", label: "阻塞", count: summary.blocked, color: "#fbbf24" },
+    { key: "partial", label: "部分完成", count: summary.partial, color: "#a78bfa" },
+    { key: "cancelled", label: "已取消", count: summary.cancelled, color: "#94a3b8" },
+  ]
+  const statusGradient = overviewStatusGradient(statusItems, summary.total)
+  const hasTrendData = trend.some((point) => point.value > 0)
+  const maxTrendValue = Math.max(...trend.map((point) => point.value), 1)
+  const rangeLabel = { all: "全部", today: "今日", "7d": "近 7 天" }[range]
+
   return (
-    <div className="page active">
+    <div className="page active overview-page">
       <PageHeader title="协同运营驾驶舱" description="聚合任务运行信号、节点负载、Agent 覆盖和异常收敛状态。">
         <Button type="primary" icon={<Plus size={16} />} onClick={() => setPage("publish")}>
           发布任务
         </Button>
       </PageHeader>
-      <div className="metric-grid">
-        <Metric label="运行中任务" value={running} tone="info" />
-        <Metric label="执行完成" value={succeeded} tone="success" />
-        <Metric label="执行失败" value={failed} tone="danger" />
-        <Metric label="人工待处理" value={humanSubtasks.length} tone="warning" />
-        <Metric label="流程节点" value={agents.length} tone="info" />
+
+      <div className="overview-metric-grid">
+        <OverviewMetric icon={<ListChecks size={20} />} label="任务总数" value={summary.total} note="当前筛选范围" tone="cyan" />
+        <OverviewMetric icon={<Sparkles size={20} />} label="今日新增" value={summary.today} note="本地自然日" tone="violet" />
+        <OverviewMetric icon={<Activity size={20} />} label="运行中" value={summary.running} note="仍在执行" tone="blue" />
+        <OverviewMetric icon={<CheckCircle2 size={20} />} label="已完成" value={summary.succeeded} note="闭环任务" tone="green" />
+        <OverviewMetric icon={<XCircle size={20} />} label="异常任务" value={summary.risk} note="失败 / 阻塞 / 部分" tone="rose" />
+        <OverviewMetric icon={<UserCheck size={20} />} label="人工待处理" value={humanSubtasks.length} note="当前可见待办" tone="amber" />
+        <OverviewMetric icon={<ShieldCheck size={20} />} label="完成率" value={`${summary.completionRate}%`} note="成功任务占比" tone="purple" />
+        <OverviewMetric icon={<Bot size={20} />} label="流程节点" value={agents.length} note="当前可见节点" tone="teal" />
       </div>
-      <div className="grid two">
-        <Panel title="节点态势">
-          {["请求接入", "人工确认", "分发执行", "上下文沉淀", "闭环判断"].map((item, index) => (
-            <div className="flow-row" key={item}>
-              <span className="flow-dot">{index + 1}</span>
-              <span>{item}</span>
-              <span className="muted">{index < 3 ? "活跃" : "稳定"}</span>
+
+      <div className="overview-control-bar">
+        <div className="overview-range-control">
+          <span>时间范围</span>
+          <Segmented
+            value={range}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "今日", value: "today" },
+              { label: "近 7 天", value: "7d" },
+            ]}
+            onChange={(value) => setRange(value as OverviewRange)}
+          />
+        </div>
+        <span className="overview-range-summary">{rangeLabel}共 {summary.total} 项任务</span>
+      </div>
+
+      <div className="overview-analysis-grid">
+        <OverviewPanel title="任务状态分布" meta={`${summary.total} 项`}>
+          {summary.total ? (
+            <div className="overview-status-content">
+              <div className="overview-status-ring" style={{ background: statusGradient }}>
+                <div>
+                  <strong>{summary.completionRate}%</strong>
+                  <span>完成率</span>
+                </div>
+              </div>
+              <div className="overview-status-legend">
+                {statusItems.map((item) => (
+                  <div key={item.key}>
+                    <span className="overview-legend-label">
+                      <i style={{ background: item.color }} />
+                      {item.label}
+                    </span>
+                    <strong>{item.count}</strong>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
-        </Panel>
-        <Panel title="最近任务">
-          <TaskTable tasks={tasks.slice(0, 5)} compact />
-        </Panel>
+          ) : (
+            <div className="overview-analysis-empty"><EmptyState text="当前范围暂无状态数据" /></div>
+          )}
+        </OverviewPanel>
+
+        <OverviewPanel title="近 7 日任务趋势" meta="按创建时间">
+          {hasTrendData ? (
+            <div className="overview-trend-chart" aria-label="近七日任务创建趋势">
+              {trend.map((point) => (
+                <div className="overview-trend-column" key={point.key} title={`${point.label}：${point.value} 项任务`}>
+                  <span>{point.value}</span>
+                  <div className="overview-trend-track">
+                    <i style={{ height: `${point.value ? Math.max(12, (point.value / maxTrendValue) * 100) : 3}%` }} />
+                  </div>
+                  <small>{point.label}</small>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="overview-analysis-empty"><EmptyState text="当前范围暂无趋势数据" /></div>
+          )}
+        </OverviewPanel>
       </div>
-      <Panel title="最近事件">
-        <EventList events={events.slice(0, 6)} />
-      </Panel>
+
+      <div className="overview-operations-grid">
+        <OverviewPanel title="风险任务" meta={`${summary.risk} 项`}>
+          {risks.length ? (
+            <div className="overview-risk-list">
+              {risks.map((task) => (
+                <button type="button" className="overview-risk-row" key={task.id} onClick={() => setPage("tasks")}>
+                  <span className={`overview-risk-icon ${taskStatus(task)}`}><XCircle size={16} /></span>
+                  <span className="overview-risk-copy">
+                    <strong>{taskTitle(task)}</strong>
+                    <small>{taskNodeText(task)} · {formatDate(task.updated_at || task.created_at)}</small>
+                  </span>
+                  <Tag color={taskStatusColor(taskStatus(task))}>{taskStatusText(taskStatus(task))}</Tag>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState text="当前范围暂无风险任务" />
+          )}
+        </OverviewPanel>
+
+        <OverviewPanel title="最近任务" meta="最新 5 项">
+          <TaskTable tasks={recentTasks} compact />
+        </OverviewPanel>
+      </div>
+
+      <OverviewPanel title="最近事件" meta="最新 6 条" className="overview-event-panel">
+        <EventList events={recentEvents} />
+      </OverviewPanel>
     </div>
   )
 }
@@ -1941,7 +2062,7 @@ function ManualWorkflowDetail({ task, definition }: { task: Task; definition: Wo
           preventScrolling={false}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#b7c4d6" gap={18} size={1.1} />
+          <Background color="#34445d" gap={18} size={1.1} />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
@@ -2492,12 +2613,64 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   )
 }
 
-function Metric({ label, value, tone }: { label: string; value: string | number; tone: string }) {
+function OverviewMetric({
+  icon,
+  label,
+  value,
+  note,
+  tone,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string | number
+  note: string
+  tone: string
+}) {
   return (
-    <Card className={`metric-card ${tone}`} size="small">
-      <Statistic title={label} value={value} styles={{ content: { color: toneColor(tone), fontSize: 26 } }} />
-    </Card>
+    <article className={`overview-metric-card ${tone}`}>
+      <span className="overview-metric-icon">{icon}</span>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{note}</small>
+      </div>
+    </article>
   )
+}
+
+function OverviewPanel({
+  title,
+  meta,
+  className = "",
+  children,
+}: {
+  title: string
+  meta?: string
+  className?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className={`overview-panel ${className}`.trim()}>
+      <header>
+        <h3>{title}</h3>
+        {meta && <span>{meta}</span>}
+      </header>
+      <div className="overview-panel-body">{children}</div>
+    </section>
+  )
+}
+
+function overviewStatusGradient(items: Array<{ count: number; color: string }>, total: number) {
+  if (!total) return "conic-gradient(#263449 0 100%)"
+  let offset = 0
+  const segments = items
+    .filter((item) => item.count > 0)
+    .map((item) => {
+      const start = offset
+      offset += (item.count / total) * 100
+      return `${item.color} ${start}% ${offset}%`
+    })
+  return `conic-gradient(${segments.join(", ")})`
 }
 
 function TaskTable({
