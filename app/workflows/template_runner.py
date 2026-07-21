@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.core.enums import CurrentNode, TaskStatus
-from app.core.models import RoundPlan, SubTask, Task, WorkflowNode, WorkflowTemplate
+from app.core.models import RoundPlan, SubTask, Task, WorkflowNode, WorkflowTemplate, scoped_subtask_id
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
 from app.services.storage import AgentRegistry
@@ -36,6 +36,8 @@ class WorkflowTemplateRunner:
         completed_node_ids = self._completed_node_ids(task)
         node_map = {node.id: node for node in workflow.definition.nodes}
         while True:
+            if task.task_status != TaskStatus.RUNNING:
+                return task
             ready_nodes = self._ready_nodes(workflow, completed_node_ids, task)
             runnable_nodes = [node for node in ready_nodes if node.type in {"agent", "human", "condition"}]
             if not runnable_nodes:
@@ -50,6 +52,8 @@ class WorkflowTemplateRunner:
                 subtasks=[self._node_to_subtask(task, node) for node in runnable_nodes],
             )
             task = self._run_round(task, plan)
+            if task.task_status != TaskStatus.RUNNING:
+                return task
             if task.current_node.value == "human_execution":
                 return task
             completed_node_ids = self._completed_node_ids(task)
@@ -71,6 +75,8 @@ class WorkflowTemplateRunner:
                 "paused": False,
             }
         )
+        if state["task"].task_status == TaskStatus.FAILED:
+            return state["task"]
         if state["paused"]:
             return state["task"]
         return runner._context_update(state)["task"]
@@ -124,14 +130,14 @@ class WorkflowTemplateRunner:
         execution_id = task.active_execution_id or ""
         subtask = SubTask(
             id=(
-                f"{task.id}_{execution_id}_{node.id}"
+                scoped_subtask_id(task.id, execution_id, node.id)
                 if execution_id
-                else f"{task.id}_{node.id}"
+                else scoped_subtask_id(task.id, "", node.id)
             ),
             execution_id=execution_id,
             logical_key=node.id,
             title=node.title or node.id,
-            description=node.description or node.title or node.id,
+            description=WorkflowTemplateRunner._node_description(node),
             assigned_agent_id=node.agent_id,
             assignee_type=node.type if node.type in {"human", "condition"} else "agent",
             **assignee,
@@ -139,6 +145,14 @@ class WorkflowTemplateRunner:
         if node.type == "condition":
             subtask.result_metadata = {"config": node.config}
         return subtask
+
+    @staticmethod
+    def _node_description(node: WorkflowNode) -> str:
+        if node.type == "human":
+            handoff_instruction = str(node.config.get("handoff_instruction") or "").strip()
+            if handoff_instruction:
+                return handoff_instruction
+        return node.description or node.title or node.id
 
     @staticmethod
     def _human_assignee_from_config(config: dict, task: Task) -> dict:
@@ -178,6 +192,7 @@ class WorkflowTemplateRunner:
     def _ready_nodes(workflow: WorkflowTemplate, completed_node_ids: set[str], task: Task) -> list[WorkflowNode]:
         node_map = {node.id: node for node in workflow.definition.nodes}
         completed_subtasks = WorkflowTemplateRunner._completed_subtasks_by_node_id(task)
+        has_start_node = any(node.type == "start" for node in workflow.definition.nodes)
         incoming = {node.id: [] for node in workflow.definition.nodes}
         outgoing = {node.id: [] for node in workflow.definition.nodes}
         for edge in workflow.definition.edges:
@@ -188,9 +203,11 @@ class WorkflowTemplateRunner:
         for node in workflow.definition.nodes:
             if node.id in completed_node_ids or node.type == "start":
                 continue
-            dependencies = [
-                edge for edge in incoming.get(node.id, []) if node_map.get(edge.from_node) and node_map[edge.from_node].type != "start"
-            ]
+            incoming_edges = incoming.get(node.id, [])
+            valid_incoming_edges = [edge for edge in incoming_edges if edge.from_node in node_map]
+            if has_start_node and not valid_incoming_edges:
+                continue
+            dependencies = [edge for edge in valid_incoming_edges if node_map[edge.from_node].type != "start"]
             if WorkflowTemplateRunner._dependencies_ready(dependencies, completed_node_ids, completed_subtasks):
                 ready.append(node)
         return ready

@@ -666,6 +666,13 @@ export function createWorkflow(payload: WorkflowCreatePayload) {
   })
 }
 
+export function updateWorkflow(workflowId: string, payload: WorkflowCreatePayload) {
+  return request<WorkflowTemplate>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getCurrentUser() {
   return request<User>("/api/v1/users/current")
 }

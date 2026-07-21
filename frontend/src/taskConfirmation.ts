@@ -39,7 +39,7 @@ export interface TaskConfirmationRequest {
 
 export function confirmationDraftFromTask(task: Task): ConfirmationDraft {
   const suggestions = (task.draft || {}) as DraftSuggestions
-  const title = cleanText(suggestions.title || task.title || task.content || task.id)
+  const title = cleanText(task.title || suggestions.title || task.content || task.id)
   const description = cleanText(
     suggestions.description || task.description || task.content || title,
   )
@@ -117,6 +117,16 @@ export function buildTaskConfirmationRequests(
       options,
     ),
   }))
+}
+
+export function confirmationTaskIdsToCancelOnClose(
+  tasks: Task[],
+  remainingTaskIds: string[],
+  cancelOnClose = true,
+): string[] {
+  if (!cancelOnClose) return []
+  const remaining = new Set(remainingTaskIds)
+  return tasks.filter((task) => remaining.has(task.id)).map((task) => task.id)
 }
 
 export async function confirmTaskRequestsSequentially(

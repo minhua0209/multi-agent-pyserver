@@ -1,6 +1,6 @@
 import { SubTask, Task, WorkflowDefinition } from "./api/taskhub"
 import { isManualWorkflowTask, taskTypeText } from "./taskType"
-import { WorkflowReactFlowEdge, WorkflowReactFlowNode, workflowToReactFlow } from "./workflowReactFlow"
+import { WorkflowReactFlowEdge, WorkflowReactFlowNode, autoLayoutWorkflowNodePositions, workflowToReactFlow } from "./workflowReactFlow"
 
 export interface TaskDetailSummaryBlock {
   key: "request" | "draft"
@@ -358,59 +358,11 @@ export function manualWorkflowFlowElements(
 }
 
 export function detailWorkflowNodePositions(definition: WorkflowDefinition) {
-  const orderedNodes = orderedWorkflowNodes(definition)
-  return Object.fromEntries(
-    orderedNodes.map((node, index) => {
-      const column = index % 3
-      const row = Math.floor(index / 3)
-      return [
-        node.id,
-        {
-          left: 80 + column * 340,
-          top: 80 + row * 210,
-        },
-      ]
-    }),
-  )
-}
-
-function orderedWorkflowNodes(definition: WorkflowDefinition) {
-  const nodeById = new Map(definition.nodes.map((node) => [node.id, node]))
-  const outgoing = new Map<string, string[]>()
-  const incomingCount = new Map<string, number>()
-  definition.nodes.forEach((node) => {
-    outgoing.set(node.id, [])
-    incomingCount.set(node.id, 0)
+  return autoLayoutWorkflowNodePositions(definition, {
+    top: 80,
+    columnGap: 340,
+    rowGap: 220,
   })
-  definition.edges.forEach((edge) => {
-    if (!nodeById.has(edge.from) || !nodeById.has(edge.to)) return
-    outgoing.get(edge.from)?.push(edge.to)
-    incomingCount.set(edge.to, (incomingCount.get(edge.to) || 0) + 1)
-  })
-
-  const startIds = definition.nodes
-    .filter((node) => node.id === "start" || (incomingCount.get(node.id) || 0) === 0)
-    .map((node) => node.id)
-  const queue = startIds.length ? [...startIds] : definition.nodes.map((node) => node.id)
-  const seen = new Set<string>()
-  const ordered: WorkflowDefinition["nodes"] = []
-
-  while (queue.length) {
-    const nodeId = queue.shift()!
-    if (seen.has(nodeId)) continue
-    const node = nodeById.get(nodeId)
-    if (!node) continue
-    seen.add(nodeId)
-    ordered.push(node)
-    for (const target of outgoing.get(nodeId) || []) {
-      if (!seen.has(target)) queue.push(target)
-    }
-  }
-
-  definition.nodes.forEach((node) => {
-    if (!seen.has(node.id)) ordered.push(node)
-  })
-  return ordered
 }
 
 export function workflowNodeKindText(type?: string) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import argparse
 import json
 import sys
 import tempfile
@@ -362,6 +363,33 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
                         "draft_description": "- 查询客户需求\n- 管理员确认",
                     }
                 ],
+            },
+        )
+
+    def test_cli_confirm_preserves_submitted_title_when_codex_passes_draft_title(self) -> None:
+        client = Mock()
+        client.get_task.return_value = {
+            "id": "task_1",
+            "title": "用户提交标题",
+            "draft": {"title": "识别出的任务清单"},
+        }
+        client.confirm_task.return_value = {"id": "task_1", "title": "用户提交标题"}
+        args = argparse.Namespace(
+            task_id="task_1",
+            title="识别出的任务清单",
+            description="- 查询客户需求\n- 管理员确认",
+            execution_mode="async",
+        )
+
+        result = runner_cli.command_confirm_task(args, client)
+
+        self.assertTrue(result["ok"])
+        client.confirm_task.assert_called_once_with(
+            "task_1",
+            {
+                "title": "用户提交标题",
+                "description": "- 查询客户需求\n- 管理员确认",
+                "execution_mode": "async",
             },
         )
 

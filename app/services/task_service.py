@@ -196,6 +196,8 @@ class TaskService:
             task.description = payload.description.strip() or task.description
             task.contract = self.task_contract_service.confirm_contract(task, payload, confirmed_by)
             task.request_metadata = self._metadata_with_default_human_assignee(task.request_metadata, payload)
+            if self._is_workflow_template_task(task):
+                task.context.summary = self._workflow_initial_context_summary(task)
             dependencies_satisfied = self._dependencies_satisfied(task)
             task.current_node = (
                 CurrentNode.DISPATCH_DECISION if dependencies_satisfied else CurrentNode.WAITING_DEPENDENCIES
@@ -634,8 +636,10 @@ class TaskService:
     @staticmethod
     def _human_subtask_view(task: Task, current_round: TaskRound, subtask: SubTask) -> SubTask:
         task_title = task.title or (task.draft.title if task.draft else "") or task.id
+        review_description = TaskService._workflow_human_handoff_instruction(task, subtask) or subtask.description
         return subtask.model_copy(
             update={
+                "description": review_description,
                 "task_id": task.id,
                 "task_title": task_title,
                 "task_description": task.description,
@@ -645,6 +649,38 @@ class TaskService:
                 "upstream_outputs": TaskService._human_subtask_upstream_outputs(task, current_round, subtask),
             }
         )
+
+    @staticmethod
+    def _workflow_human_handoff_instruction(task: Task, subtask: SubTask) -> str:
+        workflow_definition = task.request_metadata.get("workflow_definition")
+        if not workflow_definition:
+            return ""
+        node_id = subtask.logical_key or TaskService._workflow_node_id_from_subtask_id(
+            task.id,
+            subtask.id,
+            subtask.execution_id,
+        )
+        if not node_id:
+            return ""
+        try:
+            definition = WorkflowDefinition.model_validate(workflow_definition)
+        except (TypeError, ValueError):
+            return ""
+        for node in definition.nodes:
+            if node.type == "human" and node.id == node_id:
+                return str(node.config.get("handoff_instruction") or "").strip()
+        return ""
+
+    @staticmethod
+    def _workflow_node_id_from_subtask_id(task_id: str, subtask_id: str, execution_id: str = "") -> str:
+        if execution_id:
+            execution_prefix = f"{task_id}_{execution_id}_"
+            if subtask_id.startswith(execution_prefix):
+                return subtask_id[len(execution_prefix) :]
+        prefix = f"{task_id}_"
+        if not subtask_id.startswith(prefix):
+            return ""
+        return subtask_id[len(prefix) :]
 
     @staticmethod
     def _human_subtask_upstream_outputs(task: Task, current_round: TaskRound, active_subtask: SubTask) -> list[str]:
@@ -787,6 +823,20 @@ class TaskService:
             suggested_assignee_type="human",
             suggested_agent_id=None,
         )
+
+    @staticmethod
+    def _workflow_initial_context_summary(task: Task) -> str:
+        parts = []
+        title = task.title.strip()
+        description = task.description.strip()
+        existing_summary = task.context.summary.strip()
+        if title:
+            parts.append(f"任务名称：{title}")
+        if description:
+            parts.append(f"任务诉求：{description}")
+        if existing_summary and existing_summary not in {title, description}:
+            parts.append(f"补充上下文：{existing_summary}")
+        return "\n".join(parts).strip()
 
     def _metadata_with_default_human_assignee(self, request_metadata: dict, payload: TaskConfirm) -> dict:
         assignee_user_id = payload.default_assignee_user_id.strip()

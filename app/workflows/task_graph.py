@@ -1,15 +1,16 @@
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import re
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.core.config import require_system_mock_fallback_enabled
+from app.core.config import is_system_mock_fallback_enabled, require_system_mock_fallback_enabled
 from app.core.enums import CurrentNode, TaskStatus
 from app.core.mock_llm import mock_agent_execution, mock_dispatch, mock_human_node_processing, mock_round_plan
-from app.core.model_client import execute_subtask_with_tools_model
-from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, User, utc_now
+from app.core.model_client import execute_subtask_with_tools_model, judge_condition_with_model
+from app.core.models import Event, RoundPlan, SubTask, Task, TaskRound, ToolCall, User, scoped_subtask_id, utc_now
 from app.planners.factory import get_task_planner
 from app.services.completion_service import CompletionService
 from app.services.artifact_service import ArtifactService
@@ -171,7 +172,13 @@ class TaskGraphRunner:
                 logical_key = f"round_{round_index}_{ordinal}_{digest}"
             subtask.execution_id = execution_id
             subtask.logical_key = logical_key
-            subtask.id = f"{task.id}_{execution_id}_{logical_key}"
+            subtask.id = scoped_subtask_id(
+                task.id,
+                execution_id,
+                logical_key,
+                round_index=round_index,
+                ordinal=ordinal,
+            )
 
     @staticmethod
     def _should_create_draft_human_gate(task: Task, plan: RoundPlan) -> bool:
@@ -191,7 +198,8 @@ class TaskGraphRunner:
             reason=plan.reason or "意图识别要求人工审核",
             subtasks=[
                 SubTask(
-                    id=f"{task.id}_human_review",
+                    id="human_review",
+                    logical_key="human_review",
                     title=title or "人工审核",
                     description=description or "请人工审核任务结果。",
                     assignee_type="human",
@@ -366,6 +374,14 @@ class TaskGraphRunner:
         if agent:
             execution_result = execute_subtask_with_tools_model(task, subtask, agent, [])
             if execution_result is None:
+                deterministic_outcome = self._execute_deterministic_tool_subtask(task, subtask, agent)
+                if deterministic_outcome is not None:
+                    return deterministic_outcome
+                if not is_system_mock_fallback_enabled():
+                    return SubTaskExecutionOutcome(
+                        completed=False,
+                        error="模型执行失败，且系统 mock fallback 已禁用",
+                    )
                 require_system_mock_fallback_enabled("agent_execution")
                 return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
             tool_calls, output = execution_result
@@ -374,6 +390,14 @@ class TaskGraphRunner:
                 subtask.tool_results = [self.tool_executor.execute(agent, tool_call) for tool_call in tool_calls]
                 followup_result = execute_subtask_with_tools_model(task, subtask, agent, subtask.tool_results)
                 if followup_result is None:
+                    file_write_output = self._completed_file_write_output(subtask)
+                    if file_write_output:
+                        return SubTaskExecutionOutcome(completed=True, output=file_write_output)
+                    if not is_system_mock_fallback_enabled():
+                        return SubTaskExecutionOutcome(
+                            completed=False,
+                            error="工具执行后模型总结失败，且系统 mock fallback 已禁用",
+                        )
                     require_system_mock_fallback_enabled("agent_execution_followup")
                     return SubTaskExecutionOutcome(completed=True, output=mock_agent_execution(task, agent))
                 tool_calls, output = followup_result
@@ -389,25 +413,123 @@ class TaskGraphRunner:
         require_system_mock_fallback_enabled("human_node_processing")
         return SubTaskExecutionOutcome(completed=True, output=mock_human_node_processing(task))
 
+    def _execute_deterministic_tool_subtask(self, task: Task, subtask: SubTask, agent) -> SubTaskExecutionOutcome | None:
+        file_write_tool = next((tool for tool in agent.tools if tool.type == "file_write"), None)
+        if file_write_tool is None:
+            return None
+        task_text = "\n".join(
+            [
+                task.title or "",
+                task.description or "",
+                task.content or "",
+                subtask.title,
+                subtask.description,
+            ]
+        )
+        if not self._looks_like_file_write_task(task_text):
+            return None
+        tool_call = ToolCall(
+            tool_name=file_write_tool.name,
+            arguments={
+                "filename": self._infer_file_write_filename(task, subtask, file_write_tool),
+                "content": self._build_file_write_content(task, subtask),
+            },
+        )
+        subtask.tool_calls = [tool_call]
+        subtask.tool_results = [self.tool_executor.execute(agent, tool_call)]
+        failed_tools = [result for result in subtask.tool_results if not result.success]
+        if failed_tools:
+            error = "; ".join(result.error or f"Tool {result.tool_name} failed" for result in failed_tools)
+            return SubTaskExecutionOutcome(completed=False, error=error)
+        output = self._completed_file_write_output(subtask)
+        return SubTaskExecutionOutcome(completed=True, output=output or "文档已写入")
+
+    @staticmethod
+    def _looks_like_file_write_task(text: str) -> bool:
+        return any(keyword in text for keyword in ["写入", "保存", "目录", "文档", "报告", "总结", "文件"])
+
+    @staticmethod
+    def _infer_file_write_filename(task: Task, subtask: SubTask, file_write_tool) -> str:
+        base_dir = str(file_write_tool.config.get("base_dir", "")).rstrip("/")
+        text = "\n".join([task.content or "", task.description or "", subtask.description])
+        path_match = re.search(r"(/[\w./-]+\.md|[\w./-]+\.md)", text)
+        if path_match:
+            filename = path_match.group(1).strip()
+            if base_dir and filename.startswith(f"{base_dir}/"):
+                return filename[len(base_dir) + 1:]
+            return filename.lstrip("/")
+        if "天气" in text:
+            return "reports/weather_report_7days.md"
+        return f"reports/{task.id}_report.md"
+
+    @staticmethod
+    def _build_file_write_content(task: Task, subtask: SubTask) -> str:
+        title = task.title or subtask.title or "任务报告"
+        context_summary = task.context.summary.strip() or "暂无上游上下文。"
+        return "\n\n".join(
+            [
+                f"# {title}",
+                "## 原始诉求\n" + (task.content or task.description or ""),
+                "## 上游结果\n" + context_summary,
+                "## 分析结论\n已根据任务上下文整理完成，并写入指定目录。",
+            ]
+        )
+
+    @staticmethod
+    def _completed_file_write_output(subtask: SubTask) -> str:
+        written_paths = [
+            result.result
+            for result in subtask.tool_results
+            if result.success and result.tool_type == "file_write" and result.result
+        ]
+        if not written_paths:
+            return ""
+        return "文档已写入：" + "，".join(written_paths)
+
     def _execute_condition_subtask(self, task: Task, subtask: SubTask) -> SubTaskExecutionOutcome:
         config = subtask.result_metadata.get("config", {})
-        source_node_id = str(config.get("source_node_id", "")).strip()
-        field = str(config.get("field", "decision")).strip() or "decision"
-        default_decision = str(config.get("default_decision", "unknown")).strip() or "unknown"
-        allowed_decisions = config.get("allowed_decisions", [])
-        source_subtask = self._find_completed_workflow_subtask(task, source_node_id) if source_node_id else None
-        source_value = source_subtask.result_metadata.get(field) if source_subtask else None
-        decision = str(source_value or default_decision)
-        if isinstance(allowed_decisions, list) and allowed_decisions and decision not in allowed_decisions:
-            decision = default_decision
-        subtask.result_metadata = {
-            "decision": decision,
-            "reason": f"Matched {source_node_id}.{field}" if source_subtask and source_value is not None else "Used default decision",
-            "source_node_id": source_node_id,
-            "source_value": source_value,
-        }
+        legacy_default = self._legacy_default_condition_result(config)
+        if legacy_default is not None:
+            subtask.result_metadata = legacy_default
+            subtask.current_node = CurrentNode.SUBTASK_EXECUTION
+            return SubTaskExecutionOutcome(completed=True, output=f"Condition decision: {legacy_default['decision']}")
+        condition_result = judge_condition_with_model(task, subtask)
+        if condition_result is None:
+            subtask.result_metadata = {
+                "decision": "",
+                "reason": "无法正常判断条件",
+                "matched_source": "",
+                "confidence": 0.0,
+                "condition_content": str(config.get("condition_content") or config.get("condition_description") or ""),
+            }
+            subtask.current_node = CurrentNode.SUBTASK_EXECUTION
+            return SubTaskExecutionOutcome(completed=False, error="无法正常判断条件")
+        subtask.result_metadata = condition_result
         subtask.current_node = CurrentNode.SUBTASK_EXECUTION
-        return SubTaskExecutionOutcome(completed=True, output=f"Condition decision: {decision}")
+        return SubTaskExecutionOutcome(completed=True, output=f"Condition decision: {condition_result['decision']}")
+
+    @staticmethod
+    def _legacy_default_condition_result(config: dict) -> dict | None:
+        has_new_condition_config = any(
+            config.get(key)
+            for key in (
+                "condition_options",
+                "condition_content",
+                "allowed_decisions",
+            )
+        )
+        decision = str(config.get("default_decision") or "").strip()
+        if has_new_condition_config or not decision:
+            return None
+        return {
+            "decision": decision,
+            "reason": "Used legacy default decision",
+            "matched_source": "condition.default_decision",
+            "confidence": 1.0,
+            "condition_content": "",
+            "condition_options": [],
+        }
+
 
     @staticmethod
     def _find_completed_workflow_subtask(task: Task, node_id: str) -> SubTask | None:

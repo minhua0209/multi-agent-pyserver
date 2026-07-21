@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-DEFAULT_DATABASE_URL = "mysql+pymysql://root:rootroot@localhost:3306/demo_db?charset=utf8mb4"
+DEFAULT_DATABASE_URL = ""
 
 
 def get_task_planner_type() -> str:

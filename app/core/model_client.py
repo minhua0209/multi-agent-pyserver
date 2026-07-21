@@ -5,6 +5,8 @@ import os
 from typing import Any
 from urllib import request
 
+from app.core.enums import TaskStatus
+from app.core.models import Agent, RoundPlan, SubTask, Task, TaskDraft, ToolCall, ToolExecutionResult, new_id
 from app.core.enums import CriterionResultStatus
 from app.core.models import (
     Agent,
@@ -21,7 +23,7 @@ from app.core.models import (
 )
 
 
-DEFAULT_RESPONSES_API_URL = "http://192.168.18.94:30377/v1/responses"
+DEFAULT_RESPONSES_API_URL = ""
 DEFAULT_MODEL_NAME = "qwen3.6-35b"
 RESPONSES_API_URL = os.getenv("MODEL_RESPONSES_API_URL", DEFAULT_RESPONSES_API_URL)
 RESPONSES_API_KEY = os.getenv("MODEL_API_KEY", "")
@@ -88,6 +90,8 @@ class OpenAIResponsesClient:
         if self.url is not None:
             return self.url
         responses_api_url = os.getenv("MODEL_RESPONSES_API_URL", DEFAULT_RESPONSES_API_URL)
+        if not responses_api_url:
+            raise ModelCallError("MODEL_RESPONSES_API_URL is not configured")
         return responses_api_url.replace("/v1/responses", "/v1/chat/completions")
 
     def _api_key(self) -> str:
@@ -445,6 +449,126 @@ def judge_completion_with_model(task: Task, execution_output: str) -> bool | Non
         return None
     complete = data.get("complete")
     return complete if isinstance(complete, bool) else None
+
+
+def judge_condition_with_model(task: Task, subtask: SubTask) -> dict[str, Any] | None:
+    config = subtask.result_metadata.get("config", {})
+    condition_options = _condition_options(config)
+    allowed_decisions = [option["value"] for option in condition_options] or _string_list(config.get("allowed_decisions")) or [
+        "approved",
+        "rejected",
+        "need_more_info",
+    ]
+    condition_content = str(
+        config.get("condition_content")
+        or _format_condition_options(condition_options)
+        or config.get("condition_description")
+        or subtask.description
+        or subtask.title
+    ).strip()
+    system_prompt = (
+        "你是流程模版里的智能条件判断节点。"
+        "你只能根据给定的任务上下文摘要、最近一轮子任务输出和最近一轮结构化结果做判断，"
+        "不要创造输入里不存在的信息。"
+        "判断目标优先来自 condition.condition_options；每个 option.value 是可返回的 decision，"
+        "option.content 是该分支的自然语言判断标准。"
+        "如果 condition_options 为空，再参考 condition.condition_content。"
+        "decision 必须且只能从 allowed_decisions 中选择。"
+        "如果证据不足、无法判断或无法匹配任何 allowed_decisions，decision 返回空字符串，"
+        "reason 返回“无法正常判断条件”。"
+        "只返回 JSON，不要返回 Markdown。"
+        '格式: {"decision": "...", "reason": "...", "matched_source": "...", "confidence": 0.0}'
+    )
+    user_prompt = json.dumps(
+        {
+            "condition": {
+                "id": subtask.id,
+                "title": subtask.title,
+                "description": subtask.description,
+                "condition_content": condition_content,
+                "condition_options": condition_options,
+                "allowed_decisions": allowed_decisions,
+            },
+            "task_context": {
+                "summary": task.context.summary,
+            },
+            "latest_round": _latest_round_condition_payload(task),
+        },
+        ensure_ascii=False,
+    )
+    try:
+        data = _loads_json(default_client.create(system_prompt, user_prompt))
+    except Exception:
+        return None
+
+    decision = str(data.get("decision") or "").strip()
+    if not decision or decision not in allowed_decisions:
+        return None
+    return {
+        "decision": decision,
+        "reason": str(data.get("reason") or "智能条件判断完成"),
+        "matched_source": str(data.get("matched_source") or ""),
+        "confidence": _float_or_zero(data.get("confidence")),
+        "condition_content": condition_content,
+        "condition_options": condition_options,
+    }
+
+
+def _condition_options(config: dict[str, Any]) -> list[dict[str, str]]:
+    raw_options = config.get("condition_options")
+    if not isinstance(raw_options, list):
+        return []
+    options = []
+    for item in raw_options:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if value:
+            options.append({"value": value, "content": content})
+    return options
+
+
+def _format_condition_options(options: list[dict[str, str]]) -> str:
+    return "\n".join(f"{item['value']}: {item.get('content', '')}" for item in options).strip()
+
+
+def _latest_round_condition_payload(task: Task) -> dict[str, Any]:
+    for round_item in reversed(task.context.rounds):
+        completed_subtasks = [subtask for subtask in round_item.subtasks if subtask.status == TaskStatus.SUCCEEDED]
+        if not completed_subtasks:
+            continue
+        return {
+            "round_index": round_item.round_index,
+            "execution_mode": round_item.execution_mode,
+            "reason": round_item.reason,
+            "context_before": round_item.context_before,
+            "context_after": round_item.context_after,
+            "subtasks": [
+                {
+                    "node_id": _workflow_node_id_from_subtask_id(task.id, item.id),
+                    "title": item.title,
+                    "description": item.description,
+                    "assignee_type": item.assignee_type,
+                    "output": item.output,
+                    "result_metadata": item.result_metadata,
+                }
+                for item in completed_subtasks
+            ],
+        }
+    return {"subtasks": []}
+
+
+def _workflow_node_id_from_subtask_id(task_id: str, subtask_id: str) -> str:
+    prefix = f"{task_id}_"
+    return subtask_id[len(prefix) :] if subtask_id.startswith(prefix) else subtask_id
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def evaluate_success_criteria_with_model(

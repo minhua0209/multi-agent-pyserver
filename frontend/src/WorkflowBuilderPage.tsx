@@ -7,7 +7,6 @@ import {
   Pencil,
   Plus,
   Save,
-  Send,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -32,20 +31,26 @@ import {
 import "@xyflow/react/dist/style.css"
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 
-import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow } from "./api/taskhub"
-import { defaultWorkflowNodePositions, removeWorkflowNode } from "./workflowCanvas"
+import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow, updateWorkflow } from "./api/taskhub"
+import { removeWorkflowNode } from "./workflowCanvas"
 import { capabilityLabel } from "./workflowLabels"
 import {
   WorkflowReactFlowEdge,
   WorkflowReactFlowNode,
   applyNodeConfig,
+  autoLayoutWorkflowNodePositions,
+  canEditDecisionEdge,
   reduceWorkflowInlineTextDraft,
   reactFlowToWorkflow,
+  setDecisionEdgeCondition,
+  workflowConditionDecisionValues,
+  normalizeWorkflowConditionOptions,
   workflowNodeDetailItems,
   workflowNodeInlineEditFields,
   workflowToReactFlow,
 } from "./workflowReactFlow"
 import { workflowResourcePanelClass, workflowResourceToggleLabel } from "./workflowResourcePanel"
+import { workflowBuilderCopy, workflowTemplateSaveAction } from "./workflowSave"
 import { workflowTemplateCardView } from "./workflowTemplateCard"
 
 interface WorkflowBuilderPageProps {
@@ -55,8 +60,6 @@ interface WorkflowBuilderPageProps {
   onWorkflowSaved: (workflow: WorkflowTemplate) => void
   setToast: (value: string) => void
   modal?: boolean
-  submittingTask?: boolean
-  onSubmitTask?: (definition: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }) => Promise<void>
 }
 
 function processingAgents(agents: Agent[]) {
@@ -143,8 +146,6 @@ export function WorkflowBuilderPage({
   onWorkflowSaved,
   setToast,
   modal = false,
-  submittingTask = false,
-  onSubmitTask,
 }: WorkflowBuilderPageProps) {
   const availableAgents = useMemo(() => processingAgents(agents), [agents])
   const agentNameById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
@@ -164,6 +165,8 @@ export function WorkflowBuilderPage({
   const [activeTemplateId, setActiveTemplateId] = useState("")
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
+  const [editingEdgeId, setEditingEdgeId] = useState("")
+  const [edgeDecisionDraft, setEdgeDecisionDraft] = useState("")
 
   const capabilityOptions = useMemo(() => {
     const capabilities = new Set<string>()
@@ -173,8 +176,10 @@ export function WorkflowBuilderPage({
 
   const definition = useMemo(() => reactFlowToWorkflow(canvasNodes, flowEdges), [canvasNodes, flowEdges])
   const activeNode = definition.nodes.find((node) => node.id === activeNodeId) || definition.nodes[0] || null
+  const editingEdge = flowEdges.find((edge) => edge.id === editingEdgeId) || null
   const canDeleteActiveNode = Boolean(activeNode && activeNode.id !== "start" && activeNode.id !== "end")
   const filteredAgents = availableAgents.filter((agent) => agentMatchesCapability(agent, capabilityFilter))
+  const edgeDecisionOptions = decisionOptionsForEdge(canvasNodes, editingEdge)
   const handleNodeConfigChange = useCallback((nodeId: string, patch: Record<string, unknown>) => {
     const normalizedPatch = normalizeNodePatch(patch, users)
     setCanvasNodes((current) => applyNodeConfig({ nodes: current, edges: [] }, nodeId, normalizedPatch).nodes)
@@ -230,6 +235,7 @@ export function WorkflowBuilderPage({
       ...(patch.handoff_instruction !== undefined ? { handoffInstruction: String(patch.handoff_instruction || "") } : {}),
       ...(patch.condition_description !== undefined ? { conditionDescription: String(patch.condition_description || "") } : {}),
       ...(patch.condition_content !== undefined ? { conditionContent: String(patch.condition_content || "") } : {}),
+      ...(patch.condition_options !== undefined ? { conditionOptions: normalizeWorkflowConditionOptions(patch.condition_options) } : {}),
     }
   }
 
@@ -318,14 +324,10 @@ export function WorkflowBuilderPage({
       id: createNodeId("condition"),
       type: "condition",
       title: "条件判断",
-      description: "根据上游 decision 或上下文字段决定下一步流转。",
+      description: "根据条件内容、任务摘要和最近一轮输出决定下一步流转。",
       config: {
-        mode: "rule",
-        field: "decision",
-        allowed_decisions: ["approved", "rejected", "need_more_info"],
-        default_decision: "need_more_info",
         condition_description: "",
-        condition_content: "",
+        condition_options: [],
       },
     }
     appendCanvasNode(node)
@@ -346,7 +348,7 @@ export function WorkflowBuilderPage({
   }
 
   function loadWorkflowTemplate(template: WorkflowTemplate) {
-    const flow = workflowToReactFlow(template.definition, defaultWorkflowNodePositions)
+    const flow = workflowToReactFlow(template.definition, autoLayoutWorkflowNodePositions(template.definition))
     setWorkflowName(template.name || "")
     setWorkflowDescription(template.description || "")
     setCanvasNodes(template.definition.nodes || [])
@@ -387,32 +389,49 @@ export function WorkflowBuilderPage({
     [setFlowEdges],
   )
 
-  async function submitWorkflowTask() {
-    if (!onSubmitTask) return
-    setSaving(true)
-    setMessage("")
-    try {
-      await onSubmitTask(definition)
-      setMessage("已提交任务")
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "提交失败")
-    } finally {
-      setSaving(false)
-    }
+  const handleEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: WorkflowReactFlowEdge) => {
+      event.stopPropagation()
+      if (!canEditDecisionEdge(canvasNodes, edge)) {
+        setMessage("只有判断节点后的连线支持条件配置")
+        return
+      }
+      setEditingEdgeId(edge.id)
+      setEdgeDecisionDraft(edgeDecisionValue(edge))
+      setMessage("")
+    },
+    [canvasNodes],
+  )
+
+  function closeEdgeEditor() {
+    setEditingEdgeId("")
+    setEdgeDecisionDraft("")
+  }
+
+  function saveEdgeCondition() {
+    if (!editingEdge) return
+    setFlowEdges((current) =>
+      current.map((edge) => (edge.id === editingEdge.id ? setDecisionEdgeCondition(edge, edgeDecisionDraft) : edge)),
+    )
+    setToast(edgeDecisionDraft ? `连线条件已设置为 ${edgeDecisionDraft}` : "连线条件已清空")
+    closeEdgeEditor()
   }
 
   async function saveWorkflow() {
     setSaving(true)
     setMessage("")
     try {
-      const saved = await createWorkflow({
+      const action = workflowTemplateSaveAction(workflows, {
         name: workflowName,
         description: workflowDescription,
         definition,
       })
+      const saved = action.type === "update"
+        ? await updateWorkflow(action.workflowId, action.payload)
+        : await createWorkflow(action.payload)
       onWorkflowSaved(saved)
-      setToast("Workflow 已保存，可在任务发布时选择")
-      setMessage(`已保存：${saved.id}`)
+      setToast(action.type === "update" ? workflowBuilderCopy.updatedToast : workflowBuilderCopy.createdToast)
+      setMessage(`${action.type === "update" ? "已覆盖" : "已保存"}：${saved.id}`)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存失败")
     } finally {
@@ -423,12 +442,12 @@ export function WorkflowBuilderPage({
   return (
     <div className={modal ? "workflow-page workflow-page-modal" : "page active workflow-page"}>
       <PageTitle
-        title="Agent 节点编排"
-        description="选择 Agent 节点，在自由画布中配置执行节点、人工确认、条件判断和上下文流转。"
+        title={workflowBuilderCopy.title}
+        description={workflowBuilderCopy.description}
       >
         <button className="btn btn-primary" type="button" onClick={saveWorkflow} disabled={saving || !workflowName.trim()}>
           <Save size={16} />
-          {saving ? "保存中" : "保存 Workflow"}
+          {saving ? workflowBuilderCopy.savingButton : workflowBuilderCopy.saveButton}
         </button>
       </PageTitle>
 
@@ -463,12 +482,6 @@ export function WorkflowBuilderPage({
                 <Trash2 size={14} />
                 删除选中
               </button>
-              {onSubmitTask && (
-                <button className="btn btn-small btn-primary" type="button" onClick={() => void submitWorkflowTask()} disabled={saving || submittingTask || !workflowName.trim()}>
-                  <SendIcon />
-                  {submittingTask || saving ? "提交中" : "提交任务"}
-                </button>
-              )}
             </div>
           </div>
           <div className={resourcePanelCollapsed ? "workflow-canvas resource-collapsed" : "workflow-canvas"} aria-label="Workflow 自由画布">
@@ -613,10 +626,13 @@ export function WorkflowBuilderPage({
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onEdgeClick={handleEdgeClick}
                 onNodeClick={(_event, node) => setActiveNodeId(node.id)}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId("")}
                 defaultViewport={{ x: 24, y: 28, zoom: 0.9 }}
+                fitView
+                fitViewOptions={{ padding: 0.18, maxZoom: 0.95 }}
                 minZoom={0.35}
                 maxZoom={1.8}
               >
@@ -624,6 +640,35 @@ export function WorkflowBuilderPage({
                 <MiniMap pannable zoomable />
                 <Controls />
               </ReactFlow>
+              {editingEdge && (
+                <div className="workflow-edge-editor-backdrop" onMouseDown={closeEdgeEditor}>
+                  <section className="workflow-edge-editor" aria-label="编辑连线条件" onMouseDown={(event) => event.stopPropagation()}>
+                    <header>
+                      <strong>编辑连线条件</strong>
+                      <span>{nodeTitle(canvasNodes, editingEdge.source)}{" -> "}{nodeTitle(canvasNodes, editingEdge.target)}</span>
+                    </header>
+                    <label className="field compact-field">
+                      <span>decision 值</span>
+                      <select className="input" value={edgeDecisionDraft} onChange={(event) => setEdgeDecisionDraft(event.target.value)}>
+                        <option value="">无条件</option>
+                        {edgeDecisionOptions.map((decision) => (
+                          <option key={decision} value={decision}>
+                            {decision}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="workflow-edge-editor-actions">
+                      <button className="btn btn-small" type="button" onClick={closeEdgeEditor}>
+                        取消
+                      </button>
+                      <button className="btn btn-small btn-primary" type="button" onClick={saveEdgeCondition}>
+                        保存条件
+                      </button>
+                    </div>
+                  </section>
+                </div>
+              )}
             </div>
           </div>
           <div className="workflow-save-summary">
@@ -716,7 +761,12 @@ function WorkflowCanvasNode({ data }: NodeProps<WorkflowReactFlowNode>) {
           {editableFields.map((field) => (
             <label className="workflow-inline-field" key={field.key}>
               <span>{field.label}</span>
-              {field.inputType === "textarea" ? (
+              {field.inputType === "condition_options" ? (
+                <WorkflowConditionOptionsInput
+                  options={field.conditionOptions || []}
+                  onChange={(options) => data.onConfigChange?.(data.id, { [field.key]: options })}
+                />
+              ) : field.inputType === "textarea" ? (
                 <WorkflowInlineTextInput
                   as="textarea"
                   field={field}
@@ -832,6 +882,79 @@ function isComposingNativeEvent(event: Event) {
   return Boolean((event as Event & { isComposing?: boolean }).isComposing)
 }
 
+function WorkflowConditionOptionsInput({
+  options,
+  onChange,
+}: {
+  options: Array<{ value: string; content: string }>
+  onChange: (options: Array<{ value: string; content: string }>) => void
+}) {
+  const rows = normalizeWorkflowConditionOptions(options)
+  const editableRows = rows.length ? rows : [{ value: "", content: "" }]
+
+  function updateRow(index: number, patch: Partial<{ value: string; content: string }>) {
+    const nextRows = editableRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row))
+    onChange(nextRows)
+  }
+
+  function addRow() {
+    onChange([...editableRows, { value: "", content: "" }])
+  }
+
+  function removeRow(index: number) {
+    const nextRows = editableRows.filter((_row, rowIndex) => rowIndex !== index)
+    onChange(nextRows.length ? nextRows : [{ value: "", content: "" }])
+  }
+
+  return (
+    <div className="workflow-condition-options-editor">
+      {editableRows.map((row, index) => (
+        <div className="workflow-condition-option-row" key={`condition-option-${index}`}>
+          <div className="workflow-condition-option-head">
+            <label>
+              <span>分支值</span>
+              <WorkflowInlineTextInput
+                as="input"
+                field={{ value: row.value, placeholder: "请输入分支值" }}
+                onChange={(value) => updateRow(index, { value })}
+              />
+            </label>
+            <button className="btn btn-small btn-danger" type="button" onClick={() => removeRow(index)}>
+              删除
+            </button>
+          </div>
+          <WorkflowInlineTextInput
+            as="textarea"
+            field={{ value: row.content, placeholder: "请输入判断说明" }}
+            onChange={(content) => updateRow(index, { content })}
+          />
+        </div>
+      ))}
+      <button className="btn btn-small" type="button" onClick={addRow}>
+        <Plus size={14} />
+        添加分支
+      </button>
+    </div>
+  )
+}
+
+function edgeDecisionValue(edge: WorkflowReactFlowEdge | null) {
+  const condition = edge?.data?.condition
+  if (!condition || typeof condition !== "object") return ""
+  const value = (condition as Record<string, unknown>).value
+  return typeof value === "string" ? value : ""
+}
+
+function decisionOptionsForEdge(nodes: WorkflowNode[], edge: WorkflowReactFlowEdge | null) {
+  const sourceNode = edge ? nodes.find((node) => node.id === edge.source) : null
+  return workflowConditionDecisionValues(sourceNode)
+}
+
+function nodeTitle(nodes: WorkflowNode[], nodeId: string) {
+  const node = nodes.find((item) => item.id === nodeId)
+  return node?.title || nodeId
+}
+
 function normalizeNodePatch(patch: Record<string, unknown>, users: UserOption[]): Record<string, unknown> {
   if (patch.assignee_user_id === undefined) return patch
   const userId = String(patch.assignee_user_id || "")
@@ -852,8 +975,4 @@ function makeFlowEdge(source: string, target: string): WorkflowReactFlowEdge {
     markerEnd: { type: MarkerType.ArrowClosed },
     data: { condition: {} },
   }
-}
-
-function SendIcon() {
-  return <Send size={16} />
 }

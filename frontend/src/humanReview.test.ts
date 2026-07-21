@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest"
 import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
 
 describe("human review helpers", () => {
+  it("uses human node configured instruction before upstream output", () => {
+    expect(
+      humanReviewDocumentText({
+        description: "订单价格大于1000块，请人工审核是否可以继续。",
+        upstream_outputs: ["条件判断: Condition decision: v1"],
+        task_context_summary: "任务诉求：订单价格1200块",
+      }),
+    ).toBe("订单价格大于1000块，请人工审核是否可以继续。")
+  })
+
   it("uses upstream agent output as the document that needs human review", () => {
     expect(
       humanReviewDocumentText({
@@ -21,6 +31,7 @@ describe("human review helpers", () => {
   })
 
   it("labels where the review document comes from", () => {
+    expect(humanReviewDocumentSourceLabel({ description: "人工审核要求" })).toBe("人工节点配置")
     expect(humanReviewDocumentSourceLabel({ upstream_outputs: ["agent output"] })).toBe("上游产出")
     expect(humanReviewDocumentSourceLabel({ task_context_summary: "context summary" })).toBe("上下文")
     expect(humanReviewDocumentSourceLabel({})).toBe("暂无文档")

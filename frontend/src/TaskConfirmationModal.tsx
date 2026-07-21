@@ -10,6 +10,7 @@ import {
   buildTaskConfirmationRequests,
   cancelTasksSequentially,
   confirmTaskRequestsSequentially,
+  confirmationTaskIdsToCancelOnClose,
   confirmationDraftFromTask,
   validateConfirmationDraft,
 } from "./taskConfirmation"
@@ -24,6 +25,7 @@ interface TaskConfirmationModalProps {
   intro?: string
   beforeTasks?: ReactNode
   confirmOptions?: ConfirmOptions
+  cancelOnClose?: boolean
   onTaskUpdated: (task: Task) => void | Promise<void>
   onTasksCancelled?: (taskIds: string[]) => void | Promise<void>
   onClose: () => void
@@ -38,6 +40,7 @@ export function TaskConfirmationModal({
   intro = "请确认任务目标、交付物和成功标准，确认后系统会异步执行。",
   beforeTasks,
   confirmOptions = { execution_mode: "async" },
+  cancelOnClose = true,
   onTaskUpdated,
   onTasksCancelled,
   onClose,
@@ -148,7 +151,7 @@ export function TaskConfirmationModal({
 
   async function close() {
     if (preparing || confirming) return
-    const taskIds = activeTasks.map((task) => task.id)
+    const taskIds = confirmationTaskIdsToCancelOnClose(tasks, remainingTaskIds, cancelOnClose)
     if (taskIds.length) {
       setConfirming(true)
       setError("")

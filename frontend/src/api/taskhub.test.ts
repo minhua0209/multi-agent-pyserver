@@ -11,6 +11,7 @@ import {
   preflightTaskRerun,
   submitTaskResult,
   setCurrentUserId,
+  updateWorkflow,
   uploadTaskAttachment,
   type Artifact,
   type CompletionReport,
@@ -390,5 +391,27 @@ describe("taskhub api client", () => {
     await expect(listTasks()).rejects.toThrow(
       "接口请求失败：502 Bad Gateway；upstream timeout",
     )
+  })
+
+  it("updates an existing workflow template with PUT", async () => {
+    const fetchMock = vi.fn(async () => mockJsonResponse({ id: "workflow_001", name: "客户交付流程" }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await updateWorkflow("workflow_001", {
+      name: "客户交付流程",
+      description: "覆盖旧流程",
+      definition: {
+        nodes: [{ id: "start", type: "start" }],
+        edges: [],
+      },
+    })
+
+    const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/workflows/workflow_001", expect.any(Object))
+    expect(options.method).toBe("PUT")
+    expect(JSON.parse(String(options.body))).toMatchObject({
+      name: "客户交付流程",
+      description: "覆盖旧流程",
+    })
   })
 })

@@ -725,11 +725,17 @@ X-User-Id: user_xxx
         "title": "判断审批结果",
         "description": "将人工审批结果归一化为 decision",
         "config": {
-          "mode": "rule",
-          "source_node_id": "approve_quote",
-          "field": "decision",
-          "allowed_decisions": ["approved", "rejected", "need_more_info"],
-          "default_decision": "need_more_info"
+          "condition_description": "判断审批结果",
+          "condition_options": [
+            {
+              "value": "approved",
+              "content": "人工审批通过，可以继续后续流程"
+            },
+            {
+              "value": "rejected",
+              "content": "人工审批驳回，需要返工或结束"
+            }
+          ]
         }
       },
       {
@@ -810,14 +816,19 @@ X-User-Id: user_xxx
 | `start` | 开始节点 |
 | `agent` | agent 自动处理节点，需要配置 `agent_id` |
 | `human` | 人工处理节点 |
-| `condition` | 通用条件判断节点，第一版支持 `config.mode=rule`，输出标准 `decision` |
+| `condition` | 智能条件判断节点，基于条件内容、任务摘要和最近一轮输出生成标准 `decision` |
 | `end` | 结束节点 |
 
 条件判断节点说明：
 
 - `condition` 节点不注册为普通 agent，不调用工具。
-- 第一版 `mode=rule` 会从 `source_node_id` 指定的上游节点 `result_metadata` 中读取 `field`。
-- 输出会写入子任务 `result_metadata.decision`。
+- 判断目标优先来自节点配置 `config.condition_options`，每个元素包含 `value` 和 `content`：
+  - `value` 是条件节点可输出的标准 `decision`，也是后续条件边的匹配值。
+  - `content` 是该分支的自然语言判断标准。
+- 如果未配置 `condition_options`，兼容读取旧字段 `config.condition_content` 和 `config.allowed_decisions`。
+- 判断数据来源限定为任务 `context.summary`、最近一轮已完成子任务的 `output` 和 `result_metadata`。
+- 输出会写入子任务 `result_metadata`，核心字段为 `decision`、`reason`、`matched_source`、`confidence`。
+- `decision` 必须落在 `condition_options[].value` 或兼容字段 `config.allowed_decisions` 内；模型调用失败、无法判断、返回空值或非法值时，条件子任务失败，主任务状态置为 `failed`，失败原因记录为“无法正常判断条件”。
 - 后续边建议使用标准 decision 条件：
 
 ```json

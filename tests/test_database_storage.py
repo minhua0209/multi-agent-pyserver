@@ -272,8 +272,9 @@ def test_database_storage_soft_cancels_unconfirmed_task_and_retains_rows(tmp_pat
     assert event_count >= 1
 
 
-def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
+def test_create_app_uses_database_url_from_environment(monkeypatch) -> None:
     captured_urls = []
+    database_url = "mysql+pymysql://user:password@db.local:3306/demo_db"
 
     class FakeDatabaseAgentRegistry:
         def __init__(self, database_url):
@@ -295,7 +296,7 @@ def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
         def __init__(self, database_url):
             captured_urls.append(("attachment", database_url))
 
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.delenv("DISABLE_DEFAULT_DATABASE_URL", raising=False)
     monkeypatch.setattr("app.main.DatabaseAgentRegistry", FakeDatabaseAgentRegistry)
     monkeypatch.setattr("app.main.DatabaseTaskStore", FakeDatabaseTaskStore)
@@ -306,11 +307,11 @@ def test_create_app_uses_default_mysql_database_url(monkeypatch) -> None:
     create_app()
 
     assert captured_urls == [
-        ("agent", DEFAULT_DATABASE_URL),
-        ("task", DEFAULT_DATABASE_URL),
-        ("workflow", DEFAULT_DATABASE_URL),
-        ("user", DEFAULT_DATABASE_URL),
-        ("attachment", DEFAULT_DATABASE_URL),
+        ("agent", database_url),
+        ("task", database_url),
+        ("workflow", database_url),
+        ("user", database_url),
+        ("attachment", database_url),
     ]
 
 

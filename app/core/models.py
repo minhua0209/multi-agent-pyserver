@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -23,6 +24,19 @@ from app.core.enums import (
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def scoped_subtask_id(
+    task_id: str,
+    execution_id: str,
+    logical_key: str,
+    *,
+    round_index: int = 0,
+    ordinal: int = 0,
+) -> str:
+    identity = "\x00".join([task_id, execution_id, logical_key, str(round_index), str(ordinal)])
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"subtask_{digest}"
 
 
 def utc_now() -> datetime:

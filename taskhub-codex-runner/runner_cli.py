@@ -90,8 +90,9 @@ def command_publish_task(args: argparse.Namespace, client: TaskHubClient) -> dic
 
 
 def command_confirm_task(args: argparse.Namespace, client: TaskHubClient) -> dict[str, Any]:
+    title = resolved_confirm_title(client, args.task_id, args.title)
     payload = {
-        "title": args.title,
+        "title": title,
         "description": args.description,
         "execution_mode": args.execution_mode,
     }
@@ -100,6 +101,20 @@ def command_confirm_task(args: argparse.Namespace, client: TaskHubClient) -> dic
         "ok": True,
         "task": task,
     }
+
+
+def resolved_confirm_title(client: TaskHubClient, task_id: str, requested_title: str) -> str:
+    try:
+        task = client.get_task(task_id)
+    except Exception:
+        return requested_title
+    draft = task.get("draft") if isinstance(task.get("draft"), dict) else {}
+    submitted_title = str(task.get("title") or "").strip()
+    draft_title = str(draft.get("title") or "").strip()
+    requested = str(requested_title or "").strip()
+    if submitted_title and draft_title and requested == draft_title:
+        return submitted_title
+    return requested_title
 
 
 def command_cancel_task(args: argparse.Namespace, client: TaskHubClient) -> dict[str, Any]:

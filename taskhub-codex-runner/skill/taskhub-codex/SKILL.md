@@ -135,12 +135,12 @@ If the user confirms, call:
 ```bash
 python3 "{runner_cli_path}" confirm-task \
   --task-id task_xxx \
-  --title "确认后的 draft_title" \
+  --title "submitted_title 或用户确认后的任务名称" \
   --description "确认后的 draft_description" \
   --execution-mode async
 ```
 
-If the user edits the task-list title or details, use the edited values in the confirm payload.
+If the user edits the task name or task-list details, use the edited values in the confirm payload. Do not use the recognized `draft_title` as the task name unless the user explicitly changes the task name to that value.
 
 If the user cancels, call:
 

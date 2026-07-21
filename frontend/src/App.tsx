@@ -10,7 +10,6 @@ import {
   Flex,
   Input,
   Layout,
-  List,
   Menu,
   Modal,
   Pagination,
@@ -94,6 +93,9 @@ import {
   uploadTaskAttachment,
 } from "./api/taskhub"
 import { humanReviewDocumentSourceLabel, humanReviewDocumentText } from "./humanReview"
+import { PageId, canNavigateToPage, refreshTargetsForPage } from "./pageRefresh"
+import { initialPublishForm, validatePublishForm, validateWorkflowBuilderOpen } from "./publishForm"
+import { isManualWorkflowTask, taskNodeText, taskTypeText } from "./taskType"
 import { isTaskAwaitingConfirmation } from "./taskConfirmation"
 import { TaskConfirmationModal } from "./TaskConfirmationModal"
 import {
@@ -104,7 +106,6 @@ import {
   loadPendingTaskRerun,
   shouldBlockTaskRerunFormForPreflight,
 } from "./taskRerunState"
-import { isManualWorkflowTask, taskTypeText } from "./taskType"
 import {
   buildTaskInterventionResultPayload,
   compactContextText,
@@ -126,8 +127,6 @@ import {
 import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 import { WorkflowReactFlowNode } from "./workflowReactFlow"
-
-type PageId = "overview" | "publish" | "confirmation" | "tasks" | "agents" | "users" | "audit" | "governance"
 
 const navGroups = [
   { label: "工作总览", items: [{ id: "overview", text: "协同总览", icon: Activity }] },
@@ -342,26 +341,41 @@ export default function App() {
     }
   }
 
-  async function refreshTaskList() {
+  async function refreshPageData(nextPage: PageId) {
+    const targets = refreshTargetsForPage(nextPage, isAdmin)
+    if (!targets.length) return
+
     setLoading(true)
     setError("")
     try {
-      const nextTasks = await listTasks()
-      setTasks(nextTasks || [])
-      if (!selectedTaskId && nextTasks?.[0]) setSelectedTaskId(nextTasks[0].id)
+      const targetSet = new Set(targets)
+      const [nextTasks, nextHumanSubtasks, nextAgents, nextAssignableUsers, nextUsers] = await Promise.all([
+        targetSet.has("tasks") ? listTasks() : Promise.resolve(null),
+        targetSet.has("humanSubtasks") ? listHumanSubtasks() : Promise.resolve(null),
+        targetSet.has("agents") ? listAgents() : Promise.resolve(null),
+        targetSet.has("assignableUsers") ? listAssignableUsers() : Promise.resolve(null),
+        targetSet.has("users") ? listUsers() : Promise.resolve(null),
+      ])
+
+      if (nextTasks) {
+        setTasks(nextTasks || [])
+        if (!selectedTaskId && nextTasks?.[0]) setSelectedTaskId(nextTasks[0].id)
+      }
+      if (nextHumanSubtasks) setHumanSubtasks(nextHumanSubtasks || [])
+      if (nextAgents) setAgents(nextAgents || [])
+      if (nextAssignableUsers) setAssignableUsers(nextAssignableUsers || [])
+      if (nextUsers) setUsers(nextUsers || [])
     } catch (err) {
-      setError(err instanceof Error ? err.message : "任务列表刷新失败")
+      setError(err instanceof Error ? err.message : "页面数据刷新失败")
     } finally {
       setLoading(false)
     }
   }
 
   async function navigateTo(nextPage: PageId) {
-    if (!isAdmin && ["agents", "users", "audit", "governance"].includes(nextPage)) return
+    if (!canNavigateToPage(nextPage, isAdmin)) return
     setPage(nextPage)
-    if (nextPage === "tasks") {
-      await refreshTaskList()
-    }
+    await refreshPageData(nextPage)
   }
 
   useEffect(() => {
@@ -559,19 +573,19 @@ function PublishPage({
   onConfirmed: (tasks: Task[]) => void
   onCancelled: (taskIds: string[]) => void
 }) {
-  const [title, setTitle] = useState("客户需求协同处理")
-  const [content, setContent] = useState("请分析客户需求，生成一份报告并保存到本地目录")
+  const initialForm = initialPublishForm()
+  const [title, setTitle] = useState(initialForm.title)
+  const [content, setContent] = useState(initialForm.content)
   const [draftTasks, setDraftTasks] = useState<Task[]>([])
   const [intentModalOpen, setIntentModalOpen] = useState(false)
   const [intentError, setIntentError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState("")
   const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
-  const [workflowId, setWorkflowId] = useState("")
+  const [workflowId, setWorkflowId] = useState(initialForm.workflowId)
   const [workflowLoading, setWorkflowLoading] = useState(false)
   const [workflowError, setWorkflowError] = useState("")
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false)
-  const [workflowSubmitting, setWorkflowSubmitting] = useState(false)
   const [attachments, setAttachments] = useState<TaskAttachment[]>([])
   const [attachmentUploading, setAttachmentUploading] = useState(false)
   const [attachmentError, setAttachmentError] = useState("")
@@ -608,6 +622,11 @@ function PublishPage({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const validationMessage = validatePublishForm(title, content)
+    if (validationMessage) {
+      setMessage(validationMessage)
+      return
+    }
     setSubmitting(true)
     setMessage("")
     setIntentError("")
@@ -629,8 +648,9 @@ function PublishPage({
 
   function openWorkflowBuilder() {
     setMessage("")
-    if (!title.trim() || title.trim().length > 50 || !content.trim()) {
-      setMessage("请先填写 50 字以内任务名称和任务诉求")
+    const validationMessage = validateWorkflowBuilderOpen(title, content)
+    if (validationMessage) {
+      setMessage(validationMessage)
       return
     }
     setWorkflowModalOpen(true)
@@ -641,40 +661,6 @@ function PublishPage({
       const savedIds = new Set([saved.id])
       return [saved, ...current.filter((workflow) => !savedIds.has(workflow.id))]
     })
-  }
-
-  async function submitWorkflowTask(definition: WorkflowDefinition) {
-    if (!title.trim() || title.trim().length > 50 || !content.trim()) {
-      setMessage("请先填写 50 字以内任务名称和任务诉求")
-      return
-    }
-    setWorkflowSubmitting(true)
-    setMessage("")
-    try {
-      const response = await createTaskRequest(
-        title.trim(),
-        content.trim(),
-        {
-          execution_mode: "workflow_template",
-          workflow_name: title.trim(),
-          workflow_description: content.trim(),
-          workflow_definition: definition,
-        },
-        "business_system",
-        attachmentIds,
-      )
-      const created = response.tasks || []
-      onCreated(created)
-      setWorkflowModalOpen(false)
-      openTaskConfirmation(created)
-      setMessage("Agent 编排任务已创建，请确认交付与成功目标")
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Agent 编排任务提交失败"
-      setMessage(errorMessage)
-      throw err
-    } finally {
-      setWorkflowSubmitting(false)
-    }
   }
 
   function openTaskConfirmation(created: Task[]) {
@@ -724,93 +710,93 @@ function PublishPage({
     <div className="page active">
       <PageHeader title="任务发布页" description="填写任务名称和任务诉求，系统会识别并整理待确认的任务清单。" />
       <Card className="form-panel">
-      <form onSubmit={submit}>
-        <label className="field">
-          <span>任务名称（50字以内）</span>
-          <Input
-            showCount
-            maxLength={50}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="请输入任务名称"
-          />
-        </label>
-        <label className="field">
-          <span>任务诉求</span>
-          <Input.TextArea rows={7} value={content} onChange={(event) => setContent(event.target.value)} />
-        </label>
-        <div className="field attachment-field">
-          <span>文本附件（可选）</span>
-          <input
-            ref={attachmentInputRef}
-            className="hidden-file-input"
-            type="file"
-            multiple
-            accept=".docx,.xlsx,.txt,.md,.log"
-            onChange={(event) => void handleAttachmentFiles(event.target.files)}
-          />
-          <div className="attachment-upload-panel">
-            <Button icon={<Paperclip size={16} />} loading={attachmentUploading} onClick={() => attachmentInputRef.current?.click()}>
-              上传文本附件
-            </Button>
-            <Typography.Text type="secondary">支持 .docx、.xlsx、.txt、.md、.log，仅解析纯文本，单个文件不超过 10MB。</Typography.Text>
-          </div>
-          {attachmentError && <Typography.Text type="danger">{attachmentError}</Typography.Text>}
-          {!!attachments.length && (
-            <div className="attachment-list">
-              {attachments.map((attachment) => (
-                <div className="attachment-item" key={attachment.id}>
-                  <div>
-                    <Typography.Text strong>{attachment.filename}</Typography.Text>
-                    <span>{formatFileSize(attachment.size_bytes)} / {attachment.text_length || 0} 字符{attachment.truncated ? " / 已截断" : ""}</span>
-                  </div>
-                  <Button
-                    size="small"
-                    icon={<Trash2 size={14} />}
-                    onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
-                  >
-                    移除
-                  </Button>
-                </div>
-              ))}
+        <form onSubmit={submit}>
+          <label className="field">
+            <span>任务名称（50字以内）</span>
+            <Input
+              showCount
+              maxLength={50}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="请输入任务名称"
+            />
+          </label>
+          <label className="field">
+            <span>任务诉求</span>
+            <Input.TextArea rows={7} value={content} onChange={(event) => setContent(event.target.value)} />
+          </label>
+          <div className="field attachment-field">
+            <span>文本附件（可选）</span>
+            <input
+              ref={attachmentInputRef}
+              className="hidden-file-input"
+              type="file"
+              multiple
+              accept=".docx,.xlsx,.txt,.md,.log"
+              onChange={(event) => void handleAttachmentFiles(event.target.files)}
+            />
+            <div className="attachment-upload-panel">
+              <Button icon={<Paperclip size={16} />} loading={attachmentUploading} onClick={() => attachmentInputRef.current?.click()}>
+                上传文本附件
+              </Button>
+              <Typography.Text type="secondary">支持 .docx、.xlsx、.txt、.md、.log，仅解析纯文本，单个文件不超过 10MB。</Typography.Text>
             </div>
-          )}
-        </div>
-        <label className="field">
-          <span>流程模板（可选）</span>
-          <Select
-            allowClear
-            showSearch
-            loading={workflowLoading}
-            value={workflowId || undefined}
-            placeholder="不选择则按无模板协同流程执行"
-            optionFilterProp="label"
-            options={workflows.map((workflow) => ({
-              value: workflow.id,
-              label: workflow.name,
-            }))}
-            onChange={(value) => setWorkflowId(value || "")}
-          />
-        </label>
-        <div className="form-actions">
-          <Button type="primary" htmlType="submit" icon={<Send size={16} />} loading={submitting} disabled={!title.trim() || title.trim().length > 50 || !content.trim()}>
-            提交请求
-          </Button>
-          {message && <Typography.Text type="danger">{message}</Typography.Text>}
-          {workflowError && <Typography.Text type="secondary">流程模板加载失败，仍可按无模板流程提交</Typography.Text>}
-        </div>
-      </form>
-      <Card size="small" className="workflow-publish-card">
-        <Flex align="center" justify="space-between" gap={16} wrap>
-          <div>
-            <Typography.Text strong>Agent 节点编排</Typography.Text>
-            <div className="muted">打开大画布选择 Agent、拖动连线、配置人工节点和执行交代，提交后任务严格按画布流程执行。</div>
+            {attachmentError && <Typography.Text type="danger">{attachmentError}</Typography.Text>}
+            {!!attachments.length && (
+              <div className="attachment-list">
+                {attachments.map((attachment) => (
+                  <div className="attachment-item" key={attachment.id}>
+                    <div>
+                      <Typography.Text strong>{attachment.filename}</Typography.Text>
+                      <span>{formatFileSize(attachment.size_bytes)} / {attachment.text_length || 0} 字符{attachment.truncated ? " / 已截断" : ""}</span>
+                    </div>
+                    <Button
+                      size="small"
+                      icon={<Trash2 size={14} />}
+                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                    >
+                      移除
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <Button icon={<Bot size={16} />} onClick={openWorkflowBuilder} disabled={!title.trim() || title.trim().length > 50 || !content.trim()}>
-            打开 Agent 编排
-          </Button>
-        </Flex>
-      </Card>
+          <label className="field">
+            <span>流程模板（可选）</span>
+            <Select
+              allowClear
+              showSearch
+              loading={workflowLoading}
+              value={workflowId || undefined}
+              placeholder="不选择则按无模板协同流程执行"
+              optionFilterProp="label"
+              options={workflows.map((workflow) => ({
+                value: workflow.id,
+                label: workflow.name,
+              }))}
+              onChange={(value) => setWorkflowId(value || "")}
+            />
+          </label>
+          <div className="form-actions">
+            <Button type="primary" htmlType="submit" icon={<Send size={16} />} loading={submitting}>
+              提交请求
+            </Button>
+            {message && <Typography.Text type="danger">{message}</Typography.Text>}
+            {workflowError && <Typography.Text type="secondary">流程模板加载失败，仍可按无模板流程提交</Typography.Text>}
+          </div>
+        </form>
+        <Card size="small" className="workflow-publish-card">
+          <Flex align="center" justify="space-between" gap={16} wrap>
+            <div>
+              <Typography.Text strong>流程节点编排</Typography.Text>
+              <div className="muted">打开大画布选择 Agent、拖动连线、配置人工节点和执行交代，保存后可在流程模板下拉框中选择。</div>
+            </div>
+            <Button icon={<Bot size={16} />} onClick={openWorkflowBuilder}>
+              打开流程编排
+            </Button>
+          </Flex>
+        </Card>
       </Card>
       <TaskConfirmationModal
         title="意图识别任务清单"
@@ -851,7 +837,7 @@ function PublishPage({
         onClose={closeTaskConfirmation}
       />
       <Modal
-        title="Agent 节点编排"
+        title="流程节点编排"
         open={workflowModalOpen}
         width="min(1680px, 96vw)"
         footer={null}
@@ -859,7 +845,7 @@ function PublishPage({
         mask={{ closable: false }}
         className="agent-workflow-modal"
         onCancel={() => {
-          if (!workflowSubmitting) setWorkflowModalOpen(false)
+          setWorkflowModalOpen(false)
         }}
       >
         <WorkflowBuilderPage
@@ -869,8 +855,6 @@ function PublishPage({
           workflows={workflows}
           onWorkflowSaved={rememberWorkflow}
           setToast={setToast}
-          submittingTask={workflowSubmitting}
-          onSubmitTask={submitWorkflowTask}
         />
       </Modal>
     </div>
@@ -1112,6 +1096,7 @@ function TasksPage({
         title="继续确认任务"
         open={Boolean(confirmationTask)}
         tasks={confirmationTask ? [confirmationTask] : []}
+        cancelOnClose={false}
         onTaskUpdated={(updated) => {
           setDetailTask(updated)
           onTaskUpdated(updated)
@@ -1957,6 +1942,8 @@ function ManualWorkflowDetail({ task, definition }: { task: Task; definition: Wo
           edges={flow.edges}
           nodeTypes={taskDetailWorkflowNodeTypes}
           defaultViewport={{ x: 20, y: 24, zoom: 0.88 }}
+          fitView
+          fitViewOptions={{ padding: 0.18, maxZoom: 0.95 }}
           minZoom={0.45}
           maxZoom={1.6}
           nodesDraggable={false}
@@ -2111,11 +2098,22 @@ function AgentsPage({
   const [name, setName] = useState("报告写入节点")
   const [result, setResult] = useState<{ status: string; message: string; agent?: Agent | null; guidance?: string[] } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [agentPage, setAgentPage] = useState(1)
   const selectedHumanAssignee = users.find((user) => user.id === humanAssigneeUserId)
+  const agentPageSize = 20
+  const pagedAgents = useMemo(
+    () => agents.slice((agentPage - 1) * agentPageSize, agentPage * agentPageSize),
+    [agentPage, agents],
+  )
 
   useEffect(() => {
     if (!humanAssigneeUserId && users[0]) setHumanAssigneeUserId(users[0].id)
   }, [humanAssigneeUserId, users])
+
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(agents.length / agentPageSize))
+    if (agentPage > maxPage) setAgentPage(maxPage)
+  }, [agentPage, agents.length])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -2156,8 +2154,8 @@ function AgentsPage({
 
   return (
     <div className="page active">
-      <PageHeader title="流程节点管理" description="创建和维护流程画布可用的 Agent 节点、人工节点和判断节点。" />
-      <div className="grid two">
+      <PageHeader title="流程节点管理" description="创建和维护流程画布可用的 Agent 节点和人工节点。" />
+      <div className="grid agents-management-grid">
         <Card className="form-panel" title="创建流程节点" size="small">
         <form onSubmit={submit}>
           <label className="field">
@@ -2167,7 +2165,6 @@ function AgentsPage({
               options={[
                 { value: "processing", label: "Agent 节点" },
                 { value: "human", label: "人工节点" },
-                { value: "condition", label: "判断节点" },
               ]}
               onChange={setNodeType}
             />
@@ -2178,11 +2175,11 @@ function AgentsPage({
           </label>
           {nodeType === "human" ? (
             <label className="field">
-              <span>审批人员</span>
+              <span>操作人员</span>
               <Select
                 showSearch
                 value={humanAssigneeUserId || undefined}
-                placeholder="请选择人员姓名"
+                placeholder="请选择操作人员"
                 optionFilterProp="label"
                 options={users.map((user) => ({
                   value: user.id,
@@ -2228,26 +2225,60 @@ function AgentsPage({
         </form>
         </Card>
         <Panel title="已注册流程节点">
-          <List
-            dataSource={agents}
-            renderItem={(agent) => (
-              <List.Item>
-                <List.Item.Meta
-                  title={agent.name}
-                  description={
-                    <div>
-                      <Typography.Paragraph ellipsis={{ rows: 2 }}>{agent.description}</Typography.Paragraph>
-                      <Flex wrap gap={6}>
-                        <Tag color={nodeTypeColor(agent.agent_type)}>{nodeTypeLabel(agent.agent_type)}</Tag>
-                        {(agent.capabilities || []).slice(0, 4).map((capability) => <Tag key={capability}>{capability}</Tag>)}
-                        <Tag color="blue">{(agent.tools || []).map((tool) => tool.type).join("、") || "无工具"}</Tag>
-                      </Flex>
+          {agents.length ? (
+            <>
+              <div className="registered-node-grid">
+              {pagedAgents.map((agent) => {
+                const capabilities = agent.capabilities || []
+                const tools = agent.tools || []
+                const toolTypes = Array.from(new Set(tools.map((tool) => tool.type).filter(Boolean)))
+                const shownCapabilities = capabilities.slice(0, 3)
+                const hiddenCapabilityCount = Math.max(capabilities.length - shownCapabilities.length, 0)
+                const shownToolTypes = toolTypes.slice(0, 2)
+                const hiddenToolTypeCount = Math.max(toolTypes.length - shownToolTypes.length, 0)
+
+                return (
+                  <article className={`registered-node-card ${agent.agent_type || "processing"}`} key={agent.id}>
+                    <div className="registered-node-head">
+                      <span className={`registered-node-icon ${agent.agent_type || "processing"}`}>{nodeTypeIcon(agent.agent_type)}</span>
+                      <div className="registered-node-title-block">
+                        <Tooltip title={agent.name}>
+                          <strong className="registered-node-name">{agent.name || "未命名节点"}</strong>
+                        </Tooltip>
+                        <span>{nodeTypeLabel(agent.agent_type)}</span>
+                      </div>
                     </div>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+                    <Tooltip title={agent.description || "暂无节点说明"} placement="topLeft">
+                      <p className="registered-node-desc">{agent.description || "暂无节点说明"}</p>
+                    </Tooltip>
+                    <Flex className="registered-node-tags" wrap gap={6}>
+                      <Tag color={nodeTypeColor(agent.agent_type)}>{nodeTypeLabel(agent.agent_type)}</Tag>
+                      {shownCapabilities.map((capability) => <Tag key={capability}>{capability}</Tag>)}
+                      {hiddenCapabilityCount > 0 && <Tag>+{hiddenCapabilityCount}</Tag>}
+                      {shownToolTypes.map((toolType) => <Tag color="blue" key={toolType}>{toolType}</Tag>)}
+                      {hiddenToolTypeCount > 0 && <Tag color="blue">+{hiddenToolTypeCount} 工具</Tag>}
+                      {!toolTypes.length && <Tag color="default">无工具</Tag>}
+                    </Flex>
+                  </article>
+                )
+              })}
+              </div>
+              {agents.length > agentPageSize && (
+                <div className="registered-node-pagination">
+                  <Pagination
+                    current={agentPage}
+                    pageSize={agentPageSize}
+                    total={agents.length}
+                    showSizeChanger={false}
+                    showTotal={(total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 个节点`}
+                    onChange={setAgentPage}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <EmptyState text="暂无流程节点" />
+          )}
         </Panel>
       </div>
     </div>
@@ -2441,6 +2472,12 @@ function nodeTypeColor(type?: string) {
   return { processing: "blue", human: "green", condition: "purple" }[type || "processing"] || "default"
 }
 
+function nodeTypeIcon(type?: string) {
+  if (type === "human") return <UserCheck size={18} />
+  if (type === "condition") return <GitBranch size={18} />
+  return <Bot size={18} />
+}
+
 function roleLabel(role?: string) {
   return { admin: "管理员", user: "普通用户" }[role || "user"] || role || "普通用户"
 }
@@ -2558,7 +2595,7 @@ function TaskTable({
       title: "节点",
       dataIndex: "current_node",
       width: 160,
-      render: (value: string) => value || "-",
+      render: (_: unknown, task: Task) => taskNodeText(task),
     } as ColumnsType<Task>[number]] : []),
     {
       title: "状态",

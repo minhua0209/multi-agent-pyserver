@@ -118,10 +118,37 @@ describe("task detail view helpers", () => {
     expect(positions.start).toEqual({ x: 80, y: 80 })
     expect(positions.agent_1).toEqual({ x: 420, y: 80 })
     expect(positions.agent_2).toEqual({ x: 760, y: 80 })
-    expect(positions.agent_3).toEqual({ x: 80, y: 290 })
-    expect(positions.agent_4).toEqual({ x: 420, y: 290 })
-    expect(positions.agent_5).toEqual({ x: 760, y: 290 })
-    expect(positions.end).toEqual({ x: 80, y: 500 })
+    expect(positions.agent_3).toEqual({ x: 1100, y: 80 })
+    expect(positions.agent_4).toEqual({ x: 1440, y: 80 })
+    expect(positions.agent_5).toEqual({ x: 80, y: 480 })
+    expect(positions.end).toEqual({ x: 420, y: 480 })
+  })
+
+  it("keeps condition branches in the next workflow column on task detail graphs", () => {
+    const branchingDefinition: WorkflowDefinition = {
+      nodes: [
+        { id: "start", type: "start", title: "开始" },
+        { id: "condition_1", type: "condition", title: "条件判断" },
+        { id: "human_large_order", type: "human", title: "大额订单人工确认" },
+        { id: "human_small_order", type: "human", title: "小额订单人工确认" },
+        { id: "end", type: "end", title: "完成" },
+      ],
+      edges: [
+        { from: "start", to: "condition_1", condition: {} },
+        { from: "condition_1", to: "human_large_order", condition: { type: "decision", value: "v1" } },
+        { from: "condition_1", to: "human_small_order", condition: { type: "decision", value: "v2" } },
+        { from: "human_large_order", to: "end", condition: {} },
+        { from: "human_small_order", to: "end", condition: {} },
+      ],
+    }
+
+    const result = manualWorkflowFlowElements({ ...task, task_status: "running" }, branchingDefinition)
+    const positions = Object.fromEntries(result.nodes.map((node) => [node.id, node.position]))
+
+    expect(positions.human_large_order.x).toBeGreaterThan(positions.condition_1.x)
+    expect(positions.human_small_order.x).toBe(positions.human_large_order.x)
+    expect(positions.end.x).toBeGreaterThan(positions.human_large_order.x)
+    expect(Math.abs(positions.human_small_order.y - positions.human_large_order.y)).toBeGreaterThanOrEqual(210)
   })
 
   it("builds compact node context previews for collapsible detail cards", () => {

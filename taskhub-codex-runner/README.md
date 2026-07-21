@@ -185,7 +185,7 @@ python3 "{runner_cli_path}" publish-task --payload-file /tmp/taskhub-payload.jso
 ```bash
 python3 "{runner_cli_path}" confirm-task \
   --task-id task_xxx \
-  --title "确认后的任务清单标题" \
+  --title "用户提交或确认后的任务名称" \
   --description "确认后的任务清单明细" \
   --execution-mode async
 ```

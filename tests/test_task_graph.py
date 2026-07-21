@@ -595,6 +595,104 @@ def test_task_graph_registers_agent_output_file_and_tool_receipt_artifacts(
     assert result.executions[0].artifacts == result.artifacts
 
 
+def test_file_write_agent_uses_deterministic_tool_when_model_execution_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry = AgentRegistry(tmp_path / "agents.json")
+    output_dir = tmp_path / "outputs"
+    agent = registry.create_agent(
+        AgentCreate(
+            name="A2ADemo 文档写入助手",
+            description="Writes reports to a configured local directory",
+            capabilities=["write_report", "save_file"],
+            tools=[
+                AgentTool(
+                    name="file_write",
+                    type="file_write",
+                    config={"base_dir": str(output_dir)},
+                )
+            ],
+        )
+    )
+    task = _task_with_active_execution("task_weather_report")
+    task.title = "天气报告"
+    task.content = "查询最近一周天气情况，帮我写个简短的分析报告，写到A2ADemo的目录里面"
+    task.context.summary = "最近一周天气：周一晴25°C，周二多云24°C，周三小雨22°C。"
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                execution_mode="sequential",
+                subtasks=[
+                    SubTask(
+                        id="subtask_write_weather",
+                        title="生成天气分析报告并写入A2ADemo目录",
+                        description="基于查询到的天气数据，撰写简短分析报告，并保存到A2ADemo目录。",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", lambda *args: None)
+
+    result = TaskGraphRunner(registry).run(task)
+
+    written_file = output_dir / "reports" / "weather_report_7days.md"
+    assert result.task_status == TaskStatus.SUCCEEDED
+    assert written_file.exists()
+    assert "周一晴25°C" in written_file.read_text(encoding="utf-8")
+    subtask = result.context.rounds[0].subtasks[0]
+    assert subtask.status == TaskStatus.SUCCEEDED
+    assert subtask.tool_results[0].success is True
+    assert str(written_file) in subtask.output
+
+
+def test_task_graph_records_failed_agent_subtask_when_model_execution_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_SYSTEM_MOCK_FALLBACK", "false")
+    registry = AgentRegistry(tmp_path / "agents.json")
+    agent = registry.create_agent(
+        AgentCreate(
+            name="General Agent",
+            description="General processing without tools",
+            capabilities=["general_processing"],
+        )
+    )
+    task = _task_with_active_execution("task_model_unavailable")
+
+    def _plan(task, _agents):
+        if task.loop_count == 0:
+            return RoundPlan(
+                should_continue=True,
+                execution_mode="sequential",
+                subtasks=[
+                    SubTask(
+                        id="subtask_general",
+                        title="生成分析报告",
+                        description="生成分析报告",
+                        assigned_agent_id=agent.id,
+                    )
+                ],
+            )
+        return RoundPlan(should_continue=False, final_output=task.context.summary)
+
+    monkeypatch.setattr("app.workflows.task_graph.plan_next_round_with_model", _plan)
+    monkeypatch.setattr("app.workflows.task_graph.execute_subtask_with_tools_model", lambda *args: None)
+
+    result = TaskGraphRunner(registry).run(task)
+
+    assert result.task_status == TaskStatus.FAILED
+    assert result.context.rounds[0].subtasks[0].status == TaskStatus.FAILED
+    assert "模型执行失败" in result.context.rounds[0].subtasks[0].output
+
+
 def test_task_graph_registers_condition_subtask_output_artifact(tmp_path: Path, monkeypatch) -> None:
     registry = AgentRegistry(tmp_path / "agents.json")
     task = _task_with_active_execution("task_condition_artifact")
@@ -619,7 +717,7 @@ def test_task_graph_registers_condition_subtask_output_artifact(tmp_path: Path, 
     condition_artifact = next(
         artifact
         for artifact in result.artifacts
-        if artifact.source_id.endswith("_condition_artifact")
+        if artifact.source_id == result.context.rounds[0].subtasks[0].id
     )
     assert condition_artifact.source_type == ArtifactSourceType.SUBTASK_OUTPUT
     assert condition_artifact.content == "Condition decision: approved"

@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest"
 import {
   applyNodeConfig,
   applyNodeInstruction,
+  canEditDecisionEdge,
+  normalizeWorkflowConditionOptions,
+  setDecisionEdgeCondition,
+  workflowConditionDecisionValues,
   workflowNodeDetailItems,
   workflowNodeInlineEditFields,
   reduceWorkflowInlineTextDraft,
@@ -208,9 +212,104 @@ describe("workflowReactFlow helpers", () => {
     ])
     expect(workflowNodeInlineEditFields(result.nodes[1].data).map((field) => field.key)).toEqual([
       "condition_description",
-      "condition_content",
+      "condition_options",
     ])
+    expect(workflowNodeInlineEditFields(result.nodes[1].data).find((field) => field.key === "condition_options")).toMatchObject({
+      conditionOptions: [],
+    })
     expect(workflowNodeInlineEditFields(result.nodes[2].data)).toEqual([])
+  })
+
+  it("maps condition options into editable fields and edge decision values", () => {
+    const result = workflowToReactFlow({
+      nodes: [
+        {
+          id: "judge",
+          type: "condition",
+          title: "条件判断",
+          config: {
+            condition_description: "判断测试结论",
+            condition_options: [
+              { value: "approved", content: "测试通过、可以继续上线" },
+              { value: "rejected", content: "测试不通过、需要返工" },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    })
+    const fields = workflowNodeInlineEditFields(result.nodes[0].data)
+
+    expect(fields.find((field) => field.key === "condition_options")).toMatchObject({
+      inputType: "condition_options",
+      conditionOptions: [
+        { value: "approved", content: "测试通过、可以继续上线" },
+        { value: "rejected", content: "测试不通过、需要返工" },
+      ],
+    })
+    expect(workflowNodeDetailItems(result.nodes[0].data)).toContainEqual({
+      label: "条件项",
+      value: "approved：测试通过、可以继续上线；rejected：测试不通过、需要返工",
+    })
+    expect(
+      workflowConditionDecisionValues({
+        id: "judge",
+        type: "condition",
+        config: {
+          condition_options: [
+            { value: "approved", content: "测试通过、可以继续上线" },
+            { value: "rejected", content: "测试不通过、需要返工" },
+          ],
+          allowed_decisions: ["legacy"],
+        },
+      }),
+    ).toEqual(["approved", "rejected"])
+  })
+
+  it("does not prefill condition options when a condition node has no branch config", () => {
+    const node = { id: "judge", type: "condition", title: "条件判断", config: {} }
+    const result = workflowToReactFlow({ nodes: [node], edges: [] })
+
+    expect(workflowNodeInlineEditFields(result.nodes[0].data).find((field) => field.key === "condition_options")).toMatchObject({
+      conditionOptions: [],
+    })
+    expect(workflowConditionDecisionValues(node)).toEqual([])
+  })
+
+  it("preserves empty condition option rows for canvas editing", () => {
+    expect(
+      normalizeWorkflowConditionOptions([
+        { value: "", content: "" },
+        { value: "", content: "" },
+      ]),
+    ).toEqual([
+      { value: "", content: "" },
+      { value: "", content: "" },
+    ])
+
+    const result = workflowToReactFlow({
+      nodes: [
+        {
+          id: "judge",
+          type: "condition",
+          title: "条件判断",
+          config: {
+            condition_options: [
+              { value: "", content: "" },
+              { value: "", content: "" },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    })
+
+    expect(workflowNodeInlineEditFields(result.nodes[0].data).find((field) => field.key === "condition_options")).toMatchObject({
+      conditionOptions: [
+        { value: "", content: "" },
+        { value: "", content: "" },
+      ],
+    })
   })
 
   it("buffers inline textarea changes while Chinese IME composition is active", () => {
@@ -238,5 +337,87 @@ describe("workflowReactFlow helpers", () => {
       state: { value: "请确认合同风险", composing: false },
       commitValue: "请确认合同风险",
     })
+  })
+
+  it("edits decision conditions only for condition node outgoing edges", () => {
+    const nodes = [
+      { id: "judge", type: "condition", title: "条件判断" },
+      { id: "release", type: "agent", title: "上线" },
+      { id: "start", type: "start", title: "开始" },
+    ]
+    const edge = {
+      id: "judge-release",
+      source: "judge",
+      target: "release",
+      data: { condition: {} },
+    }
+
+    expect(canEditDecisionEdge(nodes, edge)).toBe(true)
+    expect(canEditDecisionEdge(nodes, { ...edge, source: "start" })).toBe(false)
+    expect(setDecisionEdgeCondition(edge, "approved")).toMatchObject({
+      data: { condition: { type: "decision", value: "approved" } },
+      label: "approved",
+      animated: true,
+    })
+  })
+
+  it("auto lays out branching templates with readable spacing and no node overlap", () => {
+    const result = workflowToReactFlow(
+      {
+        nodes: [
+          { id: "start", type: "start", title: "开始" },
+          {
+            id: "condition_1",
+            type: "condition",
+            title: "条件判断",
+            config: {
+              condition_options: [
+                { value: "v1", content: "订单价格大于或等于1000块" },
+                { value: "v2", content: "订单价格少于1000块" },
+              ],
+            },
+          },
+          { id: "human_large_order", type: "human", title: "大额订单人工确认" },
+          { id: "human_small_order", type: "human", title: "小额订单人工确认" },
+          { id: "end", type: "end", title: "完成" },
+        ],
+        edges: [
+          { from: "start", to: "condition_1", condition: {} },
+          { from: "condition_1", to: "human_large_order", condition: { type: "decision", value: "v1" } },
+          { from: "condition_1", to: "human_small_order", condition: { type: "decision", value: "v2" } },
+          { from: "human_large_order", to: "end", condition: {} },
+          { from: "human_small_order", to: "end", condition: {} },
+        ],
+      },
+      {},
+    )
+
+    const nodes = Object.fromEntries(result.nodes.map((node) => [node.id, node]))
+    expect(nodes.condition_1.position.x).toBeGreaterThan(nodes.start.position.x)
+    expect(nodes.human_large_order.position.x).toBeGreaterThan(nodes.condition_1.position.x)
+    expect(nodes.human_small_order.position.x).toBe(nodes.human_large_order.position.x)
+    expect(nodes.end.position.x).toBeGreaterThan(nodes.human_large_order.position.x)
+    expect(Math.abs(nodes.human_small_order.position.y - nodes.human_large_order.position.y)).toBeGreaterThanOrEqual(210)
+
+    const rectangles = result.nodes.map((node) => ({
+      id: node.id,
+      left: node.position.x,
+      top: node.position.y,
+      right: node.position.x + Number(node.style?.width || 260),
+      bottom: node.position.y + (node.data.kind === "condition" ? 140 : 150),
+    }))
+    for (let index = 0; index < rectangles.length; index += 1) {
+      for (let nextIndex = index + 1; nextIndex < rectangles.length; nextIndex += 1) {
+        const first = rectangles[index]
+        const second = rectangles[nextIndex]
+        expect(
+          first.right <= second.left ||
+          second.right <= first.left ||
+          first.bottom <= second.top ||
+          second.bottom <= first.top,
+          `${first.id} should not overlap ${second.id}`,
+        ).toBe(true)
+      }
+    }
   })
 })

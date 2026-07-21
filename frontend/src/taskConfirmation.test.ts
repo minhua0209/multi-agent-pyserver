@@ -7,13 +7,14 @@ import {
   cancelTasksSequentially,
   confirmTaskRequestsSequentially,
   confirmationDraftFromTask,
+  confirmationTaskIdsToCancelOnClose,
   isTaskAwaitingConfirmation,
   validateConfirmationDraft,
 } from "./taskConfirmation"
 
 
 describe("task confirmation draft", () => {
-  it("uses and cleans task draft contract suggestions", () => {
+  it("uses and cleans task draft contract suggestions while preserving submitted title", () => {
     const task = {
       id: "task_1",
       title: "Fallback title",
@@ -30,7 +31,7 @@ describe("task confirmation draft", () => {
     } as unknown as Task
 
     expect(confirmationDraftFromTask(task)).toEqual({
-      title: "交付方案",
+      title: "Fallback title",
       description: "输出可评审方案",
       goal: "完成技术方案",
       deliverableGoal: "一份可评审文档",
@@ -38,6 +39,23 @@ describe("task confirmation draft", () => {
       successCriteria: ["评审通过", "关键风险有应对措施"],
       requiresHumanAcceptance: true,
     })
+  })
+
+  it("keeps the submitted task title instead of replacing it with the recognized checklist title", () => {
+    const task = {
+      id: "task_weather",
+      title: "最近7天天气报告",
+      content: "查询最近7天的天气情况，最后把调查结果写入文档",
+      draft: {
+        title: "查询最近7天的天气情况; 将调查结果写入文档",
+        description: "- 查询最近7天的天气情况: 获取天气数据。\n- 将调查结果写入文档: 写入本地 reports 目录。",
+      },
+    } as unknown as Task
+
+    const draft = confirmationDraftFromTask(task)
+
+    expect(draft.title).toBe("最近7天天气报告")
+    expect(draft.description).toContain("将调查结果写入文档")
   })
 
   it("builds editable defaults for manual or legacy tasks without suggestions", () => {
@@ -299,5 +317,15 @@ describe("task confirmation draft", () => {
 
     expect(cancelledIds).toEqual(["task_1", "task_2"])
     expect(reconcile).toHaveBeenCalledWith("task_1")
+  })
+
+  it("does not cancel task rows when a continuation confirmation modal closes", () => {
+    expect(confirmationTaskIdsToCancelOnClose(
+      [
+        { id: "task_1", task_status: "running", current_node: "human_confirmation" } as Task,
+      ],
+      ["task_1"],
+      false,
+    )).toEqual([])
   })
 })

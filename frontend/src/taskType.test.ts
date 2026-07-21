@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { isManualWorkflowTask, taskType, taskTypeText } from "./taskType"
+import { isManualWorkflowTask, taskNodeText, taskType, taskTypeText } from "./taskType"
 
 describe("task type helpers", () => {
   it("uses explicit task_type for task list labels", () => {
@@ -18,5 +18,25 @@ describe("task type helpers", () => {
 
     expect(taskType(task)).toBe("manual_orchestration")
     expect(isManualWorkflowTask(task)).toBe(true)
+  })
+
+  it("maps internal current node codes to Chinese labels", () => {
+    expect(taskNodeText({ id: "task_1", current_node: "completion_judge" })).toBe("完成判断")
+    expect(taskNodeText({ id: "task_2", current_node: "human_execution" })).toBe("人工处理")
+    expect(taskNodeText({ id: "task_3", current_node: "dispatch_decision" })).toBe("智能分发")
+  })
+
+  it("uses task status context for common list node labels", () => {
+    expect(taskNodeText({ id: "task_1", task_status: "succeeded", current_node: "completion_judge" })).toBe("已完成")
+    expect(taskNodeText({ id: "task_2", task_status: "running", current_node: "human_confirmation" })).toBe("待确认任务清单")
+    expect(taskNodeText({ id: "task_3", task_status: "running", current_node: "human_execution" })).toBe("等待人工处理")
+    expect(
+      taskNodeText({
+        id: "task_4",
+        task_type: "manual_orchestration",
+        task_status: "running",
+        current_node: "dispatch_decision",
+      }),
+    ).toBe("流程执行中")
   })
 })

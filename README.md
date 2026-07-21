@@ -15,8 +15,8 @@ local demo data.
 python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
-export MODEL_RESPONSES_API_URL="http://192.168.18.94:30377/v1/responses"
-export MODEL_API_KEY="replace-with-your-model-api-key"
+export MODEL_RESPONSES_API_URL="http://<model-host>:<port>/v1/responses"
+export MODEL_API_KEY="<your-model-api-key>"
 export MODEL_NAME="qwen3.6-35b"
 export ENABLE_SYSTEM_MOCK_FALLBACK="false"
 export TASK_PLANNER_TYPE="llm"
@@ -33,18 +33,21 @@ CrewAI only replaces the round planning decision. LangGraph still owns task
 state transitions, human-node pause/resume, context merge, and MySQL
 persistence.
 
-By default, the app connects to the local MySQL demo database:
+Database persistence is enabled when `DATABASE_URL` is provided:
 
 ```text
-mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4
+mysql+pymysql://<user>:<password>@localhost:3306/<database>?charset=utf8mb4
 ```
 
-To override it, set `DATABASE_URL` before starting the service:
+Set `DATABASE_URL` before starting the service:
 
 ```bash
-export DATABASE_URL="mysql+pymysql://root:demo_root_123@localhost:3306/demo_db?charset=utf8mb4"
+export DATABASE_URL="mysql+pymysql://<user>:<password>@localhost:3306/<database>?charset=utf8mb4"
 uvicorn app.main:app --reload
 ```
+
+For Docker Compose, copy `.env.example` to `.env` and fill in local values.
+`.env` is ignored by git and must not be committed.
 
 When database mode is enabled, the service creates the required agent, task,
 round, subtask, event, snapshot, tool execution, and workflow template tables

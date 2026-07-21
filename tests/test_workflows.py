@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from fastapi.testclient import TestClient
 
@@ -129,9 +130,11 @@ def test_workflow_template_task_runs_agent_then_pauses_on_human_node(tmp_path: P
     assert paused["task_status"] == "running"
     assert paused["current_node"] == "human_execution"
     assert paused["request_metadata"]["workflow_id"] == workflow["id"]
-    assert paused["context"]["rounds"][0]["subtasks"][0]["id"].endswith("_make_quote")
+    assert paused["context"]["rounds"][0]["subtasks"][0]["logical_key"] == "make_quote"
+    assert len(paused["context"]["rounds"][0]["subtasks"][0]["id"]) <= 64
     assert paused["context"]["rounds"][0]["subtasks"][0]["status"] == "succeeded"
-    assert paused["context"]["rounds"][1]["subtasks"][0]["id"].endswith("_approve_quote")
+    assert paused["context"]["rounds"][1]["subtasks"][0]["logical_key"] == "approve_quote"
+    assert len(paused["context"]["rounds"][1]["subtasks"][0]["id"]) <= 64
     assert paused["context"]["rounds"][1]["subtasks"][0]["status"] == "running"
     assert paused["context"]["rounds"][1]["subtasks"][0]["assignee_user_id"] == "user_001"
     assert paused["context"]["rounds"][1]["subtasks"][0]["assignee_user_name"] == "张三"
@@ -341,6 +344,135 @@ def test_workflow_template_task_snapshots_definition_when_request_is_created(tmp
     assert [node["id"] for node in snapshot_nodes] == ["start", "make_quote", "end"]
     assert "Make quote" in completed_titles
     assert "Risk check" not in completed_titles
+
+
+def test_workflow_template_ignores_unconnected_nodes(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    quote_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Quote Agent", "description": "Handles quotes", "capabilities": ["quote"]},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Ignore Unconnected Nodes",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "make_quote", "type": "agent", "agent_id": quote_agent["id"], "title": "Make quote"},
+                    {
+                        "id": "orphan_condition",
+                        "type": "condition",
+                        "title": "Orphan condition",
+                        "config": {
+                            "condition_options": [{"value": "approved", "content": "Can continue"}],
+                        },
+                    },
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "make_quote"},
+                    {"from": "make_quote", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+    monkeypatch.setattr(
+        "app.workflows.task_graph.judge_condition_with_model",
+        lambda _task, _subtask: {
+            "decision": "approved",
+            "reason": "Should not be called for an unconnected node",
+            "matched_source": "",
+            "confidence": 1.0,
+        },
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "孤立节点任务",
+            "content": "Run only connected workflow nodes.",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "孤立节点任务", "description": "Run only connected workflow nodes."},
+    ).json()
+
+    executed_titles = [
+        subtask["title"]
+        for round_item in confirmed["context"]["rounds"]
+        for subtask in round_item["subtasks"]
+    ]
+    assert executed_titles == ["Make quote"]
+    assert confirmed["task_status"] == "succeeded"
+
+
+def test_workflow_template_human_subtask_uses_handoff_instruction_as_review_document(
+    tmp_path: Path,
+) -> None:
+    app = create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json")
+    client = TestClient(app)
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Human Review Instruction",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "price_review",
+                        "type": "human",
+                        "title": "人工确认",
+                        "description": "人工查看上游结果并补充通过、驳回或备注信息。",
+                        "config": {
+                            "assignee_user_id": "root",
+                            "assignee_user_name": "管理员",
+                            "handoff_instruction": "订单价格大于1000块，请人工审核是否可以继续。",
+                        },
+                    },
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "price_review"},
+                    {"from": "price_review", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "人工审核文案任务",
+            "content": "订单价格1200块，帮我给人工审核一下。",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "人工审核文案任务", "description": "订单价格1200块，帮我给人工审核一下。"},
+    ).json()
+
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+    assert human_subtask["description"] == "订单价格大于1000块，请人工审核是否可以继续。"
+
+    legacy_task = app.state.task_service.store.get(created["id"])
+    assert legacy_task is not None
+    legacy_task.context.rounds[0].subtasks[0].description = "人工查看上游结果并补充通过、驳回或备注信息。"
+    app.state.task_service.store.save(legacy_task)
+
+    human_queue = client.get("/api/v1/subtasks/human").json()
+    queue_item = next(item for item in human_queue if item["id"] == human_subtask["id"])
+    assert queue_item["description"] == "订单价格大于1000块，请人工审核是否可以继续。"
 
 
 def test_workflow_template_routes_by_human_result_metadata(tmp_path: Path, monkeypatch) -> None:
@@ -557,9 +689,7 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
                         "type": "condition",
                         "title": "Judge approval",
                         "config": {
-                            "mode": "rule",
-                            "source_node_id": "approve",
-                            "field": "decision",
+                            "condition_content": "如果人工确认通过则返回 approved；如果人工驳回则返回 rejected。",
                             "allowed_decisions": ["approved", "rejected", "need_more_info"],
                             "default_decision": "need_more_info",
                         },
@@ -596,6 +726,18 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
     monkeypatch.setattr(
         "app.workflows.task_graph.execute_subtask_with_tools_model",
         lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+    monkeypatch.setattr(
+        "app.core.model_client.default_client.create",
+        lambda _system_prompt, _user_prompt: json.dumps(
+            {
+                "decision": "approved",
+                "reason": "人工输出表示确认通过。",
+                "matched_source": "latest_round.subtasks.approve.output",
+                "confidence": 0.95,
+            },
+            ensure_ascii=False,
+        ),
     )
 
     created = client.post(
@@ -636,6 +778,274 @@ def test_workflow_template_condition_node_routes_by_decision(tmp_path: Path, mon
     assert "Revise solution" not in completed_titles
     assert resumed["task_status"] == "blocked"
     assert resumed["completion_report"]["workflow_end_node_id"] is None
+
+
+def test_workflow_template_condition_node_uses_intelligent_context(tmp_path: Path, monkeypatch) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    fix_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Fix Agent", "description": "Handles fixes", "capabilities": ["fix"]},
+    ).json()
+    release_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Release Agent", "description": "Handles releases", "capabilities": ["release"]},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Intelligent Condition",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "qa_review", "type": "human", "title": "测试复核"},
+                    {
+                        "id": "judge_qa",
+                        "type": "condition",
+                        "title": "判断测试结果",
+                        "config": {
+                            "condition_description": "判断测试结论",
+                            "condition_options": [
+                                {"value": "approved", "content": "测试通过、可以继续上线"},
+                                {"value": "rejected", "content": "测试不通过或者需要返工"},
+                            ],
+                        },
+                    },
+                    {"id": "fix_bug", "type": "agent", "agent_id": fix_agent["id"], "title": "返工修复"},
+                    {"id": "release", "type": "agent", "agent_id": release_agent["id"], "title": "上线发布"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "qa_review"},
+                    {"from": "qa_review", "to": "judge_qa"},
+                    {"from": "judge_qa", "to": "fix_bug", "condition": {"type": "decision", "value": "rejected"}},
+                    {"from": "judge_qa", "to": "release", "condition": {"type": "decision", "value": "approved"}},
+                    {"from": "fix_bug", "to": "end"},
+                    {"from": "release", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    observed_prompt = {}
+
+    def _model_create(_system_prompt, user_prompt):
+        observed_prompt.update(json.loads(user_prompt))
+        return json.dumps(
+            {
+                "decision": "rejected",
+                "reason": "最近一轮人工输出表示测试不通过，需要返工。",
+                "matched_source": "latest_round.subtasks.qa_review.output",
+                "confidence": 0.92,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("app.core.model_client.default_client.create", _model_create)
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "智能条件任务",
+            "content": "测试结果决定是否上线。",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "智能条件任务", "description": "测试结果决定是否上线。"},
+    ).json()
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+
+    resumed = client.post(
+        f"/api/v1/subtasks/{human_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "测试没有通过，登录问题还需要返工。",
+            "should_complete": False,
+            "metadata": {},
+        },
+    ).json()
+
+    completed = [
+        subtask
+        for round_item in resumed["context"]["rounds"]
+        for subtask in round_item["subtasks"]
+        if subtask["status"] == "succeeded"
+    ]
+    completed_titles = [subtask["title"] for subtask in completed]
+    condition_subtask = next(subtask for subtask in completed if subtask["title"] == "判断测试结果")
+    assert condition_subtask["result_metadata"]["decision"] == "rejected"
+    assert condition_subtask["result_metadata"]["matched_source"] == "latest_round.subtasks.qa_review.output"
+    assert "返工修复" in completed_titles
+    assert "上线发布" not in completed_titles
+    assert observed_prompt["condition"]["condition_options"] == [
+        {"value": "approved", "content": "测试通过、可以继续上线"},
+        {"value": "rejected", "content": "测试不通过或者需要返工"},
+    ]
+    assert observed_prompt["condition"]["allowed_decisions"] == ["approved", "rejected"]
+    assert observed_prompt["task_context"]["summary"]
+    assert observed_prompt["latest_round"]["subtasks"][0]["output"] == "测试没有通过，登录问题还需要返工。"
+
+
+def test_workflow_template_condition_node_receives_initial_task_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Initial Condition Context",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {
+                        "id": "judge_price",
+                        "type": "condition",
+                        "title": "判断订单价格",
+                        "config": {
+                            "condition_options": [
+                                {"value": "high_price", "content": "订单价格大于1000块"},
+                                {"value": "normal_price", "content": "订单价格小于等于1000块"},
+                            ],
+                        },
+                    },
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "judge_price"},
+                    {"from": "judge_price", "to": "end", "condition": {"type": "decision", "value": "high_price"}},
+                ],
+            },
+        },
+    ).json()
+
+    observed_prompt = {}
+
+    def _model_create(_system_prompt, user_prompt):
+        observed_prompt.update(json.loads(user_prompt))
+        return json.dumps(
+            {
+                "decision": "high_price",
+                "reason": "订单价格1200块，大于1000块。",
+                "matched_source": "task_context.summary",
+                "confidence": 0.99,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("app.core.model_client.default_client.create", _model_create)
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "价格判断任务",
+            "content": "订单价格1200块，帮我给人工审核一下。",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    confirmed = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "价格判断任务", "description": "订单价格1200块，帮我给人工审核一下。"},
+    ).json()
+
+    assert "订单价格1200块" in observed_prompt["task_context"]["summary"]
+    assert confirmed["task_status"] == "succeeded"
+
+
+def test_workflow_template_condition_node_fails_task_when_unable_to_judge(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    release_agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Release Agent", "description": "Handles releases", "capabilities": ["release"]},
+    ).json()
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Unable Condition",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "qa_review", "type": "human", "title": "测试复核"},
+                    {
+                        "id": "judge_qa",
+                        "type": "condition",
+                        "title": "判断测试结果",
+                        "config": {
+                            "condition_content": "如果测试通过则返回 approved；如果测试不通过则返回 rejected。",
+                            "allowed_decisions": ["approved", "rejected"],
+                            "default_decision": "approved",
+                        },
+                    },
+                    {"id": "release", "type": "agent", "agent_id": release_agent["id"], "title": "上线发布"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "qa_review"},
+                    {"from": "qa_review", "to": "judge_qa"},
+                    {"from": "judge_qa", "to": "release", "condition": {"type": "decision", "value": "approved"}},
+                    {"from": "release", "to": "end"},
+                ],
+            },
+        },
+    ).json()
+
+    monkeypatch.setattr(
+        "app.core.model_client.default_client.create",
+        lambda _system_prompt, _user_prompt: json.dumps(
+            {"decision": "unknown", "reason": "上下文不足，无法判断。", "confidence": 0.1},
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: ([], f"executed:{subtask.title}"),
+    )
+
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "条件失败任务",
+            "content": "测试结果不明确时不能继续上线。",
+            "metadata": {"execution_mode": "workflow_template", "workflow_id": workflow["id"]},
+        },
+    ).json()["tasks"][0]
+    paused = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={"title": "条件失败任务", "description": "测试结果不明确时不能继续上线。"},
+    ).json()
+    human_subtask = paused["context"]["rounds"][0]["subtasks"][0]
+
+    resumed = client.post(
+        f"/api/v1/subtasks/{human_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "测试结果不清楚，暂时无法确认是否通过。",
+            "should_complete": False,
+            "metadata": {},
+        },
+    ).json()
+
+    all_subtasks = [subtask for round_item in resumed["context"]["rounds"] for subtask in round_item["subtasks"]]
+    condition_subtask = next(subtask for subtask in all_subtasks if subtask["title"] == "判断测试结果")
+    completed_titles = [subtask["title"] for subtask in all_subtasks if subtask["status"] == "succeeded"]
+
+    assert resumed["task_status"] == "failed"
+    assert condition_subtask["status"] == "failed"
+    assert condition_subtask["output"] == "无法正常判断条件"
+    assert condition_subtask["result_metadata"]["reason"] == "无法正常判断条件"
+    assert "无法正常判断条件" in resumed["final_output"]
+    assert "上线发布" not in completed_titles
 
 
 def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_path: Path, monkeypatch) -> None:

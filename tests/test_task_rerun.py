@@ -17,11 +17,13 @@ from app.core.models import (
     TaskContext,
     TaskContract,
     TaskContractItem,
+    TaskDraft,
     TaskExecution,
     TaskRound,
     ToolExecutionResult,
     User,
     WorkflowNode,
+    scoped_subtask_id,
     utc_now,
 )
 from app.core.enums import (
@@ -201,6 +203,12 @@ def _finished_task(
         created_at=now,
         updated_at=now,
     )
+
+
+def _rename_task_id(task: Task, task_id: str) -> None:
+    task.id = task_id
+    for execution in task.executions:
+        execution.task_id = task_id
 
 
 def _rerun_payload(
@@ -877,6 +885,7 @@ def test_current_execution_subtask_rejects_legacy_or_old_execution_ids_without_m
     submitted_id: str,
 ) -> None:
     task = _finished_task()
+    _rename_task_id(task, "task_d137cc8190fe")
     ExecutionService().create_rerun(
         task,
         _rerun_payload(),
@@ -887,7 +896,7 @@ def test_current_execution_subtask_rejects_legacy_or_old_execution_ids_without_m
     )
     execution_id = task.active_execution_id
     target = SubTask(
-        id=f"{task.id}_{execution_id}_approval",
+        id=scoped_subtask_id(task.id, execution_id or "", "approval"),
         execution_id=execution_id,
         logical_key="approval",
         title="Approval",
@@ -895,7 +904,7 @@ def test_current_execution_subtask_rejects_legacy_or_old_execution_ids_without_m
         assignee_type="human",
     )
     blocker = SubTask(
-        id=f"{task.id}_{execution_id}_blocker",
+        id=scoped_subtask_id(task.id, execution_id or "", "blocker"),
         execution_id=execution_id,
         logical_key="blocker",
         title="Blocker",
@@ -979,8 +988,10 @@ def test_workflow_subtask_ids_change_per_execution_but_keep_logical_key() -> Non
     )
     second = WorkflowTemplateRunner._node_to_subtask(task, node)
 
-    assert first.id == "task_1_execution_1_approval"
-    assert second.id.startswith(f"task_1_{task.active_execution_id}_")
+    assert first.id.startswith("subtask_")
+    assert second.id.startswith("subtask_")
+    assert len(first.id) <= 64
+    assert len(second.id) <= 64
     assert second.id != first.id
     assert first.logical_key == second.logical_key == "approval"
     assert first.execution_id == "execution_1"
@@ -992,6 +1003,7 @@ def test_task_graph_binds_auto_planned_subtask_to_active_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _finished_task()
+    _rename_task_id(task, "task_d137cc8190fe")
     ExecutionService().create_rerun(
         task,
         _rerun_payload(),
@@ -1006,7 +1018,7 @@ def test_task_graph_binds_auto_planned_subtask_to_active_execution(
             should_continue=True,
             subtasks=[
                 SubTask(
-                    id="temporary-model-id",
+                    id="temporary-model-id-that-is-long-from-llm",
                     title="Prepare",
                     description="Prepare delivery",
                 )
@@ -1026,8 +1038,49 @@ def test_task_graph_binds_auto_planned_subtask_to_active_execution(
 
     subtask = state["round_plan"].subtasks[0]
     assert subtask.execution_id == task.active_execution_id
-    assert subtask.logical_key
-    assert subtask.id == f"{task.id}_{task.active_execution_id}_{subtask.logical_key}"
+    assert subtask.logical_key == "temporary-model-id-that-is-long-from-llm"
+    assert len(subtask.id) <= 64
+
+
+def test_task_graph_human_gate_subtask_id_fits_database_column_on_rerun(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _finished_task()
+    _rename_task_id(task, "task_d137cc8190fe")
+    task.draft = TaskDraft(
+        title="需要人工确认",
+        description="请人工确认后继续。",
+        confidence=1.0,
+        suggested_assignee_type="human",
+    )
+    ExecutionService().create_rerun(
+        task,
+        _rerun_payload(),
+        _actor(),
+        idempotency_key="human-gate-subtask-key",
+        request_fingerprint="human-gate-subtask-fingerprint",
+        start_node=CurrentNode.DISPATCH_DECISION,
+    )
+    monkeypatch.setattr(
+        "app.workflows.task_graph.plan_next_round_with_model",
+        lambda _task, _agents: RoundPlan(should_continue=False, subtasks=[]),
+    )
+    runner = TaskGraphRunner(AgentRegistry(tmp_path / "agents.json"))
+
+    state = runner._round_dispatch(
+        {
+            "task": task,
+            "round_plan": RoundPlan(should_continue=False),
+            "round_outputs": [],
+            "paused": False,
+        }
+    )
+
+    subtask = state["round_plan"].subtasks[0]
+    assert subtask.assignee_type == "human"
+    assert subtask.logical_key == "human_review"
+    assert len(subtask.id) <= 64
 
 
 def _rerun_client(tmp_path, task: Task | None = None) -> TestClient:
