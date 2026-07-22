@@ -10,6 +10,7 @@ export function canNavigateToPage(page: PageId, isAdmin: boolean) {
 
 export function refreshTargetsForPage(page: PageId, isAdmin: boolean): PageRefreshTarget[] {
   if (!canNavigateToPage(page, isAdmin)) return []
+  if (page === "overview") return ["tasks", "humanSubtasks", "agents"]
   if (page === "tasks") return ["tasks"]
   if (page === "confirmation") return ["humanSubtasks"]
   if (page === "agents") return ["agents", "assignableUsers"]

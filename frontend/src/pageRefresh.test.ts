@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest"
 import { canNavigateToPage, refreshTargetsForPage } from "./pageRefresh"
 
 describe("page refresh policy", () => {
+  it("refreshes dashboard data when entering overview", () => {
+    expect(refreshTargetsForPage("overview", true)).toEqual(["tasks", "humanSubtasks", "agents"])
+    expect(refreshTargetsForPage("overview", false)).toEqual(["tasks", "humanSubtasks", "agents"])
+  })
+
   it("refreshes task data when entering task list", () => {
     expect(refreshTargetsForPage("tasks", true)).toEqual(["tasks"])
   })
