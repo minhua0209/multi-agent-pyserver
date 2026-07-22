@@ -19,12 +19,93 @@
   --danger-soft: rgb(251 113 133 / 0.14);
   --info: #38bdf8;
   --info-soft: rgb(56 189 248 / 0.14);
+  --page-background: linear-gradient(180deg, #080f1d 0%, #0a1423 100%);
+  --nav-background: #0b1323;
+  --brand-background: #0d1829;
+  --toolbar-background: rgb(13 23 40 / 0.94);
+  --shell-border: #223047;
+  --nav-shadow: 8px 0 30px rgb(0 0 0 / 0.24);
+  --brand-title: #ffffff;
+  --brand-subtitle: #8fa0b8;
+  --canvas-background: #0d1728;
+  --canvas-dot: #34445d;
+  --minimap-background: #0f192a;
+  --minimap-mask: rgb(8 15 29 / 0.62);
+  --minimap-node: #334155;
+  --minimap-node-stroke: #64748b;
+  --edge-label-background: #16243a;
+  --edge-label-border: #3a4b66;
+  --trend-track: rgb(29 42 64 / 0.76);
+  --accent-text: #67e8f9;
+  --success-text: #6ee7b7;
+  --info-text: #7dd3fc;
+  --danger-text: #fda4af;
+  --warning-text: #fde68a;
+  --violet-text: #c4b5fd;
+  --toast-background: #10291f;
+  --toast-text: #86efac;
+  --primary-contrast: #041311;
   --radius: 8px;
   --radius-md: 8px;
   --radius-sm: 6px;
   --shadow: 0 18px 44px rgb(0 0 0 / 0.32);
   --nav-width: 248px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --surface: #f4f7fb;
+  --surface-muted: #eef3f8;
+  --surface-panel: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-hover: #e7eef6;
+  --border: #d7e0eb;
+  --border-strong: #b6c4d6;
+  --text-primary: #172033;
+  --text-secondary: #46546b;
+  --text-muted: #5f6f85;
+  --accent: #0f766e;
+  --accent-soft: rgb(15 118 110 / 0.12);
+  --success: #059669;
+  --success-soft: rgb(5 150 105 / 0.11);
+  --warning: #d97706;
+  --warning-soft: rgb(217 119 6 / 0.11);
+  --danger: #e11d48;
+  --danger-soft: rgb(225 29 72 / 0.1);
+  --info: #0284c7;
+  --info-soft: rgb(2 132 199 / 0.1);
+  --page-background: linear-gradient(180deg, #f7f9fc 0%, #eef3f8 100%);
+  --nav-background: #ffffff;
+  --brand-background: #f8fafc;
+  --toolbar-background: rgb(255 255 255 / 0.94);
+  --shell-border: #d7e0eb;
+  --nav-shadow: 8px 0 30px rgb(15 23 42 / 0.08);
+  --brand-title: #172033;
+  --brand-subtitle: #5f6f85;
+  --canvas-background: #f8fafc;
+  --canvas-dot: #cbd5e1;
+  --minimap-background: #f8fafc;
+  --minimap-mask: rgb(226 232 240 / 0.68);
+  --minimap-node: #cbd5e1;
+  --minimap-node-stroke: #64748b;
+  --edge-label-background: #ffffff;
+  --edge-label-border: #cbd5e1;
+  --trend-track: #e7edf5;
+  --accent-text: #0e7490;
+  --success-text: #047857;
+  --info-text: #0369a1;
+  --danger-text: #be123c;
+  --warning-text: #a16207;
+  --violet-text: #6d28d9;
+  --toast-background: #ecfdf5;
+  --toast-text: #047857;
+  --primary-contrast: #ffffff;
+  --shadow: 0 16px 38px rgb(15 23 42 / 0.1);
 }
 
 * {
@@ -34,7 +115,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, #080f1d 0%, #0a1423 100%);
+  background: var(--page-background);
   color: var(--text-primary);
   font-size: 14px;
   line-height: 1.5;
@@ -60,15 +141,15 @@ button {
 }
 
 .side-nav {
-  background: #0b1323 !important;
-  border-right: 1px solid #223047;
-  box-shadow: 8px 0 30px rgb(0 0 0 / 0.24);
+  background: var(--nav-background) !important;
+  border-right: 1px solid var(--shell-border);
+  box-shadow: var(--nav-shadow);
 }
 
 .brand {
   padding: 22px 20px;
-  border-bottom: 1px solid #223047;
-  background: #0d1829;
+  border-bottom: 1px solid var(--shell-border);
+  background: var(--brand-background);
 }
 
 .brand-title {
@@ -76,12 +157,12 @@ button {
   font-size: 20px;
   font-weight: 750;
   letter-spacing: 0;
-  color: white;
+  color: var(--brand-title);
 }
 
 .brand-subtitle {
   margin-top: 2px;
-  color: #8fa0b8;
+  color: var(--brand-subtitle);
   font-size: 12px;
 }
 
@@ -159,8 +240,8 @@ button {
 }
 
 .top-toolbar {
-  background: rgb(13 23 40 / 0.94);
-  border-bottom: 1px solid #223047;
+  background: var(--toolbar-background);
+  border-bottom: 1px solid var(--shell-border);
   backdrop-filter: blur(18px);
   min-height: 64px;
   display: flex;
@@ -182,10 +263,17 @@ button {
   min-width: 132px;
 }
 
+.theme-toggle-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding-inline: 0;
+}
+
 .content {
   overflow: auto;
   padding: 24px;
-  background: linear-gradient(180deg, #080f1d 0%, #0a1423 100%);
+  background: var(--page-background);
 }
 
 .page {
@@ -233,7 +321,7 @@ button {
 }
 
 .btn-primary {
-  color: white;
+  color: var(--primary-contrast);
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -317,7 +405,7 @@ button {
   border-radius: var(--radius);
   background: var(--surface-panel);
   padding: 18px;
-  box-shadow: 0 14px 30px rgb(0 0 0 / 0.2);
+  box-shadow: var(--shadow);
   overflow: hidden;
   position: relative;
 }
@@ -417,7 +505,7 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-panel);
-  box-shadow: 0 14px 32px rgb(0 0 0 / 0.2);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
@@ -509,7 +597,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgb(42 57 80 / 0.7);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }
 
@@ -570,7 +658,7 @@ button {
   align-items: flex-end;
   justify-self: center;
   border-radius: 4px 4px 0 0;
-  background: rgb(29 42 64 / 0.76);
+  background: var(--trend-track);
   overflow: hidden;
 }
 
@@ -2133,8 +2221,9 @@ tr.selected td {
   min-height: 0;
   height: 100%;
   background:
-    radial-gradient(circle, rgb(148 163 184 / 0.34) 1px, transparent 1px) 0 0 / 18px 18px,
-    linear-gradient(135deg, rgb(248 250 252 / 0.96), rgb(236 254 255 / 0.72));
+    radial-gradient(circle at 1px 1px, var(--canvas-dot) 1px, transparent 0),
+    var(--canvas-background);
+  background-size: 18px 18px, auto;
   overflow: hidden;
 }
 
@@ -2170,7 +2259,7 @@ tr.selected td {
   border-radius: 10px;
   background: var(--surface-panel);
   padding: 14px;
-  box-shadow: 0 16px 34px rgb(0 0 0 / 0.28);
+  box-shadow: var(--shadow);
 }
 
 .task-detail-workflow-node.running {
@@ -2278,7 +2367,7 @@ tr.selected td {
   border-radius: var(--radius-sm);
   background: var(--surface-panel);
   padding: 12px;
-  box-shadow: 0 12px 28px rgb(0 0 0 / 0.22);
+  box-shadow: var(--shadow);
 }
 
 .manual-workflow-node.running {
@@ -2410,7 +2499,7 @@ tr.selected td {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-panel);
-  box-shadow: 0 14px 32px rgb(0 0 0 / 0.24);
+  box-shadow: var(--shadow);
 }
 
 .graph-terminal {
@@ -2422,7 +2511,7 @@ tr.selected td {
   justify-content: center;
   gap: 8px;
   font-weight: 700;
-  color: #67e8f9;
+  color: var(--accent-text);
   background: var(--surface-muted);
 }
 
@@ -2821,7 +2910,7 @@ tr.selected td {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #67e8f9;
+  color: var(--accent-text);
 }
 
 .human-review-document pre {
@@ -2862,7 +2951,7 @@ tr.selected td {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #67e8f9;
+  color: var(--accent-text);
 }
 
 .human-context-panel {
@@ -2885,7 +2974,7 @@ tr.selected td {
 .human-context-panel header > div,
 .human-context-title {
   justify-content: flex-start;
-  color: #67e8f9;
+  color: var(--accent-text);
 }
 
 .human-context-panel .ant-descriptions-view {
@@ -2917,7 +3006,7 @@ tr.selected td {
   border-radius: var(--radius-sm);
   background: var(--surface-panel);
   padding: 10px;
-  box-shadow: 0 -10px 24px rgb(0 0 0 / 0.2);
+  box-shadow: var(--shadow);
 }
 
 .human-context-block {
@@ -3587,10 +3676,10 @@ button.workflow-agent-card:focus-visible {
   align-items: center;
   min-height: 28px;
   padding: 3px 9px;
-  border: 1px solid rgb(186 230 253 / 0.9);
+  border: 1px solid rgb(34 199 184 / 0.34);
   border-radius: 999px;
-  color: #0369a1;
-  background: rgb(240 249 255 / 0.82);
+  color: var(--accent-text);
+  background: var(--accent-soft);
   font-size: 12px;
   font-weight: 650;
 }
@@ -3616,7 +3705,7 @@ button.workflow-agent-card:focus-visible {
 }
 
 .workflow-canvas-tools .btn-primary {
-  color: #fff;
+  color: var(--primary-contrast);
   background: linear-gradient(135deg, #4f46e5, #0891b2);
   border-color: transparent;
 }
@@ -3822,8 +3911,8 @@ button.workflow-agent-card:focus-visible {
   inset: 0 auto auto 0;
   transform-origin: top left;
   background:
-    radial-gradient(circle at 1px 1px, oklch(0.82 0.02 225 / 0.55) 1px, transparent 0),
-    linear-gradient(180deg, oklch(0.998 0.003 230 / 0.52), oklch(0.982 0.01 220 / 0.44));
+    radial-gradient(circle at 1px 1px, var(--canvas-dot) 1px, transparent 0),
+    var(--canvas-background);
   background-size: 18px 18px, auto;
 }
 
@@ -4399,7 +4488,7 @@ button.workflow-agent-card:focus-visible {
   border-color: var(--border);
   background: var(--surface-panel);
   color: var(--text-primary);
-  box-shadow: 0 14px 32px rgb(0 0 0 / 0.22);
+  box-shadow: var(--shadow);
 }
 
 .modal-panel,
@@ -4485,7 +4574,7 @@ button.workflow-agent-card:focus-visible,
   border-color: var(--border-strong);
   background: var(--surface-hover);
   color: var(--text-primary);
-  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24);
+  box-shadow: var(--shadow);
 }
 
 .workflow-resource-tab,
@@ -4501,13 +4590,13 @@ button.workflow-agent-card:focus-visible,
   border-color: var(--border);
   background: var(--surface-elevated);
   color: var(--text-secondary);
-  box-shadow: 4px 0 14px rgb(0 0 0 / 0.22);
+  box-shadow: var(--shadow);
 }
 
 .workflow-config-summary span {
   border-color: rgb(34 199 184 / 0.34);
   background: var(--accent-soft);
-  color: #6ee7dc;
+  color: var(--accent-text);
 }
 
 .workflow-canvas-tools .btn {
@@ -4518,46 +4607,46 @@ button.workflow-agent-card:focus-visible,
 .workflow-canvas-tools .btn-primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #041311;
+  color: var(--primary-contrast);
 }
 
 .workflow-canvas-tools .btn-danger {
   border-color: rgb(251 113 133 / 0.42);
   background: var(--danger-soft);
-  color: #fda4af;
+  color: var(--danger-text);
 }
 
 .workflow-canvas-stage {
   background:
-    radial-gradient(circle at 1px 1px, #34445d 1px, transparent 0),
-    #0d1728;
+    radial-gradient(circle at 1px 1px, var(--canvas-dot) 1px, transparent 0),
+    var(--canvas-background);
   background-size: 18px 18px, auto;
 }
 
 .manual-workflow-flow {
   background:
-    radial-gradient(circle at 1px 1px, #34445d 1px, transparent 0),
-    #0d1728;
+    radial-gradient(circle at 1px 1px, var(--canvas-dot) 1px, transparent 0),
+    var(--canvas-background);
   background-size: 18px 18px, auto;
 }
 
 .react-flow__minimap {
   border: 1px solid var(--border);
-  background: #0f192a !important;
+  background: var(--minimap-background) !important;
 }
 
 .react-flow__minimap-mask {
-  fill: rgb(8 15 29 / 0.62);
+  fill: var(--minimap-mask);
 }
 
 .react-flow__minimap-node {
-  fill: #334155;
-  stroke: #64748b;
+  fill: var(--minimap-node);
+  stroke: var(--minimap-node-stroke);
 }
 
 .workflow-flow-area .react-flow__edge-textbg {
-  fill: #16243a;
-  stroke: #3a4b66;
+  fill: var(--edge-label-background);
+  stroke: var(--edge-label-border);
 }
 
 .workflow-edge-label,
@@ -4570,13 +4659,13 @@ button.workflow-agent-card:focus-visible,
 .workflow-node {
   border-color: var(--border-strong);
   border-left-color: #64748b;
-  box-shadow: 0 16px 34px rgb(0 0 0 / 0.28);
+  box-shadow: var(--shadow);
 }
 
 .workflow-node:hover,
 .workflow-node.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(34 199 184 / 0.14), 0 18px 42px rgb(0 0 0 / 0.32);
+  box-shadow: 0 0 0 3px rgb(34 199 184 / 0.14), var(--shadow);
 }
 
 .workflow-node.condition {
@@ -4585,7 +4674,7 @@ button.workflow-agent-card:focus-visible,
 }
 
 .workflow-icon.violet {
-  color: #c4b5fd;
+  color: var(--violet-text);
   background: rgb(167 139 250 / 0.14);
 }
 
@@ -4614,7 +4703,7 @@ button.workflow-agent-card:focus-visible,
 .round-context-panel > summary,
 .context-subtask-detail section > span,
 .human-review-eyebrow {
-  color: #67e8f9;
+  color: var(--accent-text);
 }
 
 .context-subtask-detail pre,
@@ -4630,29 +4719,29 @@ button.workflow-agent-card:focus-visible,
 .status-pill.success,
 .status-pill.succeeded,
 .alert.success {
-  color: #6ee7b7;
+  color: var(--success-text);
 }
 
 .status-pill.running,
 .status-pill.info,
 .alert.info {
-  color: #7dd3fc;
+  color: var(--info-text);
 }
 
 .status-pill.failed,
 .status-pill.danger,
 .alert.danger {
-  color: #fda4af;
+  color: var(--danger-text);
 }
 
 .alert.warning {
-  color: #fde68a;
+  color: var(--warning-text);
 }
 
 .toast {
   border-color: rgb(52 211 153 / 0.4);
-  background: #10291f;
-  color: #86efac;
+  background: var(--toast-background);
+  color: var(--toast-text);
 }
 
 .human-queue-head,
@@ -4662,17 +4751,17 @@ button.workflow-agent-card:focus-visible,
 }
 
 .registered-node-icon.processing {
-  color: #7dd3fc;
+  color: var(--info-text);
   background: var(--info-soft);
 }
 
 .registered-node-icon.human {
-  color: #6ee7b7;
+  color: var(--success-text);
   background: var(--success-soft);
 }
 
 .registered-node-icon.condition {
-  color: #c4b5fd;
+  color: var(--violet-text);
   background: rgb(167 139 250 / 0.14);
 }
 
@@ -4711,6 +4800,24 @@ tr.selected td {
 @media (max-width: 1024px) {
   .app-shell {
     grid-template-columns: 80px minmax(0, 1fr);
+  }
+
+  .top-toolbar {
+    height: auto;
+    min-height: 64px;
+    flex-wrap: wrap;
+    padding-block: 10px;
+  }
+
+  .top-toolbar > .ant-flex {
+    flex: 1 1 420px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .global-search {
+    flex: 1 1 280px;
+    width: auto;
   }
 
   .brand-subtitle,

@@ -5,10 +5,17 @@ import { describe, expect, it } from "vitest"
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8")
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8")
+const mainSource = readFileSync(new URL("./main.tsx", import.meta.url), "utf8")
+const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8")
 
 function cssRule(selector: string, source = styles) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   return source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] || ""
+}
+
+function cssRules(selector: string, source = styles) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return Array.from(source.matchAll(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g")), (match) => match[1])
 }
 
 
@@ -58,6 +65,51 @@ describe("dark application theme", () => {
 })
 
 
+describe("theme toggle", () => {
+  it("applies the persisted theme before React renders", () => {
+    expect(indexSource).toMatch(/localStorage\.getItem\("taskhub-theme"\)/)
+    expect(indexSource).toMatch(/document\.documentElement\.dataset\.theme\s*=/)
+    expect(mainSource).not.toMatch(/readThemePreference/)
+  })
+
+  it("switches both Ant Design and the application theme", () => {
+    expect(appSource).toMatch(/antdTheme\.darkAlgorithm/)
+    expect(appSource).toMatch(/antdTheme\.defaultAlgorithm/)
+    expect(appSource).toMatch(/toggleTheme\(/)
+    expect(appSource).toContain("切换到浅色模式")
+    expect(appSource).toContain("切换到深色模式")
+  })
+
+  it("defines light surfaces and theme-driven application shells", () => {
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--surface:\s*#f4f7fb/)
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--surface-panel:\s*#ffffff/)
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--accent:\s*#0f766e/)
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--text-muted:\s*#5f6f85/)
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--primary-contrast:\s*#ffffff/)
+    expect(cssRule('html[data-theme="light"]')).toMatch(/--page-background:/)
+    expect(appSource).toMatch(/colorPrimary:\s*isDarkTheme\s*\?\s*"#22c7b8"\s*:\s*"#0f766e"/)
+    expect(cssRule("body")).toMatch(/background:\s*var\(--page-background\)/)
+    expect(cssRule(".side-nav")).toMatch(/background:\s*var\(--nav-background\)\s*!important/)
+    expect(cssRule(".top-toolbar")).toMatch(/background:\s*var\(--toolbar-background\)/)
+    expect(cssRule(".content")).toMatch(/background:\s*var\(--page-background\)/)
+    expect(cssRule(".workflow-canvas-stage")).toMatch(/var\(--canvas-background\)/)
+    expect(cssRule(".graph-terminal")).toMatch(/color:\s*var\(--accent-text\)/)
+    expect(cssRule(".human-review-document header > div")).toMatch(/color:\s*var\(--accent-text\)/)
+    expect(cssRule(".human-subtask-card > div:first-child")).toMatch(/color:\s*var\(--accent-text\)/)
+    expect(cssRule(".human-context-panel header > div,\n.human-context-title")).toMatch(/color:\s*var\(--accent-text\)/)
+    expect(cssRule(".workflow-config-summary span")).toMatch(/color:\s*var\(--accent-text\)/)
+    expect(cssRule(".task-detail-workflow-node")).toMatch(/box-shadow:\s*var\(--shadow\)/)
+    expect(cssRule(".manual-workflow-node")).toMatch(/box-shadow:\s*var\(--shadow\)/)
+    expect(cssRule(".graph-node,\n.graph-round-node")).toMatch(/box-shadow:\s*var\(--shadow\)/)
+    expect(cssRule(".human-review-actions")).toMatch(/box-shadow:\s*var\(--shadow\)/)
+    expect(cssRule(".btn-primary")).toMatch(/color:\s*var\(--primary-contrast\)/)
+    expect(cssRules(".workflow-canvas-tools .btn-primary")).not.toHaveLength(0)
+    expect(cssRules(".workflow-canvas-tools .btn-primary").every((rule) => /color:\s*var\(--primary-contrast\)/.test(rule))).toBe(true)
+    expect(appSource).toContain('<Background color="var(--canvas-dot)"')
+  })
+})
+
+
 describe("overview dashboard layout", () => {
   it("shows explicit empty states for status and trend panels", () => {
     expect(appSource).toContain('<EmptyState text="当前范围暂无状态数据" />')
@@ -74,6 +126,13 @@ describe("overview dashboard layout", () => {
 
     expect(cssRule(".overview-metric-grid", tabletStyles)).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
     expect(cssRule(".overview-metric-grid", mobileStyles)).toMatch(/grid-template-columns:\s*1fr/)
+  })
+
+  it("allows the toolbar to wrap on tablets", () => {
+    const tabletStyles = styles.slice(styles.indexOf("@media (max-width: 1024px)"))
+
+    expect(cssRule(".top-toolbar", tabletStyles)).toMatch(/flex-wrap:\s*wrap/)
+    expect(cssRule(".top-toolbar > .ant-flex", tabletStyles)).toMatch(/flex-wrap:\s*wrap/)
   })
 
   it("resets Ant Layout fixed widths on mobile", () => {
