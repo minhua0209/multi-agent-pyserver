@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,15 +40,25 @@ class RunnerConfig:
 
 
 RUNNER_DIR = Path(__file__).resolve().parent
+DEFAULT_RUNNER_CODEX_COMMAND = [
+    "codex",
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--ephemeral",
+]
 
 
 def runtime_paths() -> dict[str, Path]:
     runtime_dir = RUNNER_DIR / "runtime"
+    ipc_dir = runtime_dir / "ipc"
     return {
         "runtime_dir": runtime_dir,
         "pid_file": runtime_dir / "runner.pid",
         "log_file": runtime_dir / "runner.log",
         "runner_runtime_file": runtime_dir / "runner_runtime.json",
+        "ipc_dir": ipc_dir,
+        "ipc_requests_dir": ipc_dir / "requests",
+        "ipc_responses_dir": ipc_dir / "responses",
     }
 
 
@@ -57,7 +68,10 @@ def load_config(path: str | None) -> RunnerConfig:
         with open(path, "r", encoding="utf-8") as file:
             file_config = json.load(file)
 
-    codex_command = os.getenv("TASKHUB_CODEX_COMMAND", file_config.get("codex_command", "codex exec"))
+    codex_command = os.getenv(
+        "TASKHUB_CODEX_COMMAND",
+        file_config.get("codex_command", DEFAULT_RUNNER_CODEX_COMMAND),
+    )
     if isinstance(codex_command, str):
         codex_command = shlex.split(codex_command)
 
@@ -162,12 +176,18 @@ class RunnerState:
 
     def add_pending_manual(self, subtask_id: str, subtask: dict[str, Any], codex_result: dict[str, Any]) -> None:
         with self.lock:
+            existing = self.pending_manual.get(subtask_id)
             self.pending_manual[subtask_id] = {
                 "subtask": subtask,
                 "codex_result": codex_result,
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": (
+                    existing.get("created_at")
+                    if existing is not None
+                    else time.strftime("%Y-%m-%d %H:%M:%S")
+                ),
             }
-            self._append_event_locked("manual_pending", f"{subtask_id} waiting for local console handling")
+            if existing is None:
+                self._append_event_locked("manual_pending", f"{subtask_id} waiting for local console handling")
 
     def get_pending_manual(self, subtask_id: str) -> dict[str, Any] | None:
         with self.lock:
@@ -229,6 +249,8 @@ class TaskHubCodexRunner:
         self.local_claimed: set[str] = set()
         self.state = RunnerState()
         self._current_user_validated = False
+        self._command_broker_started = False
+        self._command_broker_stop = threading.Event()
 
     def validate_current_user(self) -> None:
         if self._current_user_validated:
@@ -253,6 +275,7 @@ class TaskHubCodexRunner:
             )
             self.log(result)
         self.log(f"runner started, user_id={self.config.user_id}, server={self.config.server_url}")
+        self.start_command_broker()
         if self.config.ui:
             self.start_web_console()
         while True:
@@ -271,10 +294,34 @@ class TaskHubCodexRunner:
             self.log("no delegated human subtasks")
             return False
 
-        subtask = candidates[0]
+        selected = candidates[:1] if self.config.once else candidates
+        for subtask in selected:
+            subtask_id = str(subtask["id"])
+            self.local_claimed.add(subtask_id)
+            self.log(f"claimed local human subtask: {subtask_id} {subtask.get('title', '')}")
+            if self.config.ui and not self.config.auto_submit:
+                self.state.add_pending_manual(
+                    subtask_id,
+                    subtask,
+                    {
+                        "action": "processing",
+                        "decision": "need_more_info",
+                        "output": "Codex 正在分析，请稍候。",
+                        "questions": [],
+                    },
+                )
+            if self.config.once:
+                return self._handle_subtask(subtask)
+            threading.Thread(
+                target=self._handle_subtask,
+                args=(subtask,),
+                name=f"taskhub-human-{subtask_id}",
+                daemon=True,
+            ).start()
+        return True
+
+    def _handle_subtask(self, subtask: dict[str, Any]) -> bool:
         subtask_id = str(subtask["id"])
-        self.local_claimed.add(subtask_id)
-        self.log(f"claimed local human subtask: {subtask_id} {subtask.get('title', '')}")
         try:
             context = self.find_task_context(subtask_id)
             prompt = build_codex_prompt(subtask, context, self.config.runner_id)
@@ -287,7 +334,9 @@ class TaskHubCodexRunner:
             result = parse_codex_result(raw_output)
             result.setdefault("output", raw_output)
             result.setdefault("decision", "need_more_info")
-            if not should_auto_submit(result):
+            requires_manual_review = not self.config.auto_submit or not should_auto_submit(result)
+            manually_reviewed = False
+            if requires_manual_review:
                 if self.config.ui:
                     self.state.add_pending_manual(subtask_id, subtask, result)
                     self.log(f"manual handling queued in web console for {subtask_id}")
@@ -298,12 +347,30 @@ class TaskHubCodexRunner:
                     self.log(f"manual handling skipped for {subtask_id}")
                     return False
                 result = manual_result
-            self.submit_subtask_result(subtask_id, result, raw_output)
+                manually_reviewed = True
+            self.submit_subtask_result(
+                subtask_id,
+                result,
+                raw_output,
+                force_submit=manually_reviewed,
+            )
             return True
         except Exception as exc:
-            self.local_claimed.discard(subtask_id)
             self.state.set_error(str(exc))
             self.log(f"failed to handle {subtask_id}: {exc}", stream=sys.stderr)
+            if self.config.ui:
+                self.state.add_pending_manual(
+                    subtask_id,
+                    subtask,
+                    {
+                        "action": "needs_human",
+                        "decision": "need_more_info",
+                        "output": f"Codex 处理失败，需要人工处理：{exc}",
+                        "questions": [],
+                    },
+                )
+                return False
+            self.local_claimed.discard(subtask_id)
             return False
 
     def find_task_context(self, subtask_id: str) -> dict[str, Any]:
@@ -366,6 +433,82 @@ class TaskHubCodexRunner:
                 webbrowser.open(url)
             except Exception as exc:
                 self.log(f"failed to open browser: {exc}", stream=sys.stderr)
+
+    def start_command_broker(self) -> None:
+        if self._command_broker_started:
+            return
+        paths = runtime_paths()
+        paths["ipc_requests_dir"].mkdir(parents=True, exist_ok=True)
+        paths["ipc_responses_dir"].mkdir(parents=True, exist_ok=True)
+        thread = threading.Thread(target=self._run_command_broker, daemon=True)
+        thread.start()
+        self._command_broker_started = True
+        self.log(f"command broker started: {paths['ipc_dir']}")
+
+    def _run_command_broker(self) -> None:
+        paths = runtime_paths()
+        requests_dir = paths["ipc_requests_dir"]
+        responses_dir = paths["ipc_responses_dir"]
+        while not self._command_broker_stop.is_set():
+            handled = False
+            for request_path in sorted(requests_dir.glob("*.json")):
+                processing_path = request_path.with_suffix(".processing")
+                try:
+                    request_path.replace(processing_path)
+                except FileNotFoundError:
+                    continue
+                handled = True
+                request_id = processing_path.stem
+                response = self._handle_broker_request(processing_path)
+                response_path = responses_dir / f"{request_id}.json"
+                temporary_path = responses_dir / f".{request_id}.{uuid.uuid4().hex}.tmp"
+                temporary_path.write_text(
+                    json.dumps(response, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temporary_path.replace(response_path)
+                processing_path.unlink(missing_ok=True)
+            if not handled:
+                self._command_broker_stop.wait(0.05)
+
+    def stop_command_broker(self) -> None:
+        self._command_broker_stop.set()
+
+    def _handle_broker_request(self, request_path: Path) -> dict[str, Any]:
+        try:
+            envelope = json.loads(request_path.read_text(encoding="utf-8"))
+            action = str(envelope.get("action") or "").strip()
+            params = envelope.get("params") if isinstance(envelope.get("params"), dict) else {}
+            result = dispatch_runner_command(self.taskhub, action, params)
+            self.state.add_event("cli_command", f"runner CLI command completed: {action}")
+            return {"ok": True, "result": result}
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            self.state.set_error(f"runner CLI command failed: {message}")
+            return {"ok": False, "error": message}
+
+
+def dispatch_runner_command(
+    client: TaskHubClient,
+    action: str,
+    params: dict[str, Any],
+) -> Any:
+    if action == "get_current_user":
+        return client.get_current_user()
+    if action == "create_task_request":
+        return client.create_task_request(dict(params.get("payload") or {}))
+    if action == "confirm_task":
+        return client.confirm_task(
+            str(params.get("task_id") or ""),
+            dict(params.get("payload") or {}),
+        )
+    if action == "cancel_task":
+        return client.cancel_task(str(params.get("task_id") or ""))
+    if action == "list_tasks":
+        return client.list_tasks()
+    if action == "get_task":
+        return client.get_task(str(params.get("task_id") or ""))
+    raise ValueError(f"Unsupported runner CLI action: {action}")
 
 
 def create_web_console_server(runner: TaskHubCodexRunner, host: str, port: int) -> ThreadingHTTPServer:
@@ -503,6 +646,70 @@ def build_console_html() -> str:
     </section>
   </main>
   <script>
+    function createPendingItem(item) {
+      const subtask = item.subtask || {};
+      const codex = item.codex_result || {};
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.dataset.subtaskId = subtask.id;
+
+      const title = document.createElement('h3');
+      title.textContent = subtask.title || subtask.id;
+      div.appendChild(title);
+
+      const suggestionLabel = document.createElement('div');
+      suggestionLabel.className = 'label';
+      suggestionLabel.textContent = 'Codex 建议';
+      div.appendChild(suggestionLabel);
+
+      const suggestion = document.createElement('p');
+      suggestion.className = 'codex-suggestion';
+      suggestion.textContent = codex.output || '无';
+      div.appendChild(suggestion);
+
+      const textarea = document.createElement('textarea');
+      textarea.placeholder = '请输入人工处理意见';
+      div.appendChild(textarea);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      for (const option of [
+        {decision: 'approved', label: '通过并回填', className: ''},
+        {decision: 'rejected', label: '驳回并回填', className: 'reject'},
+      ]) {
+        const button = document.createElement('button');
+        button.dataset.decision = option.decision;
+        button.textContent = option.label;
+        button.className = option.className;
+        button.onclick = async () => {
+          const buttons = div.querySelectorAll('button');
+          buttons.forEach(current => current.disabled = true);
+          try {
+            const response = await fetch('/api/manual-results', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                subtask_id: subtask.id,
+                decision: button.dataset.decision,
+                output: textarea.value,
+              })
+            });
+            if (!response.ok) {
+              const error = await response.json();
+              throw new Error(error.detail || '人工处理结果回填失败');
+            }
+            await loadStatus();
+          } catch (error) {
+            window.alert(error.message || String(error));
+            buttons.forEach(current => current.disabled = false);
+          }
+        };
+        actions.appendChild(button);
+      }
+      div.appendChild(actions);
+      return div;
+    }
+
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
@@ -511,38 +718,31 @@ def build_console_html() -> str:
       document.getElementById('count').textContent = data.pending_manual_count;
       document.getElementById('events').textContent = JSON.stringify(data.events || [], null, 2);
       const pending = document.getElementById('pending');
-      pending.innerHTML = '';
       if (!data.pending_manual.length) {
         pending.innerHTML = '<div class="label">暂无需要人工介入的本地待办。</div>';
         return;
       }
+      const activeIds = new Set(data.pending_manual.map(item => (item.subtask || {}).id));
+      for (const child of [...pending.querySelectorAll('.item')]) {
+        if (!activeIds.has(child.dataset.subtaskId)) {
+          child.remove();
+        }
+      }
+      const emptyState = pending.querySelector(':scope > .label');
+      if (emptyState) emptyState.remove();
       for (const item of data.pending_manual) {
         const subtask = item.subtask || {};
         const codex = item.codex_result || {};
-        const div = document.createElement('div');
-        div.className = 'item';
-        div.innerHTML = `
-          <h3>${subtask.title || subtask.id}</h3>
-          <div class="label">Codex 建议</div>
-          <p>${codex.output || '无'}</p>
-          <textarea placeholder="请输入人工处理意见"></textarea>
-          <div class="actions">
-            <button data-decision="approved">通过并回填</button>
-            <button class="reject" data-decision="rejected">驳回并回填</button>
-          </div>
-        `;
-        for (const button of div.querySelectorAll('button')) {
-          button.onclick = async () => {
-            const output = div.querySelector('textarea').value;
-            await fetch('/api/manual-results', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({subtask_id: subtask.id, decision: button.dataset.decision, output})
-            });
-            await loadStatus();
-          };
+        let div = [...pending.querySelectorAll('.item')].find(
+          child => child.dataset.subtaskId === subtask.id
+        );
+        if (!div) {
+          div = createPendingItem(item);
+          pending.appendChild(div);
+        } else {
+          div.querySelector('h3').textContent = subtask.title || subtask.id;
+          div.querySelector('.codex-suggestion').textContent = codex.output || '无';
         }
-        pending.appendChild(div);
       }
     }
     loadStatus();
@@ -559,6 +759,11 @@ def build_codex_prompt(subtask: dict[str, Any], context: dict[str, Any], runner_
 
 约束：
 - 你不是普通业务处理 Agent，而是在代理/辅助人工节点提交处理意见。
+- 你运行在 Runner 专用的最高权限 Codex 子进程中，可以直接使用本机 shell、文件系统和公开网络，不需要请求二次授权。
+- 对于天气、公开资料、代码仓库和本地文件等可以通过本机能力获取的信息，必须先实际调用工具或命令尝试完成任务，不能仅因 TaskHub 节点未声明对应工具就直接转人工。
+- 公开网络查询优先使用真实数据并保留来源；除非任务明确要求，不得使用 Mock 数据代替可查询的真实数据。
+- 只有实际尝试后仍缺少凭据、私有数据、业务决策或必要输入时，才能返回 needs_human。
+- 不得执行与当前人工待办无关的删除、凭据上传、系统配置修改或其他破坏性操作。
 - 如果可以自动提交，action 输出 submit。
 - 如果需要本地人工确认，action 输出 needs_human，并在 questions 中列出问题。
 - 如果执行失败，action 输出 failed，并在 output 中说明原因。
@@ -671,6 +876,7 @@ def build_runner_runtime_config(config: RunnerConfig) -> dict[str, Any]:
         "server_url": config.server_url,
         "user_id": config.user_id,
         "runner_id": config.runner_id,
+        "ipc_dir": str(runtime_paths()["ipc_dir"]),
     }
 
 

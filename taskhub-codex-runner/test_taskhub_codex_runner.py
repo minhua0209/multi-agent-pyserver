@@ -63,6 +63,37 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
 
         self.assertEqual(config.user_id, "root")
 
+    def test_runner_codex_defaults_to_runner_scoped_full_access(self) -> None:
+        with patch.dict(runner.os.environ, {}, clear=True):
+            config = runner.load_config(None)
+
+        self.assertEqual(
+            config.codex_command,
+            [
+                "codex",
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ephemeral",
+            ],
+        )
+
+    def test_runner_codex_command_can_still_be_explicitly_overridden(self) -> None:
+        with patch.dict(
+            runner.os.environ,
+            {"TASKHUB_CODEX_COMMAND": "codex exec --sandbox read-only"},
+            clear=True,
+        ):
+            config = runner.load_config(None)
+
+        self.assertEqual(config.codex_command, ["codex", "exec", "--sandbox", "read-only"])
+
+    def test_web_console_polling_preserves_manual_input_elements(self) -> None:
+        html = runner.build_console_html()
+
+        self.assertIn("function createPendingItem(item)", html)
+        self.assertIn("div.dataset.subtaskId = subtask.id", html)
+        self.assertNotIn("pending.innerHTML = '';", html)
+
     def test_needs_human_codex_result_is_not_auto_submittable(self) -> None:
         result = runner.parse_codex_result(
             '{"action": "needs_human", "decision": "need_more_info", "output": "需要人工确认预算", "questions": ["预算是否接受？"]}'
@@ -303,6 +334,56 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
         self.assertEqual(removed["subtask"]["id"], "sub_1")
         self.assertEqual(state.snapshot()["pending_manual_count"], 0)
 
+    def test_auto_submit_disabled_queues_approved_codex_result_in_web_console(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(
+            make_runner_config(auto_submit=False, ui=True)
+        )
+        subtask = {"id": "sub_1", "title": "审核分析文档"}
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "root"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=[subtask])  # type: ignore[method-assign]
+        task_runner.find_task_context = Mock(return_value={})  # type: ignore[method-assign]
+        task_runner.codex.run = Mock(  # type: ignore[method-assign]
+            return_value='{"action":"submit","decision":"approved","output":"建议通过"}'
+        )
+        task_runner.taskhub.submit_result = Mock(return_value={})  # type: ignore[method-assign]
+
+        self.assertTrue(task_runner.poll_once())
+
+        snapshot = task_runner.state.snapshot()
+        self.assertEqual(snapshot["pending_manual_count"], 1)
+        self.assertEqual(snapshot["pending_manual"][0]["subtask"]["id"], "sub_1")
+        task_runner.taskhub.submit_result.assert_not_called()
+
+    def test_background_runner_claims_all_available_human_subtasks_without_waiting_for_codex(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(
+            make_runner_config(once=False, auto_submit=False, ui=True)
+        )
+        subtasks = [
+            {"id": "sub_1", "title": "审核文档一"},
+            {"id": "sub_2", "title": "审核文档二"},
+        ]
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "root"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=subtasks)  # type: ignore[method-assign]
+        started_threads = []
+
+        class FakeThread:
+            def __init__(self, *, target, args, name, daemon):
+                self.target = target
+                self.args = args
+                self.name = name
+                self.daemon = daemon
+
+            def start(self):
+                started_threads.append(self)
+
+        with patch.object(runner.threading, "Thread", FakeThread):
+            self.assertTrue(task_runner.poll_once())
+
+        snapshot = task_runner.state.snapshot()
+        self.assertEqual(snapshot["pending_manual_count"], 2)
+        self.assertEqual(len(started_threads), 2)
+        self.assertEqual(task_runner.local_claimed, {"sub_1", "sub_2"})
+
     def test_manual_web_submit_can_force_submit_when_auto_submit_is_disabled(self) -> None:
         config = runner.RunnerConfig(
             server_url="http://taskhub.local",
@@ -343,6 +424,12 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
                     "draft": {
                         "title": "识别出的任务清单",
                         "description": "- 查询客户需求\n- 管理员确认",
+                        "goal": "完成客户需求分析和确认",
+                        "deliverable_goal": "形成可评审的客户需求结论",
+                        "deliverable_kind": "text",
+                        "deliverable_requirements": ["包含需求摘要"],
+                        "success_criteria": ["管理员完成确认"],
+                        "requires_human_acceptance": True,
                     },
                 }
             ],
@@ -361,9 +448,55 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
                         "submitted_title": "用户提交标题",
                         "draft_title": "识别出的任务清单",
                         "draft_description": "- 查询客户需求\n- 管理员确认",
+                        "draft_contract": {
+                            "goal": "完成客户需求分析和确认",
+                            "deliverable_goal": "形成可评审的客户需求结论",
+                            "deliverable_kind": "text",
+                            "deliverable_format": None,
+                            "deliverable_filename": "",
+                            "deliverable_requirements": [],
+                            "success_criteria": [
+                                {"id": "", "description": "包含需求摘要"},
+                                {"id": "", "description": "管理员完成确认"},
+                            ],
+                            "requires_human_acceptance": True,
+                        },
                     }
                 ],
             },
+        )
+
+    def test_cli_publish_supports_workflow_and_attachments(self) -> None:
+        client = Mock()
+        client.create_task_request.return_value = {"request_id": "req_1", "tasks": []}
+        args = argparse.Namespace(
+            payload_file=None,
+            source_type="business_system",
+            title="流程任务",
+            content="按流程处理附件",
+            metadata_json='{"channel": "codex"}',
+            task_type="",
+            workflow_id="workflow_1",
+            attachment_id=["attachment_1", "attachment_2"],
+        )
+
+        result = runner_cli.command_publish_task(args, client)
+
+        self.assertTrue(result["ok"])
+        client.create_task_request.assert_called_once_with(
+            {
+                "source_type": "business_system",
+                "title": "流程任务",
+                "content": "按流程处理附件",
+                "task_type": "manual_orchestration",
+                "attachment_ids": ["attachment_1", "attachment_2"],
+                "metadata": {
+                    "channel": "codex",
+                    "execution_mode": "workflow_template",
+                    "workflow_id": "workflow_1",
+                    "attachment_ids": ["attachment_1", "attachment_2"],
+                },
+            }
         )
 
     def test_cli_confirm_preserves_submitted_title_when_codex_passes_draft_title(self) -> None:
@@ -379,6 +512,7 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             title="识别出的任务清单",
             description="- 查询客户需求\n- 管理员确认",
             execution_mode="async",
+            payload_file=None,
         )
 
         result = runner_cli.command_confirm_task(args, client)
@@ -389,8 +523,60 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
             {
                 "title": "用户提交标题",
                 "description": "- 查询客户需求\n- 管理员确认",
+                "contract": {
+                    "goal": "- 查询客户需求\n- 管理员确认",
+                    "deliverable_goal": "形成可评审的用户提交标题交付物",
+                    "deliverable_kind": "text",
+                    "deliverable_format": None,
+                    "deliverable_filename": "",
+                    "deliverable_requirements": [],
+                    "success_criteria": [
+                        {
+                            "id": "",
+                            "description": "交付结果满足：- 查询客户需求\n- 管理员确认",
+                        }
+                    ],
+                    "requires_human_acceptance": False,
+                },
                 "execution_mode": "async",
             },
+        )
+
+    def test_cli_confirm_uses_full_payload_file(self) -> None:
+        client = Mock()
+        client.get_task.return_value = {"id": "task_1", "title": "任务"}
+        client.confirm_task.return_value = {"id": "task_1", "title": "任务"}
+        payload = {
+            "title": "任务",
+            "description": "确认后的任务清单",
+            "contract": {
+                "goal": "完成报告",
+                "deliverable_goal": "生成报告文件",
+                "deliverable_kind": "file",
+                "deliverable_format": "markdown",
+                "deliverable_filename": "report.md",
+                "deliverable_requirements": [],
+                "success_criteria": [{"id": "", "description": "报告内容完整"}],
+                "requires_human_acceptance": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload_path = Path(temp_dir) / "confirm.json"
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            args = argparse.Namespace(
+                task_id="task_1",
+                title="",
+                description="",
+                execution_mode="async",
+                payload_file=str(payload_path),
+            )
+
+            result = runner_cli.command_confirm_task(args, client)
+
+        self.assertTrue(result["ok"])
+        client.confirm_task.assert_called_once_with(
+            "task_1",
+            {**payload, "execution_mode": "async"},
         )
 
     def test_cli_error_output_is_json_without_retry(self) -> None:
@@ -424,28 +610,57 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
         client = Mock()
         client.get_current_user.return_value = {"id": "user_001"}
 
-        with patch.object(runner_cli, "TaskHubClient", return_value=client) as client_class:
-            result = runner_cli.taskhub_client(
-                {"server_url": "http://taskhub.local", "user_id": "user_001"}
-            )
+        with patch.object(runner_cli, "RunnerBrokerClient", return_value=client) as client_class:
+            with patch.dict(runner_cli.os.environ, {"TASKHUB_CLI_TIMEOUT_SECONDS": "12"}):
+                result = runner_cli.taskhub_client(
+                    {"user_id": "user_001", "ipc_dir": "/tmp/taskhub-ipc"}
+                )
 
         self.assertIs(result, client)
-        client_class.assert_called_once_with("http://taskhub.local", "user_001")
+        client_class.assert_called_once_with(Path("/tmp/taskhub-ipc"), timeout_seconds=12.0)
         client.get_current_user.assert_called_once_with()
 
     def test_cli_runtime_client_rejects_mismatched_user_id(self) -> None:
         client = Mock()
         client.get_current_user.return_value = {"id": "user_002"}
 
-        with patch.object(runner_cli, "TaskHubClient", return_value=client):
+        with patch.object(runner_cli, "RunnerBrokerClient", return_value=client):
             with self.assertRaisesRegex(RuntimeError, "configured user_id=user_001.*current user id=user_002"):
                 runner_cli.taskhub_client(
-                    {"server_url": "http://taskhub.local", "user_id": "user_001"}
+                    {"user_id": "user_001", "ipc_dir": "/tmp/taskhub-ipc"}
                 )
 
     def test_cli_runtime_client_requires_user_id(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "user_id is missing"):
-            runner_cli.taskhub_client({"server_url": "http://taskhub.local"})
+            runner_cli.taskhub_client({"ipc_dir": "/tmp/taskhub-ipc"})
+
+    def test_runner_command_broker_handles_cli_request_without_cli_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ipc_dir = Path(temp_dir) / "ipc"
+            paths = {
+                "runtime_dir": Path(temp_dir),
+                "pid_file": Path(temp_dir) / "runner.pid",
+                "log_file": Path(temp_dir) / "runner.log",
+                "runner_runtime_file": Path(temp_dir) / "runner_runtime.json",
+                "ipc_dir": ipc_dir,
+                "ipc_requests_dir": ipc_dir / "requests",
+                "ipc_responses_dir": ipc_dir / "responses",
+            }
+            task_runner = runner.TaskHubCodexRunner(make_runner_config())
+            task_runner.taskhub = Mock()
+            task_runner.taskhub.get_current_user.return_value = {
+                "id": "root",
+                "name": "管理员",
+            }
+            with patch.object(runner, "runtime_paths", return_value=paths):
+                task_runner.start_command_broker()
+                client = runner_cli.RunnerBrokerClient(ipc_dir, timeout_seconds=2)
+
+                current_user = client.get_current_user()
+
+                task_runner.stop_command_broker()
+            self.assertEqual(current_user["id"], "root")
+            task_runner.taskhub.get_current_user.assert_called_once_with()
 
 
 if __name__ == "__main__":

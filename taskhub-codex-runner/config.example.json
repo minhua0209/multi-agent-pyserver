@@ -2,7 +2,7 @@
   "server_url": "http://127.0.0.1:8000",
   "user_id": "root",
   "runner_id": "local-codex-runner",
-  "codex_command": "codex exec",
+  "codex_command": "codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral",
   "poll_interval_seconds": 5,
   "codex_timeout_seconds": 300,
   "once": false,

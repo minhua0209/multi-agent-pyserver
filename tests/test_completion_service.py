@@ -1128,7 +1128,7 @@ def test_file_delivery_text_cannot_replace_explicitly_excluded_managed_file(
         artifact.metadata.get("managed_final_delivery") is True
         for artifact in task.artifacts
     )
-    assert "managed final delivery" in report.evidence_summary.lower()
+    assert "valid final delivery file" in report.evidence_summary.lower()
 
 
 def test_file_delivery_materializer_oserror_becomes_sanitized_gap(
@@ -1796,13 +1796,13 @@ def test_file_delivery_revalidation_accepts_active_task_execution_directory(
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.VALID
 
 
-def test_file_delivery_evaluator_receives_only_managed_valid_files(
+def test_file_delivery_evaluator_prefers_valid_file_write_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(contract=_file_contract(with_deliverable_requirements=True))
     artifact_service = ArtifactService()
-    tool_path = tmp_path / "tool-output.md"
+    tool_path = tmp_path / "delivery.md"
     tool_path.write_text("Tool file", encoding="utf-8")
     tool_artifact = artifact_service.register_tool_result(
         task,
@@ -1830,7 +1830,7 @@ def test_file_delivery_evaluator_receives_only_managed_valid_files(
                 requirement_id=requirement.id,
                 status=CriterionResultStatus.PASSED,
                 artifact_ids=[artifacts[0].id],
-                reason="Managed delivery contains required content",
+                reason="Tool-written delivery contains required content",
             )
             for requirement in _task.contract.deliverable_requirements
         ]
@@ -1853,8 +1853,51 @@ def test_file_delivery_evaluator_receives_only_managed_valid_files(
     assert report.terminal_status == TaskStatus.SUCCEEDED
     assert len(evaluated_artifacts) == 1
     assert evaluated_artifacts[0].kind == ArtifactKind.FILE
-    assert evaluated_artifacts[0].source_type == ArtifactSourceType.TASK_RESULT
-    assert evaluated_artifacts[0].metadata["managed_final_delivery"] is True
+    assert evaluated_artifacts[0].source_type == ArtifactSourceType.TOOL_RESULT
+    assert evaluated_artifacts[0].metadata["tool_type"] == "file_write"
+    assert not any(
+        artifact.metadata.get("managed_final_delivery") is True
+        for artifact in task.artifacts
+    )
+
+
+def test_file_delivery_falls_back_to_managed_file_when_tool_filename_mismatches(
+    tmp_path: Path,
+) -> None:
+    task = _task(contract=_file_contract())
+    artifact_service = ArtifactService()
+    tool_path = tmp_path / "wrong-name.md"
+    tool_path.write_text("Tool file", encoding="utf-8")
+    tool_artifact = artifact_service.register_tool_result(
+        task,
+        SubTask(id="subtask_tool", title="Tool", description="Tool output"),
+        ToolExecutionResult(
+            tool_execution_id="tool_file",
+            tool_name="write_file",
+            tool_type="file_write",
+            success=True,
+            result=str(tool_path),
+        ),
+    )
+    assert tool_artifact is not None
+
+    report = CompletionService(
+        artifact_service=artifact_service,
+        deliverable_materializer=DeliverableMaterializer(tmp_path / "outputs"),
+    ).finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Workflow output",
+        reason="done",
+        criterion_results=[_passed_criterion()],
+    )
+
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert any(
+        artifact.metadata.get("managed_final_delivery") is True
+        and artifact.name == "delivery.md"
+        for artifact in task.artifacts
+    )
 
 
 def test_file_delivery_existing_file_does_not_auto_satisfy_content_requirement(

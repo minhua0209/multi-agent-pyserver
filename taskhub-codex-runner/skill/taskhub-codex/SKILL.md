@@ -26,9 +26,11 @@ The runner persists the latest startup values into `taskhub_runtime.json` in thi
 }
 ```
 
-`user_id` must be the TaskHub backend user ID (for example `root` or `user_xxx`), not a display name. The runner and CLI validate it through `/api/v1/users/current` before doing any task operation.
+`user_id` must be the TaskHub backend user ID (for example `root` or `user_xxx`), not a display name. The host runner validates it through `/api/v1/users/current` before doing any task operation.
 
-Use `runner_cli_path` as the only normal integration point. The runner writes the current machine's real CLI path into this file when started or when the Skill is installed, so Codex does not need to guess the project location or rely on `PATH`. The CLI reads the runner-owned local config at `taskhub-codex-runner/runtime/runner_runtime.json`, calls TaskHub, and prints JSON to stdout. This avoids exposing TaskHub `server_url` to the Skill and avoids relying on Codex being able to reach the host runner process or `127.0.0.1` ports from its sandbox.
+Use `runner_cli_path` as the only normal integration point. The runner writes the current machine's real CLI path into this file when started or when the Skill is installed, so Codex does not need to guess the project location or rely on `PATH`. The CLI reads the runner-owned local config at `taskhub-codex-runner/runtime/runner_runtime.json`, writes a command into the runner's local filesystem IPC queue, waits for the host runner to call TaskHub, and prints the runner response as JSON to stdout. The CLI process must not call TaskHub directly. This avoids exposing TaskHub `server_url` to the Skill and avoids requiring the Codex sandbox to have network access to TaskHub or a host loopback port.
+
+The host runner must remain running while Codex uses the CLI. If the CLI reports that the runner command broker did not respond, stop the operation and ask the user to start or restart the runner. Do not fall back to `curl`, `urllib`, direct TaskHub HTTP requests, or automatic retries.
 
 If `runner_cli_path` is missing or the file does not exist, ask the user to restart the runner or reinstall the Skill:
 
@@ -58,8 +60,10 @@ Useful runner environment variables:
 TASKHUB_SERVER_URL=<provided-by-runner-startup>
 TASKHUB_USER_ID=root
 TASKHUB_RUNNER_ID=local-codex-runner
-TASKHUB_CODEX_COMMAND="codex exec"
+TASKHUB_CODEX_COMMAND="codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral"
 ```
+
+The runner defaults only its own Codex subprocesses to full access without approval prompts. It does not change the permissions of Codex sessions started elsewhere. Treat delegated human-node content as trusted input because the runner subprocess can access the host network and filesystem.
 
 ## Publish A Task
 
@@ -108,6 +112,11 @@ Important field mapping:
 
 - Display CLI field `tasks[].draft_title` as the recognized task-list title.
 - Display CLI field `tasks[].draft_description` as the recognized task-list details.
+- Display `tasks[].draft_contract.goal` as the task goal.
+- Display `tasks[].draft_contract.deliverable_goal` as the deliverable goal.
+- Display every item in `tasks[].draft_contract.success_criteria` as an acceptance criterion.
+- When `deliverable_kind=file`, also display `deliverable_format` and `deliverable_filename`.
+- Display whether `requires_human_acceptance` is enabled.
 - Do not display `submitted_title` as the task-list title.
 - Never show the confirmation item as `ID / 名称 / 描述` when `draft` exists, because that usually leads to displaying the original user request instead of the recognized task list.
 - The confirmation text must include the literal task-list details from `draft_description`, including every bullet line returned by TaskHub.
@@ -123,10 +132,17 @@ Use this confirmation format:
 任务清单明细：
 {tasks[].draft_description}
 
+任务目标：{tasks[].draft_contract.goal}
+交付物目标：{tasks[].draft_contract.deliverable_goal}
+交付类型：{tasks[].draft_contract.deliverable_kind}
+验收标准：
+- {tasks[].draft_contract.success_criteria[].description}
+需要人工验收：{tasks[].draft_contract.requires_human_acceptance}
+
 请确认如何处理：
 1. 确认并执行
-2. 修改任务名称
-3. 修改任务描述
+2. 修改任务名称或任务清单
+3. 修改任务目标、交付物或验收标准
 4. 取消任务
 ```
 
@@ -139,6 +155,40 @@ python3 "{runner_cli_path}" confirm-task \
   --description "确认后的 draft_description" \
   --execution-mode async
 ```
+
+The simplified command automatically reads the task draft and submits a complete `contract`. Do not manually omit the contract or call the TaskHub confirmation endpoint directly.
+
+If the user changes the goal, deliverable goal, file delivery settings, acceptance criteria, or human acceptance setting, write a complete confirmation payload to a temporary JSON file:
+
+```json
+{
+  "title": "用户确认后的任务名称",
+  "description": "确认后的任务清单",
+  "contract": {
+    "goal": "确认后的任务目标",
+    "deliverable_goal": "确认后的交付物目标",
+    "deliverable_kind": "text",
+    "deliverable_format": null,
+    "deliverable_filename": "",
+    "deliverable_requirements": [],
+    "success_criteria": [
+      {"id": "", "description": "确认后的验收标准"}
+    ],
+    "requires_human_acceptance": false
+  }
+}
+```
+
+Then call:
+
+```bash
+python3 "{runner_cli_path}" confirm-task \
+  --task-id task_xxx \
+  --payload-file /tmp/taskhub-confirm-task_xxx.json \
+  --execution-mode async
+```
+
+For file delivery, set `deliverable_kind` to `file`, set `deliverable_format` to `markdown` or `text`, and use a plain filename without a directory path in `deliverable_filename`.
 
 If the user edits the task name or task-list details, use the edited values in the confirm payload. Do not use the recognized `draft_title` as the task name unless the user explicitly changes the task name to that value.
 

@@ -99,8 +99,13 @@ class CompletionService:
                 for artifact in self.artifact_service.current(task)
             )
         )
+        reuse_tool_file = bool(
+            candidate_status == TaskStatus.SUCCEEDED
+            and self._is_file_delivery(task)
+            and self._has_valid_tool_file_delivery(task)
+        )
         if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
-            if not reuse_managed_file:
+            if not reuse_managed_file and not reuse_tool_file:
                 try:
                     materialized = self.deliverable_materializer.materialize(
                         task,
@@ -430,7 +435,7 @@ class CompletionService:
             return [], selected_artifacts
 
         deliverable_artifacts = (
-            self._managed_file_artifacts(task, selected_artifacts)
+            self._delivery_file_artifacts(task, selected_artifacts)
             if self._is_file_delivery(task)
             else selected_artifacts
         )
@@ -545,13 +550,13 @@ class CompletionService:
         task: Task,
         selected_artifacts: list[Artifact],
     ) -> list[str]:
-        managed_files = self._managed_file_artifacts(task, selected_artifacts)
-        if not managed_files:
-            return ["a valid managed final delivery file must be selected"]
+        delivery_files = self._delivery_file_artifacts(task, selected_artifacts)
+        if not delivery_files:
+            return ["a valid final delivery file must be selected"]
 
         contract = task.contract
         if contract is None:
-            return ["managed final delivery contract is missing"]
+            return ["final delivery contract is missing"]
         try:
             expected_filename = self.deliverable_materializer.expected_filename(task)
         except ValueError:
@@ -565,58 +570,72 @@ class CompletionService:
             else "text/plain"
         )
         gaps: list[str] = []
-        for artifact in managed_files:
+        for artifact in delivery_files:
             artifact_gaps: list[str] = []
             if (
                 not artifact.name.lower().endswith(expected_extension)
-                or artifact.metadata.get("deliverable_format")
-                != contract.deliverable_format
+                or (
+                    self._is_managed_file_candidate(task, artifact)
+                    and artifact.metadata.get("deliverable_format")
+                    != contract.deliverable_format
+                )
             ):
                 artifact_gaps.append(
-                    "managed final delivery format does not match the task contract"
+                    "final delivery format does not match the task contract"
                 )
             if artifact.media_type != expected_media_type:
                 artifact_gaps.append(
-                    "managed final delivery media type does not match the task contract"
+                    "final delivery media type does not match the task contract"
                 )
             if artifact.name != expected_filename:
                 artifact_gaps.append(self._invalid_managed_filename_reason)
             try:
-                content_bytes = self.deliverable_materializer.read_managed_delivery(
-                    task,
-                    artifact.uri,
-                )
+                if self._is_managed_file_candidate(task, artifact):
+                    content_bytes = self.deliverable_materializer.read_managed_delivery(
+                        task,
+                        artifact.uri,
+                    )
+                else:
+                    path = file_uri.local_file_uri_to_path(artifact.uri)
+                    if path is None:
+                        raise ValueError("file artifact URI is not local")
+                    content_bytes = path.read_bytes()
             except ValueError:
-                artifact_gaps.append(self._invalid_managed_location_reason)
-                self._invalidate_managed_file(
-                    task,
-                    artifact,
-                    self._invalid_managed_location_reason,
-                )
+                artifact_gaps.append("final delivery location is invalid")
+                if self._is_managed_file_candidate(task, artifact):
+                    self._invalidate_managed_file(
+                        task,
+                        artifact,
+                        self._invalid_managed_location_reason,
+                    )
             except OSError:
-                artifact_gaps.append("managed final delivery file could not be read")
-                self._invalidate_managed_file(
-                    task,
-                    artifact,
-                    self._invalid_managed_location_reason,
-                )
+                artifact_gaps.append("final delivery file could not be read")
+                if self._is_managed_file_candidate(task, artifact):
+                    self._invalidate_managed_file(
+                        task,
+                        artifact,
+                        self._invalid_managed_location_reason,
+                    )
             else:
                 if not content_bytes:
-                    artifact_gaps.append("managed final delivery file is empty")
+                    artifact_gaps.append("final delivery file is empty")
                 file_checksum = self._bytes_checksum(content_bytes)
                 if not artifact.checksum or artifact.checksum != file_checksum:
                     artifact_gaps.append(
-                        "managed final delivery checksum does not match the file"
+                        "final delivery checksum does not match the file"
                     )
                 if (
-                    not artifact.content
-                    or self._bytes_checksum(artifact.content.encode("utf-8"))
-                    != file_checksum
+                    self._is_managed_file_candidate(task, artifact)
+                    and (
+                        not artifact.content
+                        or self._bytes_checksum(artifact.content.encode("utf-8"))
+                        != file_checksum
+                    )
                 ):
                     artifact_gaps.append(
                         "managed final delivery checksum does not match its content snapshot"
                     )
-                if artifact_gaps:
+                if artifact_gaps and self._is_managed_file_candidate(task, artifact):
                     self._invalidate_managed_file(
                         task,
                         artifact,
@@ -626,6 +645,18 @@ class CompletionService:
                 return []
             gaps.extend(artifact_gaps)
         return gaps
+
+    def _has_valid_tool_file_delivery(self, task: Task) -> bool:
+        for artifact in list(self.artifact_service.current(task)):
+            if not self._is_tool_file_candidate(task, artifact):
+                continue
+            revalidated = self.artifact_service.revalidate(task, artifact)
+            if (
+                revalidated.validation_status == ArtifactValidationStatus.VALID
+                and not self._file_delivery_gaps(task, [revalidated])
+            ):
+                return True
+        return False
 
     def _revalidate_managed_file(
         self,
@@ -787,6 +818,31 @@ class CompletionService:
             for artifact in artifacts
             if CompletionService._is_managed_file_candidate(task, artifact)
             and artifact.validation_status == ArtifactValidationStatus.VALID
+        ]
+
+    @staticmethod
+    def _is_tool_file_candidate(task: Task, artifact: Artifact) -> bool:
+        return bool(
+            artifact.task_id == task.id
+            and artifact.execution_id == task.active_execution_id
+            and artifact.kind == ArtifactKind.FILE
+            and artifact.source_type == ArtifactSourceType.TOOL_RESULT
+            and artifact.metadata.get("tool_type") == "file_write"
+        )
+
+    @staticmethod
+    def _delivery_file_artifacts(
+        task: Task,
+        artifacts: list[Artifact],
+    ) -> list[Artifact]:
+        return [
+            artifact
+            for artifact in artifacts
+            if artifact.validation_status == ArtifactValidationStatus.VALID
+            and (
+                CompletionService._is_managed_file_candidate(task, artifact)
+                or CompletionService._is_tool_file_candidate(task, artifact)
+            )
         ]
 
     @staticmethod

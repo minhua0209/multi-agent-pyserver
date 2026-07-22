@@ -941,7 +941,7 @@ def _subtask_execution_context(
     return task, subtask, agent
 
 
-def test_file_delivery_with_only_file_write_returns_complete_markdown_and_hides_tool(
+def test_file_delivery_with_only_file_write_exposes_tool_and_keeps_config_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sensitive_value = "hidden-file-tool-placeholder"
@@ -973,10 +973,24 @@ def test_file_delivery_with_only_file_write_returns_complete_markdown_and_hides_
     assert tool_calls == []
     assert output == body
     assert payload["main_task"]["contract"] == task.contract.model_dump(mode="json")
-    assert payload["agent"]["tools"] == []
+    assert payload["agent"]["tools"] == [
+        {
+            "name": "write_delivery",
+            "description": "Write the final delivery file",
+            "type": "file_write",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["filename", "content"],
+            },
+        }
+    ]
     assert "file_write" in captured["system_prompt"]
-    assert "简短 JSON" in captured["system_prompt"]
-    assert "完整 Markdown/TXT 正文" in captured["system_prompt"]
+    assert "必须调用该工具真实写入文件" in captured["system_prompt"]
+    assert "系统托管目录兜底" in captured["system_prompt"]
     assert "只返回简短可读文本" not in captured["system_prompt"]
     assert "不要返回 Markdown" not in captured["system_prompt"]
     assert sensitive_value not in captured["system_prompt"]
@@ -1038,12 +1052,18 @@ def test_file_delivery_lookup_then_plain_markdown_body_uses_visible_auxiliary_to
     assert output == ""
     assert followup_calls == []
     assert followup_output == body
-    assert [tool["name"] for tool in payloads[0]["agent"]["tools"]] == ["customer_lookup"]
-    assert [tool["name"] for tool in payloads[1]["agent"]["tools"]] == ["customer_lookup"]
+    assert [tool["name"] for tool in payloads[0]["agent"]["tools"]] == [
+        "customer_lookup",
+        "write_delivery",
+    ]
+    assert [tool["name"] for tool in payloads[1]["agent"]["tools"]] == [
+        "customer_lookup",
+        "write_delivery",
+    ]
     assert payloads[1]["tool_results"][0]["tool_name"] == "customer_lookup"
 
 
-def test_file_delivery_duplicate_name_first_file_write_is_hidden_and_call_retried(
+def test_file_delivery_duplicate_name_keeps_first_file_write_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task, subtask, agent = _subtask_execution_context(
@@ -1078,10 +1098,10 @@ def test_file_delivery_duplicate_name_first_file_write_is_hidden_and_call_retrie
 
     tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, [])
 
-    assert len(payloads) == 2
-    assert payloads[0]["agent"]["tools"] == []
-    assert tool_calls == []
-    assert output == body
+    assert len(payloads) == 1
+    assert payloads[0]["agent"]["tools"][0]["type"] == "file_write"
+    assert [call.tool_name for call in tool_calls] == ["shared_tool"]
+    assert output == ""
 
 
 def test_file_delivery_duplicate_name_first_mock_is_only_visible_tool_and_allowed(
@@ -1169,17 +1189,6 @@ def test_file_delivery_visible_tools_retry_non_whitelisted_tool_calls(
 @pytest.mark.parametrize(
     "hallucinated_response",
     [
-        json.dumps(
-            {
-                "tool_calls": [
-                    {
-                        "tool_name": "write_delivery",
-                        "arguments": {"filename": "report.md", "content": "wrong channel"},
-                    }
-                ],
-                "output": "",
-            }
-        ),
         '```json\n{"tool_calls": [{"tool_name": "write_delivery", "arguments": {"content": "wrong channel"}}',
         '```JSON\n{"tool_calls": [{"tool_name": "write_delivery", "arguments": {"content": "wrong channel"}}',
         '{"output": "", "tool_calls": [{"tool_name": "write_delivery", "arguments": {"content": "wrong channel"}}]',
@@ -1212,6 +1221,39 @@ def test_file_delivery_retries_valid_or_malformed_file_write_hallucination(
     assert attempts == 2
     assert tool_calls == []
     assert output == body
+
+
+def test_file_delivery_accepts_registered_file_write_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, subtask, agent = _subtask_execution_context(
+        max_retries=0,
+        contract=_file_delivery_contract(),
+        tools=[AgentTool(name="write_delivery", type="file_write")],
+    )
+    monkeypatch.setattr(
+        "app.core.model_client.default_client.create",
+        lambda system_prompt, user_prompt: json.dumps(
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_delivery",
+                        "arguments": {
+                            "filename": "delivery.md",
+                            "content": "# Final report",
+                        },
+                    }
+                ],
+                "output": "",
+            }
+        ),
+    )
+
+    tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, [])
+
+    assert output == ""
+    assert [call.tool_name for call in tool_calls] == ["write_delivery"]
+    assert tool_calls[0].arguments["filename"] == "delivery.md"
 
 
 def test_file_delivery_accepts_plain_body_with_embedded_tool_calls_example(
@@ -1372,6 +1414,51 @@ def test_model_subtask_execution_retries_empty_and_json_like_protocol_errors(
     assert attempts == 3
     assert tool_calls == []
     assert output == "report ready"
+
+
+def test_file_delivery_repairs_malformed_tool_call_json_with_default_retry_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, subtask, agent = _subtask_execution_context(
+        max_retries=0,
+        contract=_file_delivery_contract(),
+        tools=[AgentTool(name="write_delivery", type="file_write")],
+    )
+    responses = [
+        '{"tool_calls": [{"tool_name": "write_delivery", "arguments": '
+        '{"filename": "report.md", "content": "# Report"}}] "output": ""}',
+        json.dumps(
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_delivery",
+                        "arguments": {
+                            "filename": "report.md",
+                            "content": "# Report\n\nComplete body",
+                        },
+                    }
+                ],
+                "output": "",
+            }
+        ),
+    ]
+    prompts: list[str] = []
+
+    def fake_create(system_prompt: str, user_prompt: str) -> str:
+        prompts.append(user_prompt)
+        return responses[len(prompts) - 1]
+
+    monkeypatch.setattr("app.core.model_client.default_client.create", fake_create)
+
+    tool_calls, output = execute_subtask_with_tools_model(task, subtask, agent, [])
+
+    assert len(prompts) == 2
+    assert output == ""
+    assert [call.tool_name for call in tool_calls] == ["write_delivery"]
+    repair_payload = json.loads(prompts[1])
+    assert "上一次响应无法按要求解析" in repair_payload["instruction"]
+    assert "Expecting ',' delimiter" in repair_payload["parse_error"]
+    assert repair_payload["invalid_response"] == responses[0]
 
 
 def test_model_subtask_execution_accepts_non_json_text_as_final_output(

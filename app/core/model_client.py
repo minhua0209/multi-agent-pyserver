@@ -406,12 +406,14 @@ def execute_subtask_with_tools_model(
     if managed_file:
         system_prompt = (
             "你是被分配到子任务的执行 agent。必须基于主任务当前上下文和子任务描述完成任务。"
-            "当前主任务使用系统托管文件交付，禁止调用任何 file_write 工具；系统会在任务成功后统一落盘。"
-            "如果需要使用可见的辅助工具，只返回简短 JSON tool_calls 请求，系统会真实执行工具并把 tool_results 再传给你。"
-            '辅助工具请求格式: {"tool_calls": [{"tool_name": "...", "arguments": {}}], "output": ""}。'
-            "如果无需辅助工具或 tool_results 已经足够，直接返回完整 Markdown/TXT 正文。"
-            "最终正文不要包装在 JSON、output 字段或代码围栏中。"
+            "当前主任务要求交付文件。若当前 agent 提供 file_write 工具，且本子任务负责写入最终文件，"
+            "必须调用该工具真实写入文件，优先使用任务 contract 中的 deliverable_filename，"
+            "并将完整 Markdown/TXT 正文放入 content 参数。"
+            "系统会校验工具生成的文件；只有没有可用写入结果时才使用系统托管目录兜底。"
+            "如果需要使用 agent 提供的 tools，返回 tool_calls 数组；系统会真实执行工具并把 tool_results 再传给你。"
+            "如果 tool_results 已经足够完成任务，返回空 tool_calls 和最终 output。"
             "如果上下文里包含前置任务结果，需要显式利用这些结果。"
+            '返回 JSON 格式: {"tool_calls": [{"tool_name": "...", "arguments": {}}], "output": "..."}'
         )
     else:
         system_prompt = (
@@ -449,15 +451,19 @@ def execute_subtask_with_tools_model(
     if not isinstance(configured_retries, int):
         configured_retries = 0
     max_retries = min(MAX_AGENT_MODEL_RETRIES, max(0, configured_retries))
+    if managed_file:
+        max_retries = max(1, max_retries)
     total_attempts = 1 + max_retries
     attempts_made = 0
     last_error: Exception | str = "Unknown agent model execution error"
+    current_user_prompt = user_prompt
     for attempt in range(1, total_attempts + 1):
         attempts_made = attempt
+        response_text = ""
         try:
             response_text = default_client.create(
                 _agent_system_prompt(system_prompt, agent),
-                user_prompt,
+                current_user_prompt,
             )
             return _parse_subtask_execution_response_for_delivery(
                 response_text,
@@ -465,13 +471,44 @@ def execute_subtask_with_tools_model(
                 managed_file=managed_file,
                 execution_tools=execution_tools,
             )
-        except (ModelCallError, error.HTTPError, ValueError) as exc:
+        except ValueError as exc:
             last_error = exc
+            if attempt < total_attempts:
+                current_user_prompt = _agent_protocol_repair_prompt(
+                    original_user_prompt=user_prompt,
+                    invalid_response=response_text,
+                    parse_error=exc,
+                )
+        except (ModelCallError, error.HTTPError) as exc:
+            last_error = exc
+            current_user_prompt = user_prompt
         except Exception as exc:
             last_error = exc
             break
 
     raise AgentModelExecutionError(attempts=attempts_made, last_error=last_error)
+
+
+def _agent_protocol_repair_prompt(
+    *,
+    original_user_prompt: str,
+    invalid_response: str,
+    parse_error: Exception,
+) -> str:
+    return json.dumps(
+        {
+            "instruction": (
+                "上一次响应无法按要求解析。请重新生成完整响应，只返回一个合法 JSON 对象，"
+                "不得使用 Markdown 代码围栏，不得在 JSON 前后添加解释。"
+                "所有字符串中的换行、双引号和反斜杠必须按 JSON 规则转义。"
+                "响应必须包含 tool_calls 数组和 output 字符串。"
+            ),
+            "parse_error": str(parse_error),
+            "invalid_response": invalid_response,
+            "original_task_input": json.loads(original_user_prompt),
+        },
+        ensure_ascii=False,
+    )
 
 
 def plan_next_round_with_model(task: Task, agents: list[Agent]) -> RoundPlan | None:
@@ -1019,15 +1056,10 @@ def _parse_subtask_execution_response_for_delivery(
     managed_file: bool,
     execution_tools: list[AgentTool],
 ) -> tuple[list[ToolCall], str]:
-    if managed_file and not execution_tools:
-        if _looks_like_tool_calls_json(text):
-            tool_calls, _ = _parse_subtask_execution_response(text)
-            _validate_managed_tool_calls(tool_calls, agent, execution_tools)
-            raise ValueError("Managed file delivery final response must be returned as direct body text")
+    if managed_file and not _looks_like_tool_calls_json(text):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Agent model response was empty")
         return [], text.strip()
-
     tool_calls, output = _parse_subtask_execution_response(text)
     if managed_file:
         _validate_managed_tool_calls(tool_calls, agent, execution_tools)
@@ -1116,10 +1148,9 @@ def _validate_managed_tool_calls(
         ) if agent else None
         if (
             tool is None
-            or tool.type == "file_write"
             or tool_call.tool_name not in visible_tool_names
         ):
-            raise ValueError("Managed file delivery received a non-visible tool call")
+            raise ValueError("File delivery received a non-visible tool call")
 
 
 def _json_object_envelope(text: str) -> str | None:
@@ -1162,17 +1193,13 @@ def _is_managed_file_delivery(task: Task) -> bool:
 
 def _execution_tools(agent: Agent | None, managed_file: bool) -> list[AgentTool]:
     tools = list(agent.tools) if agent else []
-    if not managed_file:
-        return tools
-
     visible_tools = []
     seen_names = set()
     for tool in tools:
         if tool.name in seen_names:
             continue
         seen_names.add(tool.name)
-        if tool.type != "file_write":
-            visible_tools.append(tool)
+        visible_tools.append(tool)
     return visible_tools
 
 
