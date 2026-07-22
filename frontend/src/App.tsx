@@ -33,12 +33,14 @@ import {
   FileText,
   ListChecks,
   Loader2,
+  Moon,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
   Send,
   ShieldCheck,
+  Sun,
   Paperclip,
   Trash2,
   Users,
@@ -57,7 +59,7 @@ import {
   ReactFlow,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   Agent,
   SubTask,
@@ -142,6 +144,13 @@ import {
   workflowNodeStateColor as detailWorkflowNodeStateColor,
 } from "./taskDetailView"
 import { TOAST_DISMISS_MS, ToastMessage, createToastMessage, shouldDismissToast } from "./toastState"
+import {
+  AppTheme,
+  getThemeStorage,
+  resolveThemePreference,
+  toggleTheme,
+  writeThemePreference,
+} from "./themePreference"
 import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 import { WorkflowReactFlowNode } from "./workflowReactFlow"
 
@@ -257,6 +266,7 @@ function formatDate(value?: string) {
 }
 
 export default function App() {
+  const [appTheme, setAppTheme] = useState<AppTheme>(() => resolveThemePreference(document.documentElement.dataset.theme))
   const [page, setPage] = useState<PageId>("overview")
   const [tasks, setTasks] = useState<Task[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -278,6 +288,8 @@ export default function App() {
     [tasks],
   )
   const isAdmin = currentUser?.role === "admin"
+  const isDarkTheme = appTheme === "dark"
+  const themeToggleLabel = isDarkTheme ? "切换到浅色模式" : "切换到深色模式"
   const setToast = useCallback((value: string) => {
     nextToastId.current += 1
     setToastState(createToastMessage(value, nextToastId.current))
@@ -290,6 +302,11 @@ export default function App() {
     }, TOAST_DISMISS_MS)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = appTheme
+    writeThemePreference(getThemeStorage(), appTheme)
+  }, [appTheme])
 
   async function refreshAll() {
     setLoading(true)
@@ -389,32 +406,49 @@ export default function App() {
   return (
     <ConfigProvider
       theme={{
-        algorithm: antdTheme.darkAlgorithm,
+        algorithm: isDarkTheme ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
-          colorPrimary: "#22c7b8",
-          colorInfo: "#38bdf8",
-          colorSuccess: "#34d399",
-          colorWarning: "#fbbf24",
-          colorError: "#fb7185",
-          colorBgBase: "#080f1d",
-          colorBgLayout: "#080f1d",
-          colorBgContainer: "#121c2d",
-          colorBgElevated: "#18243a",
-          colorBgSpotlight: "#1b2a40",
-          colorText: "#f8fafc",
-          colorTextSecondary: "#b4c0d4",
-          colorTextTertiary: "#8190a8",
-          colorBorder: "#2a3950",
-          colorBorderSecondary: "#223047",
+          colorPrimary: isDarkTheme ? "#22c7b8" : "#0f766e",
+          colorInfo: isDarkTheme ? "#38bdf8" : "#0284c7",
+          colorSuccess: isDarkTheme ? "#34d399" : "#059669",
+          colorWarning: isDarkTheme ? "#fbbf24" : "#d97706",
+          colorError: isDarkTheme ? "#fb7185" : "#e11d48",
+          colorBgBase: isDarkTheme ? "#080f1d" : "#f4f7fb",
+          colorBgLayout: isDarkTheme ? "#080f1d" : "#f4f7fb",
+          colorBgContainer: isDarkTheme ? "#121c2d" : "#ffffff",
+          colorBgElevated: isDarkTheme ? "#18243a" : "#ffffff",
+          colorBgSpotlight: isDarkTheme ? "#1b2a40" : "#172033",
+          colorText: isDarkTheme ? "#f8fafc" : "#172033",
+          colorTextSecondary: isDarkTheme ? "#b4c0d4" : "#46546b",
+          colorTextTertiary: isDarkTheme ? "#8190a8" : "#718096",
+          colorBorder: isDarkTheme ? "#2a3950" : "#d7e0eb",
+          colorBorderSecondary: isDarkTheme ? "#223047" : "#e3e9f1",
           borderRadius: 8,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
         components: {
-          Layout: { bodyBg: "#080f1d", siderBg: "#0b1323", headerBg: "#0d1728" },
-          Card: { borderRadiusLG: 8, headerBg: "#121c2d" },
-          Table: { headerBg: "#0e1828", rowHoverBg: "#17243a", borderColor: "#24334a" },
-          Modal: { headerBg: "#121c2d", contentBg: "#121c2d" },
-          Menu: { darkItemBg: "#0b1323", darkSubMenuItemBg: "#0b1323", darkItemSelectedBg: "#153a42" },
+          Layout: {
+            bodyBg: isDarkTheme ? "#080f1d" : "#f4f7fb",
+            siderBg: isDarkTheme ? "#0b1323" : "#ffffff",
+            headerBg: isDarkTheme ? "#0d1728" : "#ffffff",
+          },
+          Card: { borderRadiusLG: 8, headerBg: isDarkTheme ? "#121c2d" : "#ffffff" },
+          Table: {
+            headerBg: isDarkTheme ? "#0e1828" : "#f1f5f9",
+            rowHoverBg: isDarkTheme ? "#17243a" : "#f6f9fc",
+            borderColor: isDarkTheme ? "#24334a" : "#e3e9f1",
+          },
+          Modal: {
+            headerBg: isDarkTheme ? "#121c2d" : "#ffffff",
+            contentBg: isDarkTheme ? "#121c2d" : "#ffffff",
+          },
+          Menu: {
+            darkItemBg: "#0b1323",
+            darkSubMenuItemBg: "#0b1323",
+            darkItemSelectedBg: "#153a42",
+            itemSelectedBg: "#dff7f4",
+            itemSelectedColor: "#0f766e",
+          },
         },
       }}
     >
@@ -425,7 +459,7 @@ export default function App() {
             <div className="brand-subtitle">Agent 任务协同中心</div>
           </div>
           <Menu
-            theme="dark"
+            theme={isDarkTheme ? "dark" : "light"}
             mode="inline"
             selectedKeys={[page]}
             items={menuItems}
@@ -452,6 +486,14 @@ export default function App() {
               />
               <Tag color={isAdmin ? "gold" : "blue"}>{isAdmin ? "管理员" : "普通用户"}</Tag>
               <Tag color={error ? "error" : "success"}>{error ? "接口异常" : "接口联调模式"}</Tag>
+              <Tooltip title={themeToggleLabel}>
+                <Button
+                  className="theme-toggle-button"
+                  aria-label={themeToggleLabel}
+                  icon={isDarkTheme ? <Sun size={16} /> : <Moon size={16} />}
+                  onClick={() => setAppTheme((current) => toggleTheme(current))}
+                />
+              </Tooltip>
               <Button icon={loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} onClick={refreshAll} loading={loading}>
                 刷新
               </Button>
@@ -2062,7 +2104,7 @@ function ManualWorkflowDetail({ task, definition }: { task: Task; definition: Wo
           preventScrolling={false}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#34445d" gap={18} size={1.1} />
+          <Background color="var(--canvas-dot)" gap={18} size={1.1} />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
