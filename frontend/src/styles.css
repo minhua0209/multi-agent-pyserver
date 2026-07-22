@@ -1299,6 +1299,7 @@ tr.selected td {
   margin-top: 12px;
 }
 
+.task-detail-modal .ant-modal-container,
 .task-detail-modal .ant-modal-content {
   height: 100% !important;
   max-height: 100%;
@@ -1367,32 +1368,68 @@ tr.selected td {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  border: 1px solid rgb(199 210 254 / 0.78);
-  border-radius: var(--radius-sm);
-  background: rgb(255 255 255 / 0.9);
-  overflow: hidden;
+  gap: 10px;
 }
 
 .task-four-question {
   min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  box-shadow: 0 6px 16px rgb(15 23 42 / 0.08);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.task-four-question:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 10px 22px rgb(15 23 42 / 0.14);
+}
+
+.task-four-question-creator {
+  background: var(--info-soft);
+}
+
+.task-four-question-goal {
+  background: var(--accent-soft);
+}
+
+.task-four-question-deliverable {
+  background: var(--warning-soft);
+}
+
+.task-four-question-completion {
+  background: var(--success-soft);
+}
+
+.task-question-icon {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--accent-text);
+}
+
+.task-question-copy {
+  min-width: 0;
   display: grid;
-  align-content: start;
-  gap: 5px;
-  padding: 10px 12px;
-  border-right: 1px solid rgb(199 210 254 / 0.58);
+  gap: 4px;
 }
 
-.task-four-question:last-child {
-  border-right: 0;
-}
-
-.task-four-question span {
+.task-question-copy span {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
 }
 
-.task-four-question strong {
+.task-question-copy strong {
   min-width: 0;
   color: var(--text-primary);
   font-size: 13px;
@@ -1402,12 +1439,9 @@ tr.selected td {
 
 .task-detail-summary {
   flex: 0 0 auto;
-  min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  grid-template-rows: minmax(118px, 160px);
   gap: 12px;
-  overflow: hidden;
 }
 
 .detail-meta-strip {
@@ -1436,24 +1470,30 @@ tr.selected td {
 }
 
 .detail-text-block {
-  min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid rgb(129 140 248 / 0.42);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(238 242 255 / 0.7));
+  background: var(--surface-panel);
   overflow: hidden;
 }
 
 .detail-text-block h4 {
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid rgb(199 210 254 / 0.58);
-  color: #312e81;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent-text);
+}
+
+.detail-text-block-icon {
+  display: inline-flex;
+  color: var(--accent);
 }
 
 .detail-text-block div {
-  min-height: 0;
+  max-height: 220px;
   overflow: auto;
   padding: 10px 12px;
   line-height: 1.65;
@@ -1886,11 +1926,17 @@ tr.selected td {
 }
 
 .execution-section {
-  flex: 0 0 min(68vh, 600px);
-  min-height: min(68vh, 600px);
-  max-height: 68vh;
-  overflow: hidden;
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
   display: grid;
+  gap: 10px;
+}
+
+.manual-execution-section {
+  min-height: 460px;
+  height: min(60vh, 560px);
+  overflow: hidden;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -2163,8 +2209,39 @@ tr.selected td {
   margin-top: 8px;
 }
 
-.execution-section h4 {
-  margin: 0 0 10px;
+.execution-section-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--accent-text);
+}
+
+.execution-section-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.execution-section-header h4 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.execution-section-header span {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.execution-section-header .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  margin-inline-end: 0;
 }
 
 .modal-scroll {
@@ -2175,9 +2252,10 @@ tr.selected td {
 
 .execution-scroll {
   min-height: 0;
-  height: 100%;
-  max-height: 100%;
-  overflow: auto;
+  height: auto;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
   border: 1px solid rgb(129 140 248 / 0.42);
   border-radius: var(--radius-sm);
   background:
@@ -2446,19 +2524,11 @@ tr.selected td {
 }
 
 @media (max-height: 720px) {
+  .task-detail-modal .ant-modal-container,
   .task-detail-modal .ant-modal-content {
     min-height: 0;
   }
 
-  .task-detail-summary {
-    grid-template-rows: minmax(104px, 135px);
-    gap: 10px;
-  }
-
-  .execution-section {
-    flex-basis: min(75vh, 495px);
-    min-height: min(75vh, 495px);
-  }
 }
 
 .execution-graph {
@@ -2523,7 +2593,9 @@ tr.selected td {
 }
 
 .graph-round-node {
-  width: min(820px, 100%);
+  width: 100%;
+  max-width: 1080px;
+  min-width: 0;
   padding: 14px;
 }
 
@@ -2537,6 +2609,7 @@ tr.selected td {
 }
 
 .graph-round-header div {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2549,12 +2622,13 @@ tr.selected td {
 
 .graph-subtasks {
   display: grid;
+  align-items: start;
   gap: 10px;
   margin-top: 12px;
 }
 
 .graph-subtasks.parallel {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
 .graph-subtasks.sequential {
@@ -2564,6 +2638,7 @@ tr.selected td {
 .graph-subtask-node {
   position: relative;
   min-height: 76px;
+  min-width: 0;
   width: 100%;
   border: 1px solid var(--border);
   border-left: 4px solid var(--info);
@@ -2572,13 +2647,10 @@ tr.selected td {
   padding: 10px;
   color: var(--text-primary);
   text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-.graph-subtask-node.clickable {
-  cursor: pointer;
-}
-
-.graph-subtask-node.clickable:hover {
+.graph-subtask-node:hover {
   border-color: #6366f1;
   box-shadow: 0 12px 28px rgb(79 70 229 / 0.18);
 }
@@ -2600,9 +2672,34 @@ tr.selected td {
   border-left-color: var(--info);
 }
 
+.subtask-node-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.subtask-node-heading > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.subtask-node-icon {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--accent-text);
+}
+
 .subtask-node-title {
   font-weight: 650;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
 }
 
 .subtask-node-meta {
@@ -2614,21 +2711,67 @@ tr.selected td {
   font-size: 12px;
 }
 
-.subtask-node-action {
+.subtask-node-action-button {
   display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
   margin-top: 10px;
-  color: var(--accent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  padding: 6px 8px;
+  color: var(--accent-text);
   font-size: 12px;
   font-weight: 700;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.subtask-node-action-button:hover,
+.subtask-node-action-button:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgb(79 70 229 / 0.16);
 }
 
 .subtask-node-output {
   margin-top: 8px;
-  max-height: 42px;
-  overflow: hidden;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.subtask-node-output summary {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.subtask-node-output summary span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.subtask-node-output summary span:last-child {
+  flex: 0 0 auto;
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.subtask-node-output > div {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .flow-row,
@@ -4449,7 +4592,6 @@ button.workflow-agent-card:focus-visible {
 .description-tooltip,
 .modal-panel,
 .intent-task-card,
-.task-four-questions,
 .detail-meta-strip,
 .detail-text-block,
 .task-result-detail,
@@ -4521,7 +4663,6 @@ button.workflow-agent-card:focus-visible {
 }
 
 .description-tooltip,
-.task-four-questions,
 .detail-meta-strip,
 .context-subtask-detail,
 .execution-scroll,
@@ -4834,7 +4975,6 @@ tr.selected td {
   .grid.two,
   .grid.three,
   .grid.agents-management-grid,
-  .task-four-questions,
   .human-workbench,
   .human-review-support,
   .workflow-layout {
@@ -4938,14 +5078,6 @@ tr.selected td {
 
   .task-four-questions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .task-four-question:nth-child(2) {
-    border-right: 0;
-  }
-
-  .task-four-question:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
   }
 
 }
@@ -5148,14 +5280,30 @@ tr.selected td {
     grid-template-columns: 1fr;
   }
 
-  .task-four-question,
-  .task-four-question:nth-child(2) {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
+  .manual-execution-section {
+    min-height: 420px;
   }
 
-  .task-four-question:last-child {
-    border-bottom: 0;
+  .graph-subtasks.parallel {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-round-header {
+    align-items: flex-start;
+  }
+
+  .graph-round-header > div,
+  .graph-round-header .status-pill,
+  .subtask-node-action-button,
+  .subtask-node-output,
+  .subtask-node-output summary {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .subtask-node-output summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .confirmation-switch-row,

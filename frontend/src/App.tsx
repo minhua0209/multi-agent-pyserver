@@ -1275,6 +1275,7 @@ function TaskDetailModal({
   const summaryBlocks = taskDetailSummaryBlocks(task)
   const fourQuestions = taskFourQuestions(task)
   const workflowDefinition = workflowDefinitionForTask(task)
+  const rounds = task.context?.rounds || []
 
   return (
     <Modal
@@ -1284,6 +1285,7 @@ function TaskDetailModal({
             <Typography.Text strong ellipsis>{taskTitle(task)}</Typography.Text>
           </Tooltip>
           <Tag color={typeBadge.color}>{typeBadge.text}</Tag>
+          <Tag color={taskStatusColor(taskStatus(task))}>{taskStatusText(taskStatus(task))}</Tag>
           {isTaskAwaitingConfirmation(task) && (
             <Button
               size="small"
@@ -1302,7 +1304,7 @@ function TaskDetailModal({
       onCancel={onClose}
       footer={null}
       width="min(1240px, calc(100vw - 56px))"
-      style={{ top: 16, height: "calc(100vh - 32px)", maxHeight: 920, minHeight: 760 }}
+      style={{ top: 16, height: "calc(100vh - 32px)", maxHeight: 920 }}
       styles={{
         body: {
           flex: "1 1 auto",
@@ -1321,7 +1323,12 @@ function TaskDetailModal({
             {error && <AntAlert type="error" showIcon title={error} />}
             {summaryBlocks.map((block) => (
               <section className="detail-text-block" key={block.key}>
-                <h4>{block.title}</h4>
+                <h4>
+                  <span className="detail-text-block-icon" aria-hidden="true">
+                    {block.key === "request" ? <FileText size={16} /> : <ListChecks size={16} />}
+                  </span>
+                  {block.title}
+                </h4>
                 <div>{block.text}</div>
               </section>
             ))}
@@ -1331,8 +1338,15 @@ function TaskDetailModal({
           <TaskInterventionPanel task={task} onTaskUpdated={onTaskUpdated} />
           {!!attachments.length && <TaskAttachmentDetail attachments={attachments} />}
           {isManualWorkflowTask(task) ? (
-            <section className="execution-section">
-              <h4>手动编排流程</h4>
+            <section className="execution-section manual-execution-section">
+              <header className="execution-section-header">
+                <GitBranch size={18} aria-hidden="true" />
+                <div>
+                  <h4>手动编排流程</h4>
+                  <span>按流程节点跟踪执行状态</span>
+                </div>
+                <Tag>{workflowDefinition?.nodes.length || 0} 个节点</Tag>
+              </header>
               {workflowDefinition ? (
                 <ManualWorkflowDetail task={task} definition={workflowDefinition} />
               ) : (
@@ -1340,11 +1354,18 @@ function TaskDetailModal({
               )}
             </section>
           ) : (
-            <section className="execution-section">
-              <h4>执行轮次</h4>
-              {(task.context?.rounds || []).length ? (
-                <div className="modal-scroll execution-scroll">
-                  <ExecutionGraph rounds={task.context?.rounds || []} onOpenHumanWorkbench={onOpenHumanWorkbench} />
+            <section className="execution-section auto-execution-section">
+              <header className="execution-section-header">
+                <GitBranch size={18} aria-hidden="true" />
+                <div>
+                  <h4>执行轮次</h4>
+                  <span>按轮次查看子任务状态</span>
+                </div>
+                <Tag>{rounds.length} 轮</Tag>
+              </header>
+              {rounds.length ? (
+                <div className="execution-scroll">
+                  <ExecutionGraph rounds={rounds} onOpenHumanWorkbench={onOpenHumanWorkbench} />
                 </div>
               ) : (
                 <EmptyState text="暂无执行轮次" />
@@ -1362,14 +1383,31 @@ function TaskFourQuestionGrid({
 }: {
   questions: ReturnType<typeof taskFourQuestions>
 }) {
+  const questionIcons = {
+    creator: Users,
+    goal: Activity,
+    deliverable: FileText,
+    completion: CheckCircle2,
+  }
+
   return (
     <section className="task-four-questions" aria-label="任务四个核心问题">
-      {questions.map((question) => (
-        <div className="task-four-question" key={question.key}>
-          <span>{question.title}</span>
-          <strong>{question.text}</strong>
-        </div>
-      ))}
+      {questions.map((question) => {
+        const Icon = questionIcons[question.key]
+        return (
+          <div
+            className={`task-four-question task-four-question-${question.key}`}
+            data-question={question.key}
+            key={question.key}
+          >
+            <span className="task-question-icon" aria-hidden="true"><Icon size={18} /></span>
+            <div className="task-question-copy">
+              <span>{question.title}</span>
+              <strong>{question.text}</strong>
+            </div>
+          </div>
+        )
+      })}
     </section>
   )
 }
@@ -2180,25 +2218,38 @@ function ExecutionGraph({ rounds, onOpenHumanWorkbench }: { rounds: TaskRound[];
                 const failureReason = subtaskFailureReason(subtask)
                 const nodeContent = (
                   <>
-                    <div className="subtask-node-title">{subtask.title || subtask.id}</div>
-                    <div className="subtask-node-meta">
-                      <span>{isHumanNode ? "人工节点" : "Agent节点"}</span>
-                      <span className={`status-pill ${subtask.status}`}>{taskStatusText(subtask.status)}</span>
+                    <div className="subtask-node-heading">
+                      <span className="subtask-node-icon" aria-hidden="true">
+                        {isHumanNode ? <UserCheck size={16} /> : <Bot size={16} />}
+                      </span>
+                      <div>
+                        <div className="subtask-node-title">{subtask.title || subtask.id}</div>
+                        <div className="subtask-node-meta">
+                          <span>{isHumanNode ? "人工节点" : "Agent节点"}</span>
+                          <span className={`status-pill ${subtask.status}`}>{taskStatusText(subtask.status)}</span>
+                        </div>
+                      </div>
                     </div>
-                    {subtask.output && <div className="subtask-node-output">{subtask.output}</div>}
-                    {canOpenHumanWorkbench && <span className="subtask-node-action">点击处理</span>}
+                    {subtask.output && (
+                      <details className="subtask-node-output">
+                        <summary>
+                          <span>{compactContextText(subtask.output, 96)}</span>
+                          <span>查看完整输出</span>
+                        </summary>
+                        <div>{subtask.output}</div>
+                      </details>
+                    )}
+                    {canOpenHumanWorkbench && (
+                      <button type="button" className="subtask-node-action-button" onClick={onOpenHumanWorkbench}>
+                        <UserCheck size={16} aria-hidden="true" />
+                        前往人工处理
+                      </button>
+                    )}
                   </>
-                )
-                const renderedNode = canOpenHumanWorkbench ? (
-                  <button type="button" className={`graph-subtask-node clickable ${subtask.status || "running"}`} onClick={onOpenHumanWorkbench}>
-                    {nodeContent}
-                  </button>
-                ) : (
-                  <article className={`graph-subtask-node ${subtask.status || "running"}`}>{nodeContent}</article>
                 )
                 return (
                   <Tooltip key={subtask.id} title={failureReason} placement="top" overlayClassName="subtask-failure-tooltip">
-                    {renderedNode}
+                    <article className={`graph-subtask-node ${subtask.status || "running"}`}>{nodeContent}</article>
                   </Tooltip>
                 )
               })}
