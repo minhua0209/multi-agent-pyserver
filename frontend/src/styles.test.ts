@@ -9,17 +9,61 @@ const mainSource = readFileSync(new URL("./main.tsx", import.meta.url), "utf8")
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8")
 
 function cssRule(selector: string, source = styles) {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  return source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] || ""
+  return cssRules(selector, source)[0] || ""
 }
 
 function cssRules(selector: string, source = styles) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  return Array.from(source.matchAll(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g")), (match) => match[1])
+  return Array.from(
+    source.matchAll(new RegExp(`(?:^|[{}])\\s*${escaped}\\s*\\{([^{}]*)\\}`, "gm")),
+    (match) => match[1],
+  )
 }
+
+function atRuleContent(rule: string, source = styles) {
+  const ruleStart = source.indexOf(rule)
+  const openingBrace = source.indexOf("{", ruleStart + rule.length)
+  if (ruleStart < 0 || openingBrace < 0) return ""
+
+  let depth = 0
+  for (let index = openingBrace; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1
+    if (source[index] === "}") depth -= 1
+    if (depth === 0) return source.slice(openingBrace + 1, index)
+  }
+  return ""
+}
+
+function sourceBetween(source: string, start: string, end: string) {
+  const startIndex = source.indexOf(start)
+  const endIndex = source.indexOf(end, startIndex + start.length)
+  if (startIndex < 0 || endIndex < 0) return ""
+  return source.slice(startIndex, endIndex)
+}
+
+function lastCssDeclaration(rules: string[], property: string) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const declaration = new RegExp(`(?:^|;)\\s*${escaped}\\s*:\\s*([^;}]*)`, "g")
+  const values = rules.flatMap((rule) => Array.from(rule.matchAll(declaration), (match) => match[1].trim()))
+  return values.at(-1) || ""
+}
+
+const taskDetailModalSource = sourceBetween(appSource, "function TaskDetailModal(", "function TaskRerunControl(")
+const executionGraphSource = sourceBetween(appSource, "function ExecutionGraph(", "function subtaskFailureReason(")
 
 
 describe("task detail responsive styles", () => {
+  it("constrains the current Ant Design modal container to the viewport", () => {
+    const modalContainerRule = cssRule(
+      ".task-detail-modal .ant-modal-container,\n.task-detail-modal .ant-modal-content",
+    )
+
+    expect(modalContainerRule).toMatch(/height:\s*100%/)
+    expect(modalContainerRule).toMatch(/display:\s*flex/)
+    expect(modalContainerRule).toMatch(/overflow:\s*hidden/)
+    expect(taskDetailModalSource).not.toContain("minHeight: 760")
+  })
+
   it("keeps the detail title shrinkable beside fixed header controls", () => {
     expect(cssRule(".task-detail-title .ant-typography:first-child")).toMatch(/flex:\s*1 1 auto/)
     expect(cssRule(".task-detail-title .ant-typography:first-child")).toMatch(/min-width:\s*0/)
@@ -27,11 +71,79 @@ describe("task detail responsive styles", () => {
   })
 
   it("uses an icon-only rerun control on mobile", () => {
-    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 767px)"))
+    const mobileStyles = atRuleContent("@media (max-width: 767px)")
     expect(cssRule(".task-detail-title .ant-btn", mobileStyles)).toMatch(/width:\s*32px/)
     expect(cssRule(".task-detail-title .ant-btn > span:not(.ant-btn-icon)", mobileStyles)).toMatch(
       /display:\s*none/,
     )
+  })
+})
+
+
+describe("task detail execution layout requirements", () => {
+  it("renders task detail status and section controls", () => {
+    expect(taskDetailModalSource).toContain('className="task-question-icon"')
+    expect(taskDetailModalSource).toContain("taskStatusColor(taskStatus(task))")
+    expect(taskDetailModalSource).toContain('className="execution-section-header"')
+  })
+
+  it("renders expandable subtask output and independent actions", () => {
+    expect(executionGraphSource).toContain('<details className="subtask-node-output">')
+    expect(executionGraphSource).toContain('className="subtask-node-action-button"')
+  })
+
+  it("keeps execution sections sized by their content", () => {
+    const executionSections = cssRules(".execution-section")
+
+    expect(executionSections).not.toHaveLength(0)
+    expect(executionSections.every((rule) => !/vh/.test(rule))).toBe(true)
+    expect(executionSections.every((rule) => !/flex-basis:/.test(rule))).toBe(true)
+    expect(executionSections.every((rule) => !/overflow:\s*hidden/.test(rule))).toBe(true)
+    expect(lastCssDeclaration(executionSections, "flex")).toBe("0 0 auto")
+    expect(lastCssDeclaration(executionSections, "max-height")).toBe("none")
+    expect(lastCssDeclaration(executionSections, "overflow")).toBe("visible")
+  })
+
+  it("keeps the execution graph fluid on desktop and mobile", () => {
+    const mobileStyles = atRuleContent("@media (max-width: 767px)")
+    const executionScrollRules = cssRules(".execution-scroll")
+    const graphRoundNodeRules = cssRules(".graph-round-node")
+    const graphSubtaskRules = cssRules(".graph-subtasks")
+    const parallelSubtaskRules = cssRules(".graph-subtasks.parallel")
+    const mobileParallelSubtaskRules = cssRules(".graph-subtasks.parallel", mobileStyles)
+
+    expect(executionScrollRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(executionScrollRules, "height")).toBe("auto")
+    expect(lastCssDeclaration(executionScrollRules, "max-height")).toBe("none")
+    expect(lastCssDeclaration(executionScrollRules, "overflow-x")).toBe("auto")
+    expect(lastCssDeclaration(executionScrollRules, "overflow-y")).toBe("visible")
+    expect(graphRoundNodeRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(graphRoundNodeRules, "width")).toBe("100%")
+    expect(lastCssDeclaration(graphRoundNodeRules, "max-width")).toBe("1080px")
+    expect(lastCssDeclaration(graphRoundNodeRules, "min-width")).toBe("0")
+    expect(lastCssDeclaration(graphSubtaskRules, "align-items")).toBe("start")
+    expect(parallelSubtaskRules).not.toHaveLength(0)
+    expect(parallelSubtaskRules.some((rule) => /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(240px,\s*1fr\)\)/.test(rule))).toBe(true)
+    expect(mobileParallelSubtaskRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(mobileParallelSubtaskRules, "grid-template-columns")).toBe("1fr")
+  })
+
+  it("preserves readable subtask output and responsive feedback", () => {
+    const subtaskOutputRules = cssRules(".subtask-node-output")
+    const subtaskOutputBodyRules = cssRules(".subtask-node-output > div")
+    const taskQuestionRules = cssRules(".task-four-question")
+    const subtaskNodeRules = cssRules(".graph-subtask-node")
+
+    expect(subtaskOutputRules).not.toHaveLength(0)
+    expect(subtaskOutputRules.every((rule) => !/max-height:\s*42px/.test(rule))).toBe(true)
+    expect(subtaskOutputBodyRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(subtaskOutputBodyRules, "white-space")).toBe("pre-wrap")
+    expect(lastCssDeclaration(subtaskOutputBodyRules, "overflow-wrap")).toBe("anywhere")
+    expect(taskQuestionRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(taskQuestionRules, "transition")).toMatch(/(?:transform|border-color|box-shadow)/)
+    expect(subtaskNodeRules).not.toHaveLength(0)
+    expect(lastCssDeclaration(subtaskNodeRules, "min-width")).toBe("0")
+    expect(lastCssDeclaration(subtaskNodeRules, "transition")).toMatch(/(?:transform|border-color|box-shadow)/)
   })
 })
 
@@ -121,22 +233,22 @@ describe("overview dashboard layout", () => {
   })
 
   it("uses two tablet columns and one mobile column", () => {
-    const tabletStyles = styles.slice(styles.indexOf("@media (max-width: 1024px)"))
-    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 767px)"))
+    const tabletStyles = atRuleContent("@media (max-width: 1024px)")
+    const mobileStyles = atRuleContent("@media (max-width: 767px)")
 
     expect(cssRule(".overview-metric-grid", tabletStyles)).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
     expect(cssRule(".overview-metric-grid", mobileStyles)).toMatch(/grid-template-columns:\s*1fr/)
   })
 
   it("allows the toolbar to wrap on tablets", () => {
-    const tabletStyles = styles.slice(styles.indexOf("@media (max-width: 1024px)"))
+    const tabletStyles = atRuleContent("@media (max-width: 1024px)")
 
     expect(cssRule(".top-toolbar", tabletStyles)).toMatch(/flex-wrap:\s*wrap/)
     expect(cssRule(".top-toolbar > .ant-flex", tabletStyles)).toMatch(/flex-wrap:\s*wrap/)
   })
 
   it("resets Ant Layout fixed widths on mobile", () => {
-    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 767px)"))
+    const mobileStyles = atRuleContent("@media (max-width: 767px)")
 
     expect(cssRule(".app-shell", mobileStyles)).toMatch(/display:\s*flex/)
     expect(cssRule(".app-shell", mobileStyles)).toMatch(/flex-direction:\s*column/)
