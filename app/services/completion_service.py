@@ -12,15 +12,11 @@ from app.core.enums import (
     TaskStatus,
     TaskType,
 )
-from app.core.model_client import (
-    evaluate_deliverable_requirements_with_model,
-    evaluate_success_criteria_with_model,
-)
+from app.core.model_client import evaluate_success_criteria_with_model
 from app.core.models import (
     Artifact,
     CompletionReport,
     CriterionResult,
-    DeliverableResult,
     Task,
     new_id,
     utc_now,
@@ -31,6 +27,7 @@ from app.services.deliverable_materializer import (
     ManagedDeliveryPathError,
 )
 from app.services.execution_service import ExecutionService
+from app.services.task_contract_service import TaskContractService
 from app.services import file_uri
 
 
@@ -59,12 +56,14 @@ class CompletionService:
         execution_service: ExecutionService | None = None,
         artifact_service: ArtifactService | None = None,
         deliverable_materializer: DeliverableMaterializer | None = None,
+        task_contract_service: TaskContractService | None = None,
     ) -> None:
         self.execution_service = execution_service or ExecutionService()
         self.artifact_service = artifact_service or ArtifactService()
         self.deliverable_materializer = (
             deliverable_materializer or DeliverableMaterializer()
         )
+        self.task_contract_service = task_contract_service or TaskContractService()
 
     def finalize(
         self,
@@ -78,12 +77,14 @@ class CompletionService:
         workflow_end_reached: bool = False,
         workflow_end_node_id: str | None = None,
         human_accepted: bool = False,
-        human_override: bool = False,
+        reuse_existing_evidence: bool = False,
         decided_by_type: str = "system",
         decided_by_id: str = "",
     ) -> CompletionReport:
+        if task.contract is not None:
+            task.contract = self.task_contract_service.normalize_contract(task.contract)
         criterion_results_supplied = criterion_results is not None
-        normalized_output = (
+        normalized_output = output if reuse_existing_evidence else (
             self.delivery_content(task, output)
             if candidate_status == TaskStatus.SUCCEEDED
             else output.strip()
@@ -91,64 +92,64 @@ class CompletionService:
         normalized_reason = reason.strip() or self._default_reason(candidate_status)
         normalized_results = [result.model_copy(deep=True) for result in criterion_results or []]
         artifact_gaps: list[str] = []
-        blocking_gaps: list[str] = []
-        reuse_managed_file = bool(
-            human_accepted
-            and any(
-                self._is_managed_file_candidate(task, artifact)
-                for artifact in self.artifact_service.current(task)
+        if not reuse_existing_evidence:
+            reuse_managed_file = bool(
+                human_accepted
+                and any(
+                    self._is_managed_file_candidate(task, artifact)
+                    for artifact in self.artifact_service.current(task)
+                )
             )
-        )
-        reuse_tool_file = bool(
-            candidate_status == TaskStatus.SUCCEEDED
-            and self._is_file_delivery(task)
-            and self._has_valid_tool_file_delivery(task)
-        )
-        if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
-            if not reuse_managed_file and not reuse_tool_file:
-                try:
-                    materialized = self.deliverable_materializer.materialize(
-                        task,
-                        normalized_output,
-                    )
+            reuse_tool_file = bool(
+                candidate_status == TaskStatus.SUCCEEDED
+                and self._is_file_delivery(task)
+                and self._has_valid_tool_file_delivery(task)
+            )
+            if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
+                if not reuse_managed_file and not reuse_tool_file:
                     try:
-                        content_bytes = (
-                            self.deliverable_materializer.read_managed_delivery(
-                                task,
-                                materialized.path.as_uri(),
-                            )
-                        )
-                    except ValueError:
-                        self.artifact_service.register_task_file_output(
+                        materialized = self.deliverable_materializer.materialize(
                             task,
-                            materialized,
+                            normalized_output,
                         )
-                    except OSError:
-                        artifact_gaps.append(
-                            self._invalid_managed_location_reason
-                        )
-                    else:
-                        if content_bytes != materialized.content.encode("utf-8"):
-                            artifact_gaps.append(
-                                "managed final delivery checksum does not match its content snapshot"
+                        try:
+                            content_bytes = (
+                                self.deliverable_materializer.read_managed_delivery(
+                                    task,
+                                    materialized.path.as_uri(),
+                                )
                             )
-                        else:
+                        except ValueError:
                             self.artifact_service.register_task_file_output(
                                 task,
                                 materialized,
                             )
-                except ManagedDeliveryPathError:
-                    artifact_gaps.append(self._invalid_managed_location_reason)
-                except ValueError:
-                    artifact_gaps.append(
-                        "managed final delivery materialization was rejected"
-                    )
-                except OSError:
-                    artifact_gaps.append(
-                        "managed final delivery could not be written"
-                    )
-        elif normalized_output and task.active_execution_id is not None:
-            self.artifact_service.register_task_output(task, normalized_output)
+                        except OSError:
+                            artifact_gaps.append(
+                                self._invalid_managed_location_reason
+                            )
+                        else:
+                            if content_bytes != materialized.content.encode("utf-8"):
+                                artifact_gaps.append(
+                                    "managed final delivery checksum does not match its content snapshot"
+                                )
+                            else:
+                                self.artifact_service.register_task_file_output(
+                                    task,
+                                    materialized,
+                                )
+                    except ManagedDeliveryPathError:
+                        artifact_gaps.append(self._invalid_managed_location_reason)
+                    except ValueError:
+                        artifact_gaps.append(
+                            "managed final delivery materialization was rejected"
+                        )
+                    except OSError:
+                        artifact_gaps.append(
+                            "managed final delivery could not be written"
+                        )
+            elif normalized_output and task.active_execution_id is not None:
+                self.artifact_service.register_task_output(task, normalized_output)
         current_artifacts = self.artifact_service.current(task)
         requested_artifact_ids = (
             [artifact.id for artifact in current_artifacts]
@@ -162,37 +163,27 @@ class CompletionService:
             for artifact_id in requested_artifact_ids
             if artifact_id not in resolved_ids
         ]
-        for artifact in resolved_artifacts:
-            if self._is_managed_file_candidate(task, artifact):
-                if not self._managed_file_location_is_valid(task, artifact.uri):
-                    self._invalidate_managed_file(
-                        task,
-                        artifact,
-                        self._invalid_managed_location_reason,
-                    )
-                elif not self._managed_file_uri_name_is_valid(task, artifact):
-                    self._revalidate_managed_file_name(task, artifact)
-                elif artifact.validation_status != ArtifactValidationStatus.INVALID:
-                    revalidated = self._revalidate_managed_file(task, artifact)
-                    if (
-                        revalidated.validation_status
-                        == ArtifactValidationStatus.VALID
-                        and not self._managed_file_name_is_valid(task, revalidated)
-                    ):
-                        self._revalidate_managed_file_name(task, revalidated)
-                continue
-            self.artifact_service.revalidate(task, artifact)
-        resolved_artifacts = self.artifact_service.resolve(task, requested_artifact_ids)
-        file_delivery_gaps: list[str] = []
-        if candidate_status == TaskStatus.SUCCEEDED and self._is_file_delivery(task):
-            file_delivery_gaps = self._file_delivery_gaps(
-                task,
-                [
-                    artifact
-                    for artifact in resolved_artifacts
-                    if artifact.validation_status == ArtifactValidationStatus.VALID
-                ],
-            )
+        if not reuse_existing_evidence:
+            for artifact in resolved_artifacts:
+                if self._is_managed_file_candidate(task, artifact):
+                    if not self._managed_file_location_is_valid(task, artifact.uri):
+                        self._invalidate_managed_file(
+                            task,
+                            artifact,
+                            self._invalid_managed_location_reason,
+                        )
+                    elif not self._managed_file_uri_name_is_valid(task, artifact):
+                        self._revalidate_managed_file_name(task, artifact)
+                    elif artifact.validation_status != ArtifactValidationStatus.INVALID:
+                        revalidated = self._revalidate_managed_file(task, artifact)
+                        if (
+                            revalidated.validation_status
+                            == ArtifactValidationStatus.VALID
+                            and not self._managed_file_name_is_valid(task, revalidated)
+                        ):
+                            self._revalidate_managed_file_name(task, revalidated)
+                    continue
+                self.artifact_service.revalidate(task, artifact)
             resolved_artifacts = self.artifact_service.resolve(
                 task,
                 requested_artifact_ids,
@@ -210,7 +201,6 @@ class CompletionService:
         selected_artifact_ids = {artifact.id for artifact in selected_artifacts}
         if (
             candidate_status == TaskStatus.SUCCEEDED
-            and not human_override
             and not criterion_results_supplied
         ):
             normalized_results = self.evaluate_criteria(task, normalized_output)
@@ -224,10 +214,6 @@ class CompletionService:
                 f"{artifact.validation_reason}"
             )
             artifact_gaps.append(gap)
-            if self._is_managed_file_candidate(task, artifact):
-                blocking_gaps.append(gap)
-        artifact_gaps.extend(file_delivery_gaps)
-        blocking_gaps.extend(file_delivery_gaps)
         for result in normalized_results:
             invalid_evidence_ids = [
                 artifact_id
@@ -245,44 +231,20 @@ class CompletionService:
             ]
         effective_human_acceptance = human_accepted
         terminal_status = candidate_status
-        deliverable_results: list[DeliverableResult] = []
         gaps: list[str] = []
-        awaiting_human_acceptance = False
         awaiting_human_decision = False
 
         if candidate_status == TaskStatus.SUCCEEDED:
-            if not human_override:
-                deliverable_results, selected_artifacts = self._evaluate_deliverables(
-                    task,
-                    selected_artifacts,
-                )
-                normalized_results, gaps = self._evaluate_success(
-                    task,
-                    normalized_output,
-                    normalized_results,
-                    deliverable_results,
-                    selected_artifacts,
-                    artifact_gaps,
-                    workflow_end_reached,
-                )
-            if blocking_gaps:
-                gaps = list(dict.fromkeys([*gaps, *blocking_gaps]))
+            normalized_results, gaps = self._evaluate_success(
+                task,
+                normalized_output,
+                normalized_results,
+                workflow_end_reached,
+            )
             if gaps:
-                if self._requires_human_acceptance(task, effective_human_acceptance):
-                    gaps.append("human acceptance is required")
                 awaiting_human_decision = True
                 terminal_status = TaskStatus.RUNNING
                 normalized_reason = f"Awaiting human adjudication: {'; '.join(gaps)}"
-            elif self._requires_human_acceptance(task, effective_human_acceptance):
-                awaiting_human_acceptance = True
-                terminal_status = TaskStatus.RUNNING
-                normalized_reason = "Awaiting required human acceptance"
-                gaps.append("human acceptance is required")
-        elif candidate_status == TaskStatus.BLOCKED:
-            awaiting_human_decision = True
-            terminal_status = TaskStatus.RUNNING
-            gaps.append(normalized_reason)
-            normalized_reason = f"Awaiting human adjudication: {normalized_reason}"
         elif candidate_status not in self._non_success_statuses:
             terminal_status = TaskStatus.BLOCKED
             gaps.append(f"unsupported terminal status: {candidate_status.value}")
@@ -295,7 +257,7 @@ class CompletionService:
             terminal_status=terminal_status,
             completion_reason=normalized_reason,
             criterion_results=normalized_results,
-            deliverable_results=deliverable_results,
+            deliverable_results=[],
             artifact_ids=[artifact.id for artifact in selected_artifacts],
             workflow_end_node_id=workflow_end_node_id if workflow_end_reached else None,
             human_accepted=effective_human_acceptance,
@@ -304,12 +266,16 @@ class CompletionService:
             decided_by_type=decided_by_type,
             decided_by_id=decided_by_id,
             decided_at=utc_now(),
-            evidence_summary="; ".join(gaps) if gaps else self._evidence_summary(normalized_results),
+            evidence_summary=(
+                "; ".join([*gaps, *artifact_gaps])
+                if gaps or artifact_gaps
+                else self._evidence_summary(normalized_results)
+            ),
         )
         task.task_status = terminal_status
         task.current_node = (
             CurrentNode.HUMAN_INTERVENTION
-            if awaiting_human_acceptance or awaiting_human_decision
+            if awaiting_human_decision
             else CurrentNode.COMPLETION_JUDGE
         )
         task.final_output = normalized_output
@@ -369,16 +335,11 @@ class CompletionService:
         task: Task,
         output: str,
         criterion_results: list[CriterionResult],
-        deliverable_results: list[DeliverableResult],
-        selected_artifacts: list[Artifact],
-        artifact_gaps: list[str],
         workflow_end_reached: bool,
     ) -> tuple[list[CriterionResult], list[str]]:
-        gaps: list[str] = list(artifact_gaps)
-        if not output:
+        gaps: list[str] = []
+        if not output.strip():
             gaps.append("output is empty")
-        if not selected_artifacts:
-            gaps.append("at least one valid current execution artifact is required")
 
         blocking_subtasks = [
             subtask
@@ -410,140 +371,7 @@ class CompletionService:
             )
             gaps.extend(f"criterion {criterion_id} has no passed evidence" for criterion_id in missing_criteria)
 
-        gaps.extend(
-            f"deliverable requirement {result.requirement_id} is {result.status.value}: {result.reason}"
-            for result in deliverable_results
-            if result.status != CriterionResultStatus.PASSED
-        )
         return criterion_results, gaps
-
-    @staticmethod
-    def _requires_human_acceptance(task: Task, human_accepted: bool) -> bool:
-        return bool(
-            task.contract is not None
-            and task.contract.requires_human_acceptance
-            and not human_accepted
-        )
-
-    def _evaluate_deliverables(
-        self,
-        task: Task,
-        selected_artifacts: list[Artifact],
-    ) -> tuple[list[DeliverableResult], list[Artifact]]:
-        contract = task.contract
-        if contract is None or not contract.deliverable_requirements:
-            return [], selected_artifacts
-
-        deliverable_artifacts = (
-            self._delivery_file_artifacts(task, selected_artifacts)
-            if self._is_file_delivery(task)
-            else selected_artifacts
-        )
-
-        results: list[DeliverableResult] = []
-        uncovered_requirements = []
-        for requirement in contract.deliverable_requirements:
-            artifact_ids = [
-                artifact.id
-                for artifact in deliverable_artifacts
-                if requirement.id in artifact.deliverable_requirement_ids
-            ]
-            if artifact_ids:
-                results.append(
-                    DeliverableResult(
-                        requirement_id=requirement.id,
-                        status=CriterionResultStatus.PASSED,
-                        artifact_ids=artifact_ids,
-                        reason="Covered by explicit artifact mapping",
-                    )
-                )
-            else:
-                uncovered_requirements.append(requirement)
-
-        evaluated_by_id: dict[str, DeliverableResult] = {}
-        if uncovered_requirements:
-            evaluation_contract = contract.model_copy(
-                update={"deliverable_requirements": uncovered_requirements},
-                deep=True,
-            )
-            evaluation_task = task.model_copy(
-                update={"contract": evaluation_contract},
-                deep=True,
-            )
-            evaluated = evaluate_deliverable_requirements_with_model(
-                evaluation_task,
-                deliverable_artifacts,
-            )
-            if evaluated is None:
-                evaluated = [
-                    DeliverableResult(
-                        requirement_id=requirement.id,
-                        status=CriterionResultStatus.PENDING,
-                        reason="Deliverable evaluator unavailable",
-                    )
-                    for requirement in uncovered_requirements
-                ]
-            evaluated_by_id = {
-                result.requirement_id: result
-                for result in evaluated
-                if result.requirement_id in {item.id for item in uncovered_requirements}
-            }
-
-        explicit_by_id = {result.requirement_id: result for result in results}
-        selected_ids = {artifact.id for artifact in deliverable_artifacts}
-        normalized_results: list[DeliverableResult] = []
-        requirement_updates: dict[str, list[str]] = {}
-        for requirement in contract.deliverable_requirements:
-            result = explicit_by_id.get(requirement.id) or evaluated_by_id.get(requirement.id)
-            if result is None:
-                result = DeliverableResult(
-                    requirement_id=requirement.id,
-                    status=CriterionResultStatus.PENDING,
-                    reason="Deliverable evaluation did not return this requirement",
-                )
-            elif any(
-                artifact_id not in selected_ids for artifact_id in result.artifact_ids
-            ):
-                result = result.model_copy(
-                    update={
-                        "status": CriterionResultStatus.PENDING,
-                        "artifact_ids": [],
-                        "reason": "Deliverable result references artifacts outside the selected set",
-                    }
-                )
-            elif result.status == CriterionResultStatus.PASSED and not result.artifact_ids:
-                result = result.model_copy(
-                    update={
-                        "status": CriterionResultStatus.PENDING,
-                        "reason": "Passed deliverable result must reference selected artifacts",
-                    }
-                )
-            normalized_results.append(result)
-            if result.status == CriterionResultStatus.PASSED:
-                for artifact_id in result.artifact_ids:
-                    requirement_updates.setdefault(artifact_id, []).append(requirement.id)
-
-        for artifact in deliverable_artifacts:
-            added_requirement_ids = requirement_updates.get(artifact.id, [])
-            if not added_requirement_ids:
-                continue
-            updated_requirement_ids = list(
-                dict.fromkeys(
-                    artifact.deliverable_requirement_ids + added_requirement_ids
-                )
-            )
-            if updated_requirement_ids == artifact.deliverable_requirement_ids:
-                continue
-            self.artifact_service.replace_current(
-                task,
-                artifact.model_copy(
-                    update={"deliverable_requirement_ids": updated_requirement_ids}
-                ),
-            )
-        return normalized_results, self.artifact_service.resolve(
-            task,
-            [artifact.id for artifact in selected_artifacts],
-        )
 
     def _file_delivery_gaps(
         self,

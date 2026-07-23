@@ -9,13 +9,12 @@ import {
   confirmationDraftFromTask,
   confirmationTaskIdsToCancelOnClose,
   isTaskAwaitingConfirmation,
-  setConfirmationDeliverableKind,
   validateConfirmationDraft,
 } from "./taskConfirmation"
 
 
 describe("task confirmation draft", () => {
-  it("uses and cleans task draft contract suggestions while preserving submitted title", () => {
+  it("uses visible task draft suggestions while normalizing hidden contract fields", () => {
     const task = {
       id: "task_1",
       title: "Fallback title",
@@ -39,12 +38,7 @@ describe("task confirmation draft", () => {
       description: "输出可评审方案",
       goal: "完成技术方案",
       deliverableGoal: "一份可评审文档",
-      deliverableKind: "file",
-      deliverableFormat: "markdown",
-      deliverableFilename: "implementation-plan.MD",
-      deliverableRequirements: [],
       successCriteria: ["包含架构图", "包含风险清单", "评审通过", "关键风险有应对措施"],
-      requiresHumanAcceptance: true,
     })
   })
 
@@ -65,36 +59,30 @@ describe("task confirmation draft", () => {
     expect(draft.description).toContain("将调查结果写入文档")
   })
 
-  it("only accepts exact delivery suggestions and keeps file drafts editable", () => {
-    const invalidKind = confirmationDraftFromTask({
-      id: "task_invalid_kind",
-      title: "无效建议",
+  it("merges legacy criteria while ignoring hidden incident draft fields", () => {
+    const draft = confirmationDraftFromTask({
+      id: "task_incident",
+      title: "bug修复3",
       draft: {
-        deliverable_kind: "File",
-        deliverable_format: "text",
-        deliverable_filename: "notes.txt",
-      },
-    } as unknown as Task)
-    const invalidFormat = confirmationDraftFromTask({
-      id: "task_invalid_format",
-      title: "文件建议",
-      draft: {
+        goal: "修复问题",
+        deliverable_goal: "提交修复结果",
         deliverable_kind: "file",
-        deliverable_format: "md",
-        deliverable_filename: "  plan  ",
+        deliverable_format: "text",
+        deliverable_filename: "bug1_fix_code.patch",
+        deliverable_requirements: ["输出根因分析", "提交修复代码"],
+        success_criteria: ["提交修复代码", "测试通过"],
+        requires_human_acceptance: true,
       },
     } as unknown as Task)
 
-    expect(invalidKind).toMatchObject({
-      deliverableKind: "text",
-      deliverableFormat: null,
-      deliverableFilename: "",
+    expect(draft).toEqual({
+      title: "bug修复3",
+      description: "bug修复3",
+      goal: "修复问题",
+      deliverableGoal: "提交修复结果",
+      successCriteria: ["输出根因分析", "提交修复代码", "测试通过"],
     })
-    expect(invalidFormat).toMatchObject({
-      deliverableKind: "file",
-      deliverableFormat: "markdown",
-      deliverableFilename: "plan",
-    })
+    expect(validateConfirmationDraft(draft)).toEqual([])
   })
 
   it("builds editable defaults for manual or legacy tasks without suggestions", () => {
@@ -111,9 +99,6 @@ describe("task confirmation draft", () => {
     expect(draft.description).toBe("完成客户资料审核并归档")
     expect(draft.goal).toBe("完成客户资料审核并归档")
     expect(draft.deliverableGoal).toContain("客户交付流程")
-    expect(draft.deliverableKind).toBe("text")
-    expect(draft.deliverableFormat).toBeNull()
-    expect(draft.deliverableFilename).toBe("")
     expect(draft.successCriteria).toHaveLength(1)
     expect(draft.successCriteria[0]).toContain("完成客户资料审核并归档")
     expect(validateConfirmationDraft(draft)).toEqual([])
@@ -125,12 +110,7 @@ describe("task confirmation draft", () => {
       description: "描述",
       goal: "  ",
       deliverableGoal: "",
-      deliverableKind: "text",
-      deliverableFormat: null,
-      deliverableFilename: "",
-      deliverableRequirements: [""],
       successCriteria: [" ", "\n"],
-      requiresHumanAcceptance: false,
     })).toEqual([
       "请填写任务目标",
       "请填写交付物目标",
@@ -158,120 +138,45 @@ describe("task confirmation draft", () => {
     }).contract.success_criteria).toHaveLength(10)
   })
 
-  it("validates file format, plain filename and matching extension", () => {
-    const baseDraft = {
-      title: "任务",
-      description: "描述",
-      goal: "目标",
-      deliverableGoal: "交付物",
-      deliverableKind: "file" as const,
-      deliverableFormat: "markdown" as const,
-      deliverableFilename: "",
-      deliverableRequirements: [],
-      successCriteria: ["可验收"],
-      requiresHumanAcceptance: false,
-    }
+  it("deduplicates criteria case-insensitively before applying the ten item limit", () => {
+    const boundaryCriteria = [
+      "Criterion 1",
+      "criterion 1",
+      ...Array.from({ length: 8 }, (_, index) => `标准 ${index + 2}`),
+    ]
+    const draft = confirmationDraftFromTask({
+      id: "task_casefold_boundary",
+      title: "验收标准边界",
+      draft: {
+        deliverable_requirements: boundaryCriteria,
+        success_criteria: ["CRITERION 1", "最后真实标准"],
+      },
+    } as unknown as Task)
+    const expected = [
+      "Criterion 1",
+      ...Array.from({ length: 8 }, (_, index) => `标准 ${index + 2}`),
+      "最后真实标准",
+    ]
 
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFormat: null,
-    })).toContain("请选择文件格式")
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "folder/plan.md",
-    })).toContain("文件名不能包含路径")
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "CON.md",
-    })).toContain("文件名不能包含路径或 Windows 非法字符")
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "plan\u007f.md",
-    })).toContain("文件名不能包含路径或 Windows 非法字符")
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "plan.txt",
-    })).toContain("文件扩展名与所选格式不匹配，应使用 .md")
+    expect(draft.successCriteria).toEqual(expected)
+    expect(buildTaskConfirmPayload(draft).contract.success_criteria.map((item) => item.description)).toEqual(expected)
   })
 
-  it("validates the final filename UTF-8 byte limit", () => {
-    const baseDraft = {
-      title: "任务",
-      description: "描述",
-      goal: "目标",
-      deliverableGoal: "交付物",
-      deliverableKind: "file" as const,
-      deliverableFormat: "markdown" as const,
-      deliverableRequirements: [],
-      successCriteria: ["可验收"],
-      requiresHumanAcceptance: false,
-    }
-
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "文".repeat(84),
-    })).toEqual([])
-    expect(validateConfirmationDraft({
-      ...baseDraft,
-      deliverableFilename: "文".repeat(85),
-    })).toContain("文件名不能超过 255 个 UTF-8 字节")
-  })
-
-  it("accepts empty, extensionless and case-insensitive matching filenames", () => {
-    const baseDraft = {
-      title: "任务",
-      description: "描述",
-      goal: "目标",
-      deliverableGoal: "交付物",
-      deliverableKind: "file" as const,
-      deliverableFormat: "markdown" as const,
-      deliverableRequirements: [],
-      successCriteria: ["可验收"],
-      requiresHumanAcceptance: false,
-    }
-
-    for (const deliverableFilename of ["", "delivery", "  PLAN.MD  "]) {
-      expect(validateConfirmationDraft({
-        ...baseDraft,
-        deliverableFilename,
-      })).toEqual([])
-    }
-  })
-
-  it("clears file-only values when delivery switches back to page text", () => {
-    const fileDraft = setConfirmationDeliverableKind(
-      confirmationDraftFromTask({ id: "task_switch", title: "切换任务" } as Task),
-      "file",
-    )
-    expect(fileDraft).toMatchObject({
-      deliverableKind: "file",
-      deliverableFormat: "markdown",
-      deliverableFilename: "",
-    })
-    expect(setConfirmationDeliverableKind({
-      ...fileDraft,
-      deliverableFormat: "text",
-      deliverableFilename: "notes.txt",
-    }, "text")).toMatchObject({
-      deliverableKind: "text",
-      deliverableFormat: null,
-      deliverableFilename: "",
-    })
-  })
-
-  it("builds a cleaned confirmation contract and leaves item ids empty", () => {
+  it("builds a confirmation contract from visible fields only", () => {
     const payload = buildTaskConfirmPayload(
       {
+        ...confirmationDraftFromTask({ id: "task_payload" } as Task),
         title: "  发布方案  ",
         description: "  输出实施方案  ",
         goal: "  完成发布设计  ",
         deliverableGoal: "  可执行方案  ",
-        deliverableKind: "file",
-        deliverableFormat: "markdown",
-        deliverableFilename: "  PLAN.MD  ",
-        deliverableRequirements: ["  包含回滚步骤  ", "", "包含负责人"],
-        successCriteria: ["  评审通过  ", "", "可按步骤执行"],
-        requiresHumanAcceptance: true,
+        successCriteria: [
+          "  包含回滚步骤  ",
+          "包含负责人",
+          "  评审通过  ",
+          "",
+          "可按步骤执行",
+        ],
       },
       {
         execution_mode: "async",
@@ -291,39 +196,13 @@ describe("task confirmation draft", () => {
       contract: {
         goal: "完成发布设计",
         deliverable_goal: "可执行方案",
-        deliverable_kind: "file",
-        deliverable_format: "markdown",
-        deliverable_filename: "PLAN.MD",
-        deliverable_requirements: [],
         success_criteria: [
           { id: "", description: "包含回滚步骤" },
           { id: "", description: "包含负责人" },
           { id: "", description: "评审通过" },
           { id: "", description: "可按步骤执行" },
         ],
-        requires_human_acceptance: true,
       },
-    })
-  })
-
-  it("forces page-text payloads to clear file delivery fields", () => {
-    const payload = buildTaskConfirmPayload({
-      title: "页面交付",
-      description: "直接展示结果",
-      goal: "完成分析",
-      deliverableGoal: "分析结论",
-      deliverableKind: "text",
-      deliverableFormat: "markdown",
-      deliverableFilename: "stale.md",
-      deliverableRequirements: [],
-      successCriteria: ["结论清晰"],
-      requiresHumanAcceptance: false,
-    })
-
-    expect(payload.contract).toMatchObject({
-      deliverable_kind: "text",
-      deliverable_format: null,
-      deliverable_filename: "",
     })
   })
 
@@ -357,9 +236,7 @@ describe("task confirmation draft", () => {
       ...confirmationDraftFromTask(task),
       goal: "  恢复并执行任务  ",
       deliverableGoal: "  可评审的恢复结果  ",
-      deliverableRequirements: ["  包含恢复说明  "],
-      successCriteria: ["  可以继续执行  "],
-      requiresHumanAcceptance: true,
+      successCriteria: ["  包含恢复说明  ", "  可以继续执行  "],
     }
 
     expect(buildTaskConfirmationRequests(
@@ -376,15 +253,10 @@ describe("task confirmation draft", () => {
           contract: {
             goal: "恢复并执行任务",
             deliverable_goal: "可评审的恢复结果",
-            deliverable_kind: "text",
-            deliverable_format: null,
-            deliverable_filename: "",
-            deliverable_requirements: [],
             success_criteria: [
               { id: "", description: "包含恢复说明" },
               { id: "", description: "可以继续执行" },
             ],
-            requires_human_acceptance: true,
           },
         },
       },
@@ -395,16 +267,12 @@ describe("task confirmation draft", () => {
     const requests = ["task_1", "task_2", "task_3"].map((taskId) => ({
       taskId,
       payload: buildTaskConfirmPayload({
+        ...confirmationDraftFromTask({ id: taskId } as Task),
         title: taskId,
         description: `${taskId} description`,
         goal: `${taskId} goal`,
         deliverableGoal: `${taskId} deliverable`,
-        deliverableKind: "text",
-        deliverableFormat: null,
-        deliverableFilename: "",
-        deliverableRequirements: [],
         successCriteria: [`${taskId} succeeds`],
-        requiresHumanAcceptance: false,
       }),
     }))
     const confirm = vi.fn(async (taskId: string) => {
@@ -437,16 +305,12 @@ describe("task confirmation draft", () => {
     const requests = ["task_1", "task_2"].map((taskId) => ({
       taskId,
       payload: buildTaskConfirmPayload({
+        ...confirmationDraftFromTask({ id: taskId } as Task),
         title: taskId,
         description: `${taskId} description`,
         goal: `${taskId} goal`,
         deliverableGoal: `${taskId} deliverable`,
-        deliverableKind: "text",
-        deliverableFormat: null,
-        deliverableFilename: "",
-        deliverableRequirements: [],
         successCriteria: [`${taskId} succeeds`],
-        requiresHumanAcceptance: false,
       }),
     }))
     const confirm = vi.fn(async (taskId: string) => {

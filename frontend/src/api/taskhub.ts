@@ -24,15 +24,10 @@ export interface TaskContractItem {
   description: string
 }
 
-export interface TaskContractInput {
+export interface TaskConfirmContractInput {
   goal: string
   deliverable_goal: string
-  deliverable_kind?: DeliverableKind
-  deliverable_format?: DeliverableFormat | null
-  deliverable_filename?: string
-  deliverable_requirements?: TaskContractItem[]
   success_criteria: TaskContractItem[]
-  requires_human_acceptance?: boolean
 }
 
 export interface TaskContract {
@@ -310,7 +305,7 @@ export interface TaskRequestResponse {
 export interface TaskConfirmPayload {
   title: string
   description: string
-  contract?: TaskContractInput
+  contract?: TaskConfirmContractInput
   execution_mode?: "sync" | "async"
   default_assignee_user_id?: string
   default_assignee_user_name?: string
@@ -580,9 +575,19 @@ export function uploadTaskAttachment(file: File) {
 }
 
 export function confirmTask(taskId: string, payload: TaskConfirmPayload) {
+  const requestPayload = payload.contract
+    ? {
+        ...payload,
+        contract: {
+          goal: payload.contract.goal,
+          deliverable_goal: payload.contract.deliverable_goal,
+          success_criteria: payload.contract.success_criteria,
+        },
+      }
+    : payload
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/confirm`, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   })
 }
 

@@ -138,7 +138,6 @@ import {
   taskDetailTypeBadge,
   taskExecutionHistory,
   taskFourQuestions,
-  taskHumanAcceptanceText,
   taskInterventionView,
   workflowDefinitionForTask,
   workflowNodeStateColor as detailWorkflowNodeStateColor,
@@ -1727,9 +1726,9 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
 
   useEffect(() => {
     if (needsIntervention) {
-      setOutput(intervention.awaitingAcceptance ? "" : task.final_output || "")
+      setOutput(task.final_output || "")
     }
-  }, [needsIntervention, intervention.awaitingAcceptance, task.id, task.final_output])
+  }, [needsIntervention, task.id, task.final_output])
 
   if (!needsIntervention) return null
 
@@ -1762,7 +1761,7 @@ function TaskInterventionPanel({ task, onTaskUpdated }: { task: Task; onTaskUpda
           <h4>{intervention.title}</h4>
         </div>
         <Tag color="orange">
-          {intervention.awaitingAdjudication ? "待裁决" : intervention.awaitingAcceptance ? "待验收" : "待处理"}
+          {intervention.awaitingAdjudication ? "待裁决" : "待处理"}
         </Tag>
       </header>
       <p>{intervention.description}</p>
@@ -1930,7 +1929,6 @@ function ExecutionHistory({ task }: { task: Task }) {
                     <p>{execution.report.completionReason || "未记录完成原因"}</p>
                     {execution.report.evidenceSummary && <small>{execution.report.evidenceSummary}</small>}
                     <div className="execution-report-meta">
-                      <span>人工验收：{taskHumanAcceptanceText(execution.report)}</span>
                       <span>
                         判定人：{execution.report.decidedById || execution.report.decidedByType || "-"}
                       </span>

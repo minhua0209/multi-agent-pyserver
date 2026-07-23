@@ -359,6 +359,32 @@ class TaskConfirm(BaseModel):
     default_assignee_user_name: str = ""
     default_assignee_role: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_contract_compatibility_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        contract = value.get("contract")
+        if isinstance(contract, TaskContractInput):
+            normalized_contract = contract.model_dump(
+                include=set(TaskContractInput.model_fields)
+            )
+        elif isinstance(contract, dict):
+            normalized_contract = dict(contract)
+        else:
+            return value
+        normalized_contract.update(
+            {
+                "deliverable_kind": "text",
+                "deliverable_format": None,
+                "deliverable_filename": "",
+                "requires_human_acceptance": False,
+            }
+        )
+        normalized_value = dict(value)
+        normalized_value["contract"] = normalized_contract
+        return normalized_value
+
 
 class ExecutionResultCreate(BaseModel):
     result_status: ResultStatus

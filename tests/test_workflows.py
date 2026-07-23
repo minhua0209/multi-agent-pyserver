@@ -1358,11 +1358,11 @@ def test_workflow_template_does_not_succeed_when_condition_leaves_no_path(tmp_pa
         },
     ).json()
 
-    assert resumed["task_status"] == "running"
-    assert resumed["current_node"] == "human_intervention"
+    assert resumed["task_status"] == "blocked"
+    assert resumed["current_node"] == "completion_judge"
     assert "没有可继续执行的节点" in resumed["final_output"]
-    assert resumed["completion_report"]["terminal_status"] == "running"
-    assert resumed["completion_report"]["awaiting_human_decision"] is True
+    assert resumed["completion_report"]["terminal_status"] == "blocked"
+    assert resumed["completion_report"]["awaiting_human_decision"] is False
     assert resumed["completion_report"]["workflow_end_node_id"] is None
 
 
@@ -1572,7 +1572,7 @@ def test_workflow_completion_normalizes_delivery_content_before_evaluation_and_f
     ]
 
 
-def test_workflow_human_acceptance_preserves_end_evidence_until_approved(
+def test_workflow_completion_ignores_independent_human_acceptance_metadata(
     tmp_path: Path,
 ) -> None:
     client = TestClient(
@@ -1633,14 +1633,16 @@ def test_workflow_human_acceptance_preserves_end_evidence_until_approved(
             },
         },
     ).json()
-    pending_artifact_ids = [artifact["id"] for artifact in pending["artifacts"]]
+    artifact_ids = [artifact["id"] for artifact in pending["artifacts"]]
 
-    assert pending["task_status"] == "running"
-    assert pending["current_node"] == "human_intervention"
-    assert pending["completion_report"]["terminal_status"] == "running"
+    assert pending["task_status"] == "succeeded"
+    assert pending["current_node"] == "completion_judge"
+    assert pending["completion_report"]["terminal_status"] == "succeeded"
     assert pending["completion_report"]["workflow_end_node_id"] == "end_approved"
     assert pending["completion_report"]["criterion_results"][0]["status"] == "passed"
-    assert pending["executions"][0]["finished_at"] is None
+    assert pending["completion_report"]["human_accepted"] is False
+    assert pending["executions"][0]["finished_at"] is not None
+    assert [artifact["id"] for artifact in pending["artifacts"]] == artifact_ids
 
     response = client.post(
         f"/api/v1/tasks/{created['id']}/result",
@@ -1651,10 +1653,4 @@ def test_workflow_human_acceptance_preserves_end_evidence_until_approved(
         },
     )
 
-    assert response.status_code == 200
-    accepted = response.json()
-    assert accepted["task_status"] == "succeeded"
-    assert accepted["completion_report"]["human_accepted"] is True
-    assert accepted["completion_report"]["workflow_end_node_id"] == "end_approved"
-    assert [artifact["id"] for artifact in accepted["artifacts"]] == pending_artifact_ids
-    assert accepted["executions"][0]["finished_at"] is not None
+    assert response.status_code == 409

@@ -1203,8 +1203,7 @@ tr.selected td {
   padding-top: 8px;
 }
 
-.confirmation-list-heading,
-.confirmation-switch-row {
+.confirmation-list-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1240,23 +1239,6 @@ tr.selected td {
   min-height: 32px;
   display: flex;
   align-items: center;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.confirmation-switch-row {
-  grid-column: 1 / -1;
-  border-top: 1px solid rgb(199 210 254 / 0.62);
-  padding-top: 10px;
-}
-
-.confirmation-switch-row > div {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.confirmation-switch-row span {
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -4677,7 +4659,6 @@ button.workflow-agent-card:focus-visible {
 }
 
 .confirmation-list-field,
-.confirmation-switch-row,
 .task-four-question,
 .detail-meta-strip span,
 .detail-text-block h4,
@@ -5306,7 +5287,6 @@ tr.selected td {
     flex-wrap: wrap;
   }
 
-  .confirmation-switch-row,
   .rerun-mode-field,
   .task-artifact-heading {
     align-items: stretch;

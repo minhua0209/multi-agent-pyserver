@@ -2,13 +2,21 @@ import hashlib
 import json
 from threading import RLock, Thread
 
-from app.core.enums import CurrentNode, ResultStatus, TaskStatus, TaskType, UserRole
+from app.core.enums import (
+    CriterionResultStatus,
+    CurrentNode,
+    ResultStatus,
+    TaskStatus,
+    TaskType,
+    UserRole,
+)
 from app.core.config import require_system_mock_fallback_enabled
 from app.core.model_client import recognize_tasks_with_model
 from app.core.mock_llm import (
     mock_intent_recognitions,
 )
 from app.core.models import (
+    CriterionResult,
     Event,
     ExecutionResultCreate,
     SubTask,
@@ -118,6 +126,7 @@ class TaskService:
             self.execution_service,
             self.artifact_service,
             self.deliverable_materializer,
+            self.task_contract_service,
         )
         self.task_graph = TaskGraphRunner(
             agent_registry,
@@ -132,6 +141,80 @@ class TaskService:
         )
         self._task_locks_guard = RLock()
         self._task_locks = {}
+        self._migrate_criteria_only_tasks()
+
+    def _migrate_criteria_only_tasks(self) -> None:
+        for stored_task in self.store.list():
+            task = stored_task.model_copy(deep=True)
+            migrated = False
+            had_legacy_human_acceptance_gate = bool(
+                task.contract is not None
+                and task.contract.requires_human_acceptance
+            )
+            if task.contract is not None:
+                normalized_contract = self.task_contract_service.normalize_contract(
+                    task.contract
+                )
+                if normalized_contract != task.contract:
+                    task.contract = normalized_contract
+                    migrated = True
+
+            legacy_report = self._legacy_pending_acceptance_report(
+                task,
+                had_legacy_human_acceptance_gate=had_legacy_human_acceptance_gate,
+            )
+            if legacy_report is not None:
+                self.completion_service.finalize(
+                    task,
+                    candidate_status=TaskStatus.SUCCEEDED,
+                    output=task.final_output,
+                    reason="Migrated legacy pending acceptance to criteria-only completion",
+                    criterion_results=legacy_report.criterion_results,
+                    artifact_ids=legacy_report.artifact_ids,
+                    workflow_end_reached=bool(legacy_report.workflow_end_node_id),
+                    workflow_end_node_id=legacy_report.workflow_end_node_id,
+                    human_accepted=legacy_report.human_accepted,
+                    reuse_existing_evidence=True,
+                    decided_by_type="system",
+                    decided_by_id="criteria_only_migration",
+                )
+                migrated = True
+
+            if not migrated:
+                continue
+            task.events.append(
+                self._event(
+                    "criteria_only_migrated",
+                    "Legacy completion contract migrated to visible success criteria",
+                )
+            )
+            self.store.save(task)
+
+    def _legacy_pending_acceptance_report(
+        self,
+        task: Task,
+        *,
+        had_legacy_human_acceptance_gate: bool,
+    ):
+        report = task.completion_report
+        active_execution = self.execution_service.active(task)
+        if (
+            not had_legacy_human_acceptance_gate
+            or task.task_status != TaskStatus.RUNNING
+            or task.current_node != CurrentNode.HUMAN_INTERVENTION
+            or active_execution is None
+            or active_execution.status != TaskStatus.RUNNING
+            or active_execution.finished_at is not None
+            or report is None
+            or report.execution_id != active_execution.id
+            or report.terminal_status != TaskStatus.RUNNING
+            or report.awaiting_human_decision
+            or report.human_accepted
+            or report.decided_by_type != "system"
+            or active_execution.completion_report != report
+        ):
+            return None
+        return report
 
     def create_request(self, payload: TaskRequestCreate, created_by: User | None = None) -> TaskRequestResponse:
         request_id = new_id("req")
@@ -389,7 +472,7 @@ class TaskService:
             )
             if candidate_status != TaskStatus.SUCCEEDED or payload.should_complete:
                 result_output = (
-                    task.final_output.strip()
+                    task.final_output.strip() or payload.output.strip()
                     if pending_review is not None
                     else payload.output.strip() or task.final_output.strip() or task.context.summary.strip()
                 )
@@ -401,13 +484,31 @@ class TaskService:
                     or (payload.output.strip() if pending_review is not None else "")
                     or f"Execution result reported {payload.result_status.value}"
                 )
+                adjudicated_criteria = None
+                if pending_adjudication and candidate_status == TaskStatus.SUCCEEDED:
+                    evidence_text = payload.output.strip() or "Human adjudication approved completion"
+                    decided_by = current_user.name if current_user else "external executor"
+                    adjudicated_criteria = [
+                        CriterionResult(
+                            criterion_id=criterion.id,
+                            status=CriterionResultStatus.PASSED,
+                            evidence_text=evidence_text,
+                            reason=(
+                                f"Human adjudication by {decided_by} confirmed visible "
+                                f"criterion: {criterion.description}"
+                            ),
+                        )
+                        for criterion in task.contract.success_criteria
+                    ]
                 report = self.completion_service.finalize(
                     task,
                     candidate_status=candidate_status,
                     output=result_output,
                     reason=reason,
                     criterion_results=(
-                        pending_review.criterion_results
+                        adjudicated_criteria
+                        if adjudicated_criteria is not None
+                        else pending_review.criterion_results
                         if pending_review is not None
                         else payload.criterion_results
                     ),
@@ -426,7 +527,6 @@ class TaskService:
                         else None
                     ),
                     human_accepted=human_accepted,
-                    human_override=pending_adjudication,
                     decided_by_type="human" if current_user else "external_executor",
                     decided_by_id=current_user.id if current_user else "",
                 )
@@ -442,17 +542,6 @@ class TaskService:
         self._resume_unblocked_tasks()
         return saved
 
-    def _pending_human_acceptance_report(self, task: Task):
-        report = self._pending_human_review_report(task)
-        if (
-            report is None
-            or report.awaiting_human_decision
-            or task.contract is None
-            or not task.contract.requires_human_acceptance
-        ):
-            return None
-        return report
-
     def _pending_human_review_report(self, task: Task):
         report = task.completion_report
         active_execution = self.execution_service.active(task)
@@ -465,13 +554,8 @@ class TaskService:
             or report is None
             or report.execution_id != active_execution.id
             or report.terminal_status != TaskStatus.RUNNING
-            or report.human_accepted
-            or report.decided_by_type != "system"
+            or not report.awaiting_human_decision
             or active_execution.completion_report != report
-        ):
-            return None
-        if not report.awaiting_human_decision and (
-            task.contract is None or not task.contract.requires_human_acceptance
         ):
             return None
         return report
@@ -551,6 +635,11 @@ class TaskService:
                 dependencies_satisfied=dependencies_satisfied,
                 preflight=preflight,
             )
+            if task.contract is not None:
+                task.contract = self.task_contract_service.normalize_contract(
+                    task.contract
+                )
+                execution.contract_snapshot = task.contract.model_copy(deep=True)
             task.events.append(
                 self._event(
                     "task_rerun_created",
@@ -1029,13 +1118,41 @@ class TaskService:
             return raw_draft
         return TaskDraft.model_validate(raw_draft)
 
+    @staticmethod
+    def _merge_draft_acceptance_criteria(drafts: list[TaskDraft]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        descriptions = [
+            requirement
+            for draft in drafts
+            for requirement in draft.deliverable_requirements
+        ] + [criterion for draft in drafts for criterion in draft.success_criteria]
+        for description in descriptions:
+            cleaned = description.strip()
+            description_key = cleaned.casefold()
+            if not cleaned or description_key in seen:
+                continue
+            merged.append(cleaned)
+            seen.add(description_key)
+            if len(merged) >= 10:
+                break
+        return merged
+
     def _merge_drafts(self, content: str, raw_drafts: list[TaskDraft | dict]) -> TaskDraft:
         drafts = [self._coerce_draft(raw_draft) for raw_draft in raw_drafts]
         if not drafts:
             return TaskDraft(title=content, description=content, confidence=0.5)
         if len(drafts) == 1:
-            return drafts[0]
-        file_draft = next((draft for draft in drafts if draft.deliverable_kind == "file"), None)
+            return drafts[0].model_copy(
+                update={
+                    "deliverable_kind": "text",
+                    "deliverable_format": None,
+                    "deliverable_filename": "",
+                    "deliverable_requirements": [],
+                    "success_criteria": self._merge_draft_acceptance_criteria(drafts),
+                    "requires_human_acceptance": False,
+                }
+            )
         return TaskDraft(
             title="; ".join(draft.title for draft in drafts),
             description="\n".join(f"- {draft.title}: {draft.description}" for draft in drafts),
@@ -1044,16 +1161,12 @@ class TaskService:
             suggested_agent_id=drafts[0].suggested_agent_id,
             goal=content,
             deliverable_goal="; ".join(draft.deliverable_goal or draft.title for draft in drafts),
-            deliverable_kind=file_draft.deliverable_kind if file_draft else "text",
-            deliverable_format=file_draft.deliverable_format if file_draft else None,
-            deliverable_filename=file_draft.deliverable_filename if file_draft else "",
-            deliverable_requirements=[
-                requirement
-                for draft in drafts
-                for requirement in draft.deliverable_requirements
-            ],
-            success_criteria=[criterion for draft in drafts for criterion in draft.success_criteria],
-            requires_human_acceptance=any(draft.requires_human_acceptance for draft in drafts),
+            deliverable_kind="text",
+            deliverable_format=None,
+            deliverable_filename="",
+            deliverable_requirements=[],
+            success_criteria=self._merge_draft_acceptance_criteria(drafts),
+            requires_human_acceptance=False,
         )
 
     def _build_dependency_context(self, task: Task) -> str:

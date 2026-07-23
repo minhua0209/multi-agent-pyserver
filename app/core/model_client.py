@@ -166,18 +166,14 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
         "如果任务之间存在明确先后关系，必须拆成多个任务，并使用 draft_key 和 depends_on 表达依赖关系；"
         "depends_on 填前置任务的 draft_key。没有依赖则为空数组。"
         "如果没有合适 agent，处理方选择 human。"
-        "每个任务只生成1到4条统一验收标准，写入 success_criteria。"
+        "每个任务只生成1到10条统一验收标准，写入 success_criteria。"
         "验收标准必须能由建议处理 agent 的能力、工具输出或人工确认结果证明；"
         "如果当前没有文件写入、代码提交、邮件发送等能力，不得生成对应要求。"
-        "deliverable_requirements 固定返回空数组。"
         "只返回 JSON，不要返回 Markdown。"
         '格式: {"tasks": [{"draft_key": "stable_key", "title": "...", "description": "...", '
         '"confidence": 0.0, "depends_on": ["other_draft_key"], '
         '"goal": "...", "deliverable_goal": "...", '
-        '"deliverable_kind": "text|file", "deliverable_format": "markdown|text|null", '
-        '"deliverable_filename": "...", '
-        '"deliverable_requirements": ["..."], "success_criteria": ["..."], '
-        '"requires_human_acceptance": false, '
+        '"success_criteria": ["..."], '
         '"suggested_assignee_type": "agent|human", "suggested_agent_id": "agent_id 或 null"}]}'
     )
     agents_payload = [
@@ -220,9 +216,6 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
             description = str(item.get("description", "")).strip()
             if not title or not description:
                 continue
-            deliverable_kind, deliverable_format, deliverable_filename = (
-                _normalize_suggested_delivery(item)
-            )
             drafts.append(
                 TaskDraft(
                     title=title,
@@ -232,17 +225,17 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
                     depends_on=_string_list(item.get("depends_on")),
                     goal=_optional_string(item.get("goal")) or "",
                     deliverable_goal=_optional_string(item.get("deliverable_goal")) or "",
-                    deliverable_kind=deliverable_kind,
-                    deliverable_format=deliverable_format,
-                    deliverable_filename=deliverable_filename,
+                    deliverable_kind="text",
+                    deliverable_format=None,
+                    deliverable_filename="",
                     deliverable_requirements=[],
                     success_criteria=_unique_strings(
                         [
                             *_string_list(item.get("deliverable_requirements")),
                             *_string_list(item.get("success_criteria")),
                         ]
-                    )[:4],
-                    requires_human_acceptance=item.get("requires_human_acceptance") is True,
+                    )[:10],
+                    requires_human_acceptance=False,
                     suggested_assignee_type=_normalize_assignee_type(item.get("suggested_assignee_type")),
                     suggested_agent_id=_valid_agent_id(item.get("suggested_agent_id"), agents),
                 )
@@ -1236,26 +1229,6 @@ def _normalize_assignee_type(value: Any) -> str:
     return "agent" if value == "agent" else "human"
 
 
-def _normalize_suggested_delivery(item: dict[str, Any]) -> tuple[str, str | None, str]:
-    deliverable_kind = item.get("deliverable_kind")
-    kind = (
-        deliverable_kind
-        if isinstance(deliverable_kind, str) and deliverable_kind in {"text", "file"}
-        else "text"
-    )
-    if kind == "text":
-        return "text", None, ""
-
-    deliverable_format = item.get("deliverable_format")
-    normalized_format = (
-        deliverable_format
-        if isinstance(deliverable_format, str) and deliverable_format in {"markdown", "text"}
-        else None
-    )
-    filename = item.get("deliverable_filename")
-    return "file", normalized_format, filename.strip() if isinstance(filename, str) else ""
-
-
 def _optional_string(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -1270,7 +1243,15 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _unique_strings(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(values))
+    unique_values = []
+    seen = set()
+    for value in values:
+        key = value.casefold()
+        if key in seen:
+            continue
+        unique_values.append(value)
+        seen.add(key)
+    return unique_values
 
 
 def _valid_agent_id(value: Any, agents: list[Agent]) -> str | None:

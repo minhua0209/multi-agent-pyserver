@@ -47,7 +47,6 @@ export interface TaskCompletionReportView {
   criterionResults: TaskCriterionResultView[]
   deliverableResults: TaskDeliverableResultView[]
   artifactIds: string[]
-  humanAccepted: boolean
   awaitingHumanDecision?: boolean
   automaticGaps?: string[]
   decidedByType: string
@@ -103,7 +102,6 @@ interface TaskCompletionReportSource extends UnknownRecord {
   criterion_results?: unknown
   deliverable_results?: unknown
   artifact_ids?: unknown
-  human_accepted?: unknown
   decided_by_type?: unknown
   decided_by_id?: unknown
   decided_at?: unknown
@@ -136,7 +134,6 @@ type TaskDetailSource = Task & {
     deliverable_kind?: unknown
     deliverable_format?: unknown
     deliverable_filename?: unknown
-    requires_human_acceptance?: unknown
   } | null
   draft?: (NonNullable<Task["draft"]> & {
     goal?: unknown
@@ -174,14 +171,11 @@ export function taskFourQuestions(task: Task): TaskFourQuestion[] {
   ) || "未记录任务目标"
   const completionReason = cleanText(source.completion_report?.completion_reason)
   const status = taskStatus(task)
-  const completionText = isTaskAwaitingHumanAcceptance(task)
-    ? "等待人工验收，任务尚未结束"
-    : completionReason
-    || (status === "running"
-      ? "任务仍在运行，尚未结束"
-      : cleanText(task.final_output)
-        ? `未记录结束原因；最终输出：${cleanText(task.final_output)}`
-        : `未记录结束原因；任务终态为 ${status}`)
+  const completionText = completionReason || (status === "running"
+    ? "任务仍在运行，尚未结束"
+    : cleanText(task.final_output)
+      ? `未记录结束原因；最终输出：${cleanText(task.final_output)}`
+      : `未记录结束原因；任务终态为 ${status}`)
   const deliverableText = taskDeliverableText(source)
 
   return [
@@ -215,17 +209,6 @@ function taskDeliverableText(source: TaskDetailSource) {
   return `${goal}（${details.join(" / ")}）`
 }
 
-export function isTaskAwaitingHumanAcceptance(task: Task) {
-  const source = task as TaskDetailSource
-  return Boolean(
-    taskStatus(task) === "running"
-    && task.current_node === "human_intervention"
-    && source.contract?.requires_human_acceptance
-    && source.completion_report
-    && !source.completion_report.human_accepted
-  )
-}
-
 export function isTaskAwaitingHumanAdjudication(task: Task) {
   const source = task as TaskDetailSource
   return Boolean(
@@ -238,7 +221,6 @@ export function isTaskAwaitingHumanAdjudication(task: Task) {
 export function taskInterventionView(task: Task) {
   if (isTaskAwaitingHumanAdjudication(task)) {
     return {
-      awaitingAcceptance: false,
       awaitingAdjudication: true,
       title: "人工结果裁决",
       description: "自动验收无法确认任务是否成功，请结合执行结果和缺失证据判定成功或失败。",
@@ -248,20 +230,7 @@ export function taskInterventionView(task: Task) {
       requiresOutput: true,
     }
   }
-  if (isTaskAwaitingHumanAcceptance(task)) {
-    return {
-      awaitingAcceptance: true,
-      awaitingAdjudication: false,
-      title: "人工验收",
-      description: "自动检查已完成，等待人工确认交付结果后结束任务。",
-      inputLabel: "验收说明（可选）",
-      placeholder: "填写验收意见",
-      submitText: "验收通过",
-      requiresOutput: false,
-    }
-  }
   return {
-    awaitingAcceptance: false,
     awaitingAdjudication: false,
     title: "人工介入处理",
     description: "流程当前无法自动继续。请补充最终处理结论。",
@@ -270,11 +239,6 @@ export function taskInterventionView(task: Task) {
     submitText: "完成任务",
     requiresOutput: true,
   }
-}
-
-export function taskHumanAcceptanceText(report: TaskCompletionReportView) {
-  if (report.humanAccepted) return "已通过"
-  return report.terminalStatus === "running" ? "待验收" : "未记录或无需验收"
 }
 
 export function buildTaskInterventionResultPayload(
@@ -288,18 +252,6 @@ export function buildTaskInterventionResultPayload(
       result_status: decision,
       output: value,
       should_complete: true,
-      metadata: {
-        human_adjudicated: true,
-        human_accepted: decision === "succeeded",
-      },
-    }
-  }
-  if (isTaskAwaitingHumanAcceptance(task)) {
-    return {
-      result_status: "succeeded" as const,
-      output: value || "人工验收通过",
-      should_complete: true,
-      metadata: { human_accepted: true },
     }
   }
   return {
@@ -520,7 +472,6 @@ function completionReportView(value: unknown): TaskCompletionReportView | null {
     criterionResults: criterionResultViews(value.criterion_results),
     deliverableResults: deliverableResultViews(value.deliverable_results),
     artifactIds: stringList(value.artifact_ids),
-    humanAccepted: value.human_accepted === true,
     awaitingHumanDecision: value.awaiting_human_decision === true,
     automaticGaps: stringList(value.automatic_gaps),
     decidedByType: cleanText(value.decided_by_type),

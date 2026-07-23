@@ -19,7 +19,6 @@ from app.core.enums import (
 from app.core.models import (
     Artifact,
     CriterionResult,
-    DeliverableResult,
     SubTask,
     Task,
     TaskContract,
@@ -186,7 +185,7 @@ def test_non_success_terminal_status_is_preserved_and_execution_report_is_sealed
     assert task.executions[0].finished_at is not None
 
 
-def test_blocked_candidate_waits_for_human_adjudication() -> None:
+def test_blocked_candidate_remains_blocked() -> None:
     task = _task(contract=_contract())
 
     report = CompletionService().finalize(
@@ -196,12 +195,12 @@ def test_blocked_candidate_waits_for_human_adjudication() -> None:
         reason="Automatic completion is inconclusive",
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
-    assert report.terminal_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
-    assert report.automatic_gaps == ["Automatic completion is inconclusive"]
-    assert task.executions[0].finished_at is None
+    assert task.task_status == TaskStatus.BLOCKED
+    assert task.current_node == CurrentNode.COMPLETION_JUDGE
+    assert report.terminal_status == TaskStatus.BLOCKED
+    assert report.awaiting_human_decision is False
+    assert report.automatic_gaps == []
+    assert task.executions[0].finished_at is not None
 
 
 def test_succeeded_candidate_with_empty_output_waits_for_human_adjudication() -> None:
@@ -323,7 +322,7 @@ def test_criterion_result_rejects_unknown_fields() -> None:
         )
 
 
-def test_human_acceptance_requirement_waits_without_sealing_execution() -> None:
+def test_human_acceptance_metadata_does_not_delay_passed_criteria() -> None:
     task = _task(contract=_contract(requires_human_acceptance=True))
 
     report = CompletionService().finalize(
@@ -334,20 +333,20 @@ def test_human_acceptance_requirement_waits_without_sealing_execution() -> None:
         criterion_results=[_passed_criterion()],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert task.current_node == CurrentNode.COMPLETION_JUDGE
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.human_accepted is False
-    assert "human acceptance" in report.evidence_summary.lower()
+    assert "human acceptance" not in report.evidence_summary.lower()
     assert report.criterion_results == [_passed_criterion()]
     assert len(report.artifact_ids) == 1
-    assert task.executions[0].status == TaskStatus.RUNNING
-    assert task.executions[0].current_node == CurrentNode.HUMAN_INTERVENTION
-    assert task.executions[0].finished_at is None
+    assert task.executions[0].status == TaskStatus.SUCCEEDED
+    assert task.executions[0].current_node == CurrentNode.COMPLETION_JUDGE
+    assert task.executions[0].finished_at is not None
     assert task.executions[0].completion_report == report
 
 
-def test_approved_human_subtask_does_not_replace_explicit_final_acceptance() -> None:
+def test_approved_human_subtask_does_not_add_an_independent_completion_gate() -> None:
     approved = SubTask(
         id="human_approval",
         title="Approve",
@@ -366,10 +365,102 @@ def test_approved_human_subtask_does_not_replace_explicit_final_acceptance() -> 
         criterion_results=[_passed_criterion()],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert task.current_node == CurrentNode.COMPLETION_JUDGE
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.human_accepted is False
+
+
+def test_legacy_file_metadata_does_not_block_passed_criteria_when_materialization_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _contract(
+        legacy=True,
+        deliverable_kind="file",
+        deliverable_format="markdown",
+        deliverable_filename="legacy-delivery.md",
+    )
+    task = _task(contract=contract)
+    materializer = DeliverableMaterializer(tmp_path / "outputs")
+    monkeypatch.setattr(
+        materializer,
+        "materialize",
+        lambda *_args: (_ for _ in ()).throw(OSError("file unavailable")),
+    )
+
+    report = CompletionService(deliverable_materializer=materializer).finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Reviewable legacy delivery",
+        reason="Visible criteria passed",
+        criterion_results=[_passed_criterion()],
+    )
+
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.deliverable_results == []
+    assert task.task_status == TaskStatus.SUCCEEDED
+
+
+def test_legacy_deliverable_requirements_become_visible_criteria() -> None:
+    task = _task(
+        contract=_contract(
+            legacy=True,
+            with_deliverable_requirements=True,
+        )
+    )
+    report = CompletionService().finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Reviewable legacy delivery",
+        reason="Visible criteria passed",
+        criterion_results=[_passed_criterion()],
+    )
+
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
+    assert report.deliverable_results == []
+    assert task.contract is not None
+    assert task.contract.deliverable_requirements == []
+    assert [item.id for item in task.contract.success_criteria] == [
+        "requirement_summary",
+        "requirement_risks",
+        "criterion_reviewable",
+    ]
+    assert "requirement_summary" in report.evidence_summary
+    assert "requirement_risks" in report.evidence_summary
+
+
+def test_all_promoted_legacy_requirements_can_pass_as_visible_criteria() -> None:
+    task = _task(
+        contract=_contract(
+            legacy=True,
+            with_deliverable_requirements=True,
+        )
+    )
+    report = CompletionService().finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Reviewable legacy delivery",
+        reason="Visible criteria passed",
+        criterion_results=[
+            CriterionResult(
+                criterion_id=criterion_id,
+                status=CriterionResultStatus.PASSED,
+                evidence_text="Reviewable legacy delivery",
+            )
+            for criterion_id in (
+                "requirement_summary",
+                "requirement_risks",
+                "criterion_reviewable",
+            )
+        ],
+    )
+
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
+    assert report.deliverable_results == []
+    assert task.task_status == TaskStatus.SUCCEEDED
 
 
 def test_manual_workflow_must_reach_end_node() -> None:
@@ -414,6 +505,79 @@ def test_succeeded_candidate_requires_human_adjudication_for_incomplete_subtasks
     assert subtask_status.value in report.evidence_summary
 
 
+def test_human_decision_cannot_bypass_failed_visible_criterion() -> None:
+    task = _task(contract=_contract())
+
+    report = CompletionService().finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="Reviewable delivery",
+        reason="Human approved",
+        criterion_results=[
+            CriterionResult(
+                criterion_id="criterion_reviewable",
+                status=CriterionResultStatus.FAILED,
+                reason="Visible criterion is not satisfied",
+            )
+        ],
+        decided_by_type="human",
+        decided_by_id="root",
+    )
+
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
+    assert report.criterion_results[0].status == CriterionResultStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_gap"),
+    [
+        ("empty_output", "output is empty"),
+        ("blocking_subtask", "subtasks remain in blocking statuses"),
+        ("workflow_end", "workflow end was not reached"),
+    ],
+)
+def test_human_decision_cannot_bypass_execution_integrity(
+    case: str,
+    expected_gap: str,
+) -> None:
+    task = _task(
+        contract=_contract(),
+        task_type=(
+            TaskType.MANUAL_ORCHESTRATION
+            if case == "workflow_end"
+            else TaskType.AUTO_PLANNING
+        ),
+        subtasks=(
+            [
+                SubTask(
+                    id="blocked_subtask",
+                    title="Blocked step",
+                    description="Blocked step",
+                    status=TaskStatus.BLOCKED,
+                )
+            ]
+            if case == "blocking_subtask"
+            else None
+        ),
+    )
+
+    report = CompletionService().finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="" if case == "empty_output" else "Reviewable delivery",
+        reason="Human approved",
+        criterion_results=[_passed_criterion()],
+        workflow_end_reached=False,
+        decided_by_type="human",
+        decided_by_id="root",
+    )
+
+    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.awaiting_human_decision is True
+    assert expected_gap in report.evidence_summary
+
+
 def test_completion_registers_final_output_and_selects_all_current_artifacts_by_default() -> None:
     task = _task(contract=_contract())
 
@@ -433,7 +597,7 @@ def test_completion_registers_final_output_and_selects_all_current_artifacts_by_
     assert task.executions[0].artifacts == task.artifacts
 
 
-def test_completion_explicit_empty_artifact_selection_blocks_success() -> None:
+def test_completion_explicit_empty_artifact_selection_does_not_block_success() -> None:
     task = _task(contract=_contract())
 
     report = CompletionService().finalize(
@@ -445,14 +609,14 @@ def test_completion_explicit_empty_artifact_selection_blocks_success() -> None:
         artifact_ids=[],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
     assert len(task.artifacts) == 1
     assert report.artifact_ids == []
-    assert "artifact" in report.evidence_summary.lower()
+    assert report.criterion_results == [_passed_criterion()]
 
 
-def test_completion_requires_selected_artifacts_to_cover_every_deliverable_requirement() -> None:
+def test_completion_requires_passed_evidence_for_promoted_requirements() -> None:
     task = _task(contract=_contract(with_deliverable_requirements=True))
     subtask_artifact = ArtifactService().register_subtask_output(
         task,
@@ -473,12 +637,15 @@ def test_completion_requires_selected_artifacts_to_cover_every_deliverable_requi
     assert task.task_status == TaskStatus.RUNNING
     assert report.awaiting_human_decision is True
     assert report.artifact_ids == [subtask_artifact.id]
+    assert report.deliverable_results == []
     assert "requirement_summary" in report.evidence_summary
     assert "requirement_risks" in report.evidence_summary
 
 
 @pytest.mark.parametrize("artifact_id", ["artifact_unknown", "input_attachment_1", "artifact_old"])
-def test_completion_rejects_unknown_input_or_old_execution_artifact_ids(artifact_id: str) -> None:
+def test_completion_filters_unknown_input_or_old_execution_artifact_ids_without_blocking(
+    artifact_id: str,
+) -> None:
     task = _task(contract=_contract())
     task.context.artifacts.append("input_attachment_1")
     task.artifacts.append(
@@ -506,17 +673,17 @@ def test_completion_rejects_unknown_input_or_old_execution_artifact_ids(artifact
         artifact_ids=[artifact_id],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
     assert report.artifact_ids == []
-    assert artifact_id in report.evidence_summary
+    assert report.criterion_results == [_passed_criterion()]
 
 
 @pytest.mark.parametrize(
     "validation_status",
     [ArtifactValidationStatus.PENDING, ArtifactValidationStatus.INVALID],
 )
-def test_completion_rejects_non_valid_selected_artifact(
+def test_completion_filters_non_valid_selected_artifact_without_blocking(
     validation_status: ArtifactValidationStatus,
 ) -> None:
     task = _task(contract=_contract())
@@ -534,13 +701,13 @@ def test_completion_rejects_non_valid_selected_artifact(
         artifact_ids=[artifact.id],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
     assert report.artifact_ids == []
-    assert validation_status.value in report.evidence_summary
+    assert report.criterion_results == [_passed_criterion()]
 
 
-def test_completion_rejects_criterion_evidence_outside_selected_artifacts() -> None:
+def test_completion_filters_unselected_criterion_evidence_without_blocking() -> None:
     task = _task(contract=_contract())
     artifact_service = ArtifactService()
     selected = artifact_service.register_task_output(task, "Delivery plan")
@@ -567,10 +734,10 @@ def test_completion_rejects_criterion_evidence_outside_selected_artifacts() -> N
         artifact_ids=[selected.id],
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
     assert report.artifact_ids == [selected.id]
-    assert unselected.id in report.evidence_summary
+    assert report.criterion_results[0].evidence_artifact_ids == []
 
 
 def test_cancelled_task_without_active_execution_does_not_create_artifact() -> None:
@@ -597,18 +764,12 @@ def test_cancelled_task_without_active_execution_does_not_create_artifact() -> N
     assert report.artifact_ids == []
 
 
-def test_pdf_requirement_is_not_satisfied_by_generic_done_text(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_promoted_pdf_requirement_needs_passed_visible_evidence() -> None:
     contract = _contract()
     contract.deliverable_requirements = [
         TaskContractItem(id="requirement_pdf", description="Provide a PDF file")
     ]
     task = _task(contract=contract)
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        lambda _task, _artifacts: None,
-        raising=False,
-    )
-
     report = CompletionService().finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
@@ -619,11 +780,11 @@ def test_pdf_requirement_is_not_satisfied_by_generic_done_text(monkeypatch: pyte
 
     assert report.terminal_status == TaskStatus.RUNNING
     assert report.awaiting_human_decision is True
-    assert report.deliverable_results[0].requirement_id == "requirement_pdf"
-    assert report.deliverable_results[0].status == CriterionResultStatus.PENDING
+    assert report.deliverable_results == []
+    assert "requirement_pdf" in report.evidence_summary
 
 
-def test_valid_pdf_with_explicit_requirement_mapping_can_succeed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_promoted_pdf_requirement_with_passed_criterion_can_succeed(tmp_path) -> None:
     contract = _contract()
     contract.deliverable_requirements = [
         TaskContractItem(id="requirement_pdf", description="Provide a PDF file")
@@ -646,35 +807,30 @@ def test_valid_pdf_with_explicit_requirement_mapping_can_succeed(tmp_path, monke
     task.artifacts[0] = artifact.model_copy(
         update={"deliverable_requirement_ids": ["requirement_pdf"]}
     )
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("covered requirement must not call model")),
-        raising=False,
-    )
-
     report = CompletionService().finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
         output="done",
         reason="done",
-        criterion_results=[_passed_criterion()],
+        criterion_results=[
+            CriterionResult(
+                criterion_id="requirement_pdf",
+                status=CriterionResultStatus.PASSED,
+                evidence_artifact_ids=[artifact.id],
+                evidence_text="PDF is available",
+            ),
+            _passed_criterion(),
+        ],
         artifact_ids=[artifact.id],
     )
 
     assert report.terminal_status == TaskStatus.SUCCEEDED
-    assert report.deliverable_results == [
-        DeliverableResult(
-            requirement_id="requirement_pdf",
-            status=CriterionResultStatus.PASSED,
-            artifact_ids=[artifact.id],
-            reason="Covered by explicit artifact mapping",
-        )
-    ]
+    assert report.deliverable_results == []
+    assert task.artifacts[0].deliverable_requirement_ids == ["requirement_pdf"]
 
 
-def test_valid_pdf_with_model_mapping_is_associated_and_can_succeed(
+def test_pdf_artifact_without_promoted_criterion_evidence_stays_pending(
     tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _contract()
     contract.deliverable_requirements = [
@@ -695,19 +851,6 @@ def test_valid_pdf_with_model_mapping_is_associated_and_can_succeed(
         ),
     )
     assert artifact is not None
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        lambda _task, _artifacts: [
-            DeliverableResult(
-                requirement_id="requirement_pdf",
-                status=CriterionResultStatus.PASSED,
-                artifact_ids=[artifact.id],
-                reason="PDF artifact satisfies requirement",
-            )
-        ],
-        raising=False,
-    )
-
     report = CompletionService().finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
@@ -717,52 +860,10 @@ def test_valid_pdf_with_model_mapping_is_associated_and_can_succeed(
         artifact_ids=[artifact.id],
     )
 
-    assert report.terminal_status == TaskStatus.SUCCEEDED
-    assert report.deliverable_results[0].artifact_ids == [artifact.id]
-    assert task.artifacts[0].deliverable_requirement_ids == ["requirement_pdf"]
-
-
-@pytest.mark.parametrize(
-    "status",
-    [CriterionResultStatus.FAILED, CriterionResultStatus.PENDING],
-)
-def test_completion_drops_unselected_artifact_ids_from_nonpassed_deliverable_results(
-    monkeypatch: pytest.MonkeyPatch,
-    status: CriterionResultStatus,
-) -> None:
-    contract = _contract()
-    contract.deliverable_requirements = [
-        TaskContractItem(id="requirement_summary", description="Provide a summary")
-    ]
-    task = _task(contract=contract)
-    selected = ArtifactService().register_task_output(task, "Summary")
-    assert selected is not None
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        lambda _task, _artifacts: [
-            DeliverableResult(
-                requirement_id="requirement_summary",
-                status=status,
-                artifact_ids=["artifact_not_selected"],
-                reason="External artifact reference",
-            )
-        ],
-    )
-
-    report = CompletionService().finalize(
-        task,
-        candidate_status=TaskStatus.SUCCEEDED,
-        output="Summary",
-        reason="done",
-        criterion_results=[_passed_criterion()],
-        artifact_ids=[selected.id],
-    )
-
     assert report.terminal_status == TaskStatus.RUNNING
     assert report.awaiting_human_decision is True
-    assert report.deliverable_results[0].status == CriterionResultStatus.PENDING
-    assert report.deliverable_results[0].artifact_ids == []
-    assert "artifact_not_selected" not in report.model_dump_json()
+    assert report.deliverable_results == []
+    assert task.artifacts[0].deliverable_requirement_ids == []
 
 
 @pytest.mark.parametrize("change", ["modify", "delete"])
@@ -799,8 +900,8 @@ def test_completion_revalidates_selected_file_artifact_before_success(
         artifact_ids=[artifact.id],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
-    assert report.awaiting_human_decision is True
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
 
@@ -1097,7 +1198,7 @@ def test_file_delivery_materializes_output_when_context_summary_is_empty(
     )
 
 
-def test_file_delivery_text_cannot_replace_explicitly_excluded_managed_file(
+def test_file_delivery_text_selection_does_not_block_passed_criteria(
     tmp_path: Path,
 ) -> None:
     task = _task(contract=_file_contract())
@@ -1122,13 +1223,13 @@ def test_file_delivery_text_cannot_replace_explicitly_excluded_managed_file(
         artifact_ids=[text_artifact.id],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == [text_artifact.id]
     assert any(
         artifact.metadata.get("managed_final_delivery") is True
         for artifact in task.artifacts
     )
-    assert "valid final delivery file" in report.evidence_summary.lower()
+    assert report.deliverable_results == []
 
 
 def test_file_delivery_materializer_oserror_becomes_sanitized_gap(
@@ -1152,13 +1253,13 @@ def test_file_delivery_materializer_oserror_becomes_sanitized_gap(
     )
 
     serialized_report = report.model_dump_json()
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert "could not be written" in report.evidence_summary.lower()
     assert str(sensitive_path) not in serialized_report
     assert task.artifacts == []
 
 
-def test_file_delivery_blocks_when_secure_dir_fd_is_unavailable(
+def test_file_delivery_write_failure_does_not_override_passed_criteria(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1180,7 +1281,7 @@ def test_file_delivery_blocks_when_secure_dir_fd_is_unavailable(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert "could not be written" in report.evidence_summary.lower()
     assert task.artifacts == []
     assert not output_root.exists()
@@ -1207,7 +1308,7 @@ def test_file_delivery_materializer_valueerror_becomes_sanitized_gap(
     )
 
     serialized_report = report.model_dump_json()
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert "materialization was rejected" in report.evidence_summary.lower()
     assert sensitive_value not in serialized_report
     assert task.artifacts == []
@@ -1217,7 +1318,7 @@ def test_file_delivery_materializer_valueerror_becomes_sanitized_gap(
     ("candidate_status", "expected_status"),
     [
         (TaskStatus.FAILED, TaskStatus.FAILED),
-        (TaskStatus.BLOCKED, TaskStatus.RUNNING),
+        (TaskStatus.BLOCKED, TaskStatus.BLOCKED),
         (TaskStatus.PARTIAL, TaskStatus.PARTIAL),
         (TaskStatus.CANCELLED, TaskStatus.CANCELLED),
     ],
@@ -1256,7 +1357,7 @@ def test_non_success_file_delivery_preserves_text_without_materializing_file(
     )
 
     assert report.terminal_status == expected_status
-    assert report.awaiting_human_decision is (candidate_status == TaskStatus.BLOCKED)
+    assert report.awaiting_human_decision is False
     assert len(task.artifacts) == 1
     artifact = task.artifacts[0]
     assert artifact.kind == ArtifactKind.TEXT
@@ -1278,7 +1379,7 @@ def test_non_success_file_delivery_preserves_text_without_materializing_file(
         ("wrong_media_type", "media type"),
     ],
 )
-def test_file_delivery_gate_rejects_path_format_or_media_mismatch(
+def test_file_delivery_metadata_mismatch_does_not_override_passed_criteria(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: str,
@@ -1323,11 +1424,14 @@ def test_file_delivery_gate_rejects_path_format_or_media_mismatch(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
-    assert expected_gap in report.evidence_summary.lower()
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     if case == "outside_root":
+        assert expected_gap in report.evidence_summary.lower()
         assert report.artifact_ids == []
         assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
+    else:
+        assert len(report.artifact_ids) == 1
+        assert task.artifacts[0].validation_status == ArtifactValidationStatus.VALID
 
 
 def test_file_delivery_revalidation_invalidates_non_local_managed_uri(
@@ -1355,7 +1459,7 @@ def test_file_delivery_revalidation_invalidates_non_local_managed_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1384,7 +1488,7 @@ def test_file_delivery_revalidation_invalidates_managed_file_outside_output_root
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1414,7 +1518,7 @@ def test_file_delivery_revalidation_rejects_managed_file_from_sibling_task_direc
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1441,7 +1545,7 @@ def test_file_delivery_revalidation_rejects_managed_file_from_sibling_execution_
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1468,7 +1572,7 @@ def test_file_delivery_revalidation_rejects_filename_not_matching_contract(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "filename is invalid" in report.evidence_summary.lower()
@@ -1499,7 +1603,7 @@ def test_file_delivery_revalidation_rejects_artifact_name_not_matching_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "filename is invalid" in report.evidence_summary.lower()
@@ -1556,7 +1660,7 @@ def test_file_delivery_revalidation_rejects_dot_dot_managed_file_uri(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1590,7 +1694,7 @@ def test_file_delivery_revalidation_rejects_managed_file_symlink(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1638,7 +1742,7 @@ def test_invalid_managed_location_is_rejected_before_file_read(
         human_accepted=True,
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert "managed final delivery location is invalid" in report.evidence_summary.lower()
@@ -1709,7 +1813,7 @@ def test_file_delivery_rejects_materialized_file_symlink(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts == []
     assert symlink_path.is_symlink()
@@ -1750,7 +1854,7 @@ def test_file_delivery_does_not_materialize_through_managed_directory_symlink(
         criterion_results=[_passed_criterion()],
     )
 
-    assert report.terminal_status == TaskStatus.RUNNING
+    assert report.terminal_status == TaskStatus.SUCCEEDED
     assert report.artifact_ids == []
     assert task.artifacts == []
     assert not cross_directory_path.exists()
@@ -1796,9 +1900,8 @@ def test_file_delivery_revalidation_accepts_active_task_execution_directory(
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.VALID
 
 
-def test_file_delivery_evaluator_prefers_valid_file_write_artifact(
+def test_file_delivery_uses_promoted_visible_criteria(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(contract=_file_contract(with_deliverable_requirements=True))
     artifact_service = ArtifactService()
@@ -1821,24 +1924,6 @@ def test_file_delivery_evaluator_prefers_valid_file_write_artifact(
         "Text output",
     )
     assert tool_artifact is not None and text_artifact is not None
-    evaluated_artifacts: list[Artifact] = []
-
-    def evaluate(_task: Task, artifacts: list[Artifact]) -> list[DeliverableResult]:
-        evaluated_artifacts.extend(artifacts)
-        return [
-            DeliverableResult(
-                requirement_id=requirement.id,
-                status=CriterionResultStatus.PASSED,
-                artifact_ids=[artifacts[0].id],
-                reason="Tool-written delivery contains required content",
-            )
-            for requirement in _task.contract.deliverable_requirements
-        ]
-
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        evaluate,
-    )
     report = CompletionService(
         artifact_service=artifact_service,
         deliverable_materializer=DeliverableMaterializer(tmp_path / "outputs"),
@@ -1847,14 +1932,22 @@ def test_file_delivery_evaluator_prefers_valid_file_write_artifact(
         candidate_status=TaskStatus.SUCCEEDED,
         output="Workflow output",
         reason="done",
-        criterion_results=[_passed_criterion()],
+        criterion_results=[
+            CriterionResult(
+                criterion_id=criterion_id,
+                status=CriterionResultStatus.PASSED,
+                evidence_text="Workflow output",
+            )
+            for criterion_id in (
+                "requirement_summary",
+                "requirement_risks",
+                "criterion_reviewable",
+            )
+        ],
     )
 
     assert report.terminal_status == TaskStatus.SUCCEEDED
-    assert len(evaluated_artifacts) == 1
-    assert evaluated_artifacts[0].kind == ArtifactKind.FILE
-    assert evaluated_artifacts[0].source_type == ArtifactSourceType.TOOL_RESULT
-    assert evaluated_artifacts[0].metadata["tool_type"] == "file_write"
+    assert report.deliverable_results == []
     assert not any(
         artifact.metadata.get("managed_final_delivery") is True
         for artifact in task.artifacts
@@ -1900,15 +1993,10 @@ def test_file_delivery_falls_back_to_managed_file_when_tool_filename_mismatches(
     )
 
 
-def test_file_delivery_existing_file_does_not_auto_satisfy_content_requirement(
+def test_file_delivery_promoted_content_requirement_needs_visible_evidence(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(contract=_file_contract(with_deliverable_requirements=True))
-    monkeypatch.setattr(
-        "app.services.completion_service.evaluate_deliverable_requirements_with_model",
-        lambda _task, _artifacts: None,
-    )
 
     report = CompletionService(
         deliverable_materializer=DeliverableMaterializer(tmp_path),
@@ -1922,10 +2010,7 @@ def test_file_delivery_existing_file_does_not_auto_satisfy_content_requirement(
 
     assert report.terminal_status == TaskStatus.RUNNING
     assert report.awaiting_human_decision is True
-    assert all(
-        result.status == CriterionResultStatus.PENDING
-        for result in report.deliverable_results
-    )
+    assert report.deliverable_results == []
 
 
 def test_text_delivery_keeps_legacy_artifact_behavior_without_materialization(
@@ -1957,72 +2042,57 @@ def test_text_delivery_keeps_legacy_artifact_behavior_without_materialization(
 
 
 @pytest.mark.parametrize("materialization_error", [OSError, ValueError])
-def test_file_delivery_human_acceptance_reuses_existing_managed_file(
+def test_file_delivery_human_metadata_reuses_existing_managed_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     materialization_error: type[Exception],
 ) -> None:
     task = _task(contract=_file_contract(requires_human_acceptance=True))
     task.context.summary = "Accepted delivery"
+    delivery_path = tmp_path / task.id / task.active_execution_id / "delivery.md"
+    artifact_service, existing_artifact = _register_managed_file(task, delivery_path)
     materializer = DeliverableMaterializer(tmp_path)
-    service = CompletionService(deliverable_materializer=materializer)
-
-    pending_report = service.finalize(
-        task,
-        candidate_status=TaskStatus.SUCCEEDED,
-        output="Workflow output",
-        reason="done",
-        criterion_results=[_passed_criterion()],
+    service = CompletionService(
+        artifact_service=artifact_service,
+        deliverable_materializer=materializer,
     )
-    pending_artifact = task.artifacts[0].model_copy(deep=True)
-    delivery_path = Path(pending_artifact.uri.removeprefix("file://"))
 
     def fail_materialization(_task: Task, _content: str) -> MaterializedDeliverable:
         raise materialization_error("sensitive materialization failure")
 
     monkeypatch.setattr(materializer, "materialize", fail_materialization)
-    accepted_report = service.finalize(
+    report = service.finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
         output="Workflow output",
         reason="accepted",
-        criterion_results=pending_report.criterion_results,
-        artifact_ids=pending_report.artifact_ids,
+        criterion_results=[_passed_criterion()],
+        artifact_ids=[existing_artifact.id],
         human_accepted=True,
-        human_override=True,
         decided_by_type="human",
         decided_by_id="user_1",
     )
 
-    assert pending_report.terminal_status == TaskStatus.RUNNING
-    assert accepted_report.terminal_status == TaskStatus.SUCCEEDED
-    assert accepted_report.artifact_ids == pending_report.artifact_ids
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.artifact_ids == [existing_artifact.id]
     assert len(task.artifacts) == 1
-    accepted_artifact = task.artifacts[0]
-    assert accepted_artifact.id == pending_artifact.id
-    assert accepted_artifact.created_at == pending_artifact.created_at
-    assert accepted_artifact.content == pending_artifact.content
-    assert accepted_artifact.checksum == pending_artifact.checksum
-    assert delivery_path.read_text(encoding="utf-8") == "Workflow output"
+    assert task.artifacts[0] == existing_artifact
+    assert delivery_path.read_text(encoding="utf-8") == "Managed delivery"
 
 
-def test_file_delivery_human_acceptance_revalidates_reused_file(
+def test_file_delivery_human_metadata_filters_tampered_reused_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(contract=_file_contract(requires_human_acceptance=True))
     task.context.summary = "Accepted delivery"
+    delivery_path = tmp_path / task.id / task.active_execution_id / "delivery.md"
+    artifact_service, artifact = _register_managed_file(task, delivery_path)
     materializer = DeliverableMaterializer(tmp_path)
-    service = CompletionService(deliverable_materializer=materializer)
-    pending_report = service.finalize(
-        task,
-        candidate_status=TaskStatus.SUCCEEDED,
-        output="Workflow output",
-        reason="done",
-        criterion_results=[_passed_criterion()],
+    service = CompletionService(
+        artifact_service=artifact_service,
+        deliverable_materializer=materializer,
     )
-    artifact = task.artifacts[0]
-    delivery_path = Path(artifact.uri.removeprefix("file://"))
     delivery_path.write_text("Tampered delivery", encoding="utf-8")
     monkeypatch.setattr(
         materializer,
@@ -2032,46 +2102,37 @@ def test_file_delivery_human_acceptance_revalidates_reused_file(
         ),
     )
 
-    accepted_report = service.finalize(
+    report = service.finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
         output="Workflow output",
         reason="accepted",
-        criterion_results=pending_report.criterion_results,
-        artifact_ids=pending_report.artifact_ids,
+        criterion_results=[_passed_criterion()],
+        artifact_ids=[artifact.id],
         human_accepted=True,
-        human_override=True,
         decided_by_type="human",
         decided_by_id="user_1",
     )
 
-    assert accepted_report.terminal_status == TaskStatus.RUNNING
-    assert accepted_report.awaiting_human_decision is True
-    assert accepted_report.artifact_ids == []
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.awaiting_human_decision is False
+    assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
-    assert "checksum" in accepted_report.evidence_summary.lower()
+    assert "checksum" in report.evidence_summary.lower()
 
 
-def test_file_delivery_human_acceptance_does_not_replace_preinvalidated_file(
+def test_file_delivery_human_metadata_does_not_replace_preinvalidated_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(contract=_file_contract(requires_human_acceptance=True))
     materializer = DeliverableMaterializer(tmp_path)
-    artifact_service = ArtifactService()
+    delivery_path = tmp_path / task.id / task.active_execution_id / "delivery.md"
+    artifact_service, artifact = _register_managed_file(task, delivery_path)
     service = CompletionService(
         artifact_service=artifact_service,
         deliverable_materializer=materializer,
     )
-    pending_report = service.finalize(
-        task,
-        candidate_status=TaskStatus.SUCCEEDED,
-        output="Workflow output",
-        reason="done",
-        criterion_results=[_passed_criterion()],
-    )
-    artifact = task.artifacts[0]
-    delivery_path = Path(artifact.uri.removeprefix("file://"))
     delivery_path.write_text("Tampered delivery", encoding="utf-8")
     artifact_service.revalidate(task, artifact)
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
@@ -2083,19 +2144,19 @@ def test_file_delivery_human_acceptance_does_not_replace_preinvalidated_file(
         ),
     )
 
-    accepted_report = service.finalize(
+    report = service.finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
         output="Workflow output",
         reason="accepted",
-        criterion_results=pending_report.criterion_results,
-        artifact_ids=pending_report.artifact_ids,
+        criterion_results=[_passed_criterion()],
+        artifact_ids=[artifact.id],
         human_accepted=True,
         decided_by_type="human",
         decided_by_id="user_1",
     )
 
-    assert accepted_report.terminal_status == TaskStatus.RUNNING
-    assert accepted_report.artifact_ids == []
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert report.artifact_ids == []
     assert task.artifacts[0].validation_status == ArtifactValidationStatus.INVALID
     assert delivery_path.read_text(encoding="utf-8") == "Tampered delivery"

@@ -126,7 +126,7 @@ def test_task_graph_runner_dispatches_executes_and_closes_task(tmp_path: Path) -
     ]
 
 
-def test_task_graph_stops_at_human_acceptance_without_sealing_execution(
+def test_task_graph_does_not_add_an_independent_human_acceptance_gate(
     tmp_path: Path,
 ) -> None:
     registry = AgentRegistry(tmp_path / "agents.json")
@@ -150,13 +150,13 @@ def test_task_graph_stops_at_human_acceptance_without_sealing_execution(
         }
     )
 
-    assert task.task_status == TaskStatus.RUNNING
-    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert task.task_status == TaskStatus.SUCCEEDED
+    assert task.current_node == CurrentNode.COMPLETION_JUDGE
     assert task.completion_report is not None
-    assert task.completion_report.terminal_status == TaskStatus.RUNNING
+    assert task.completion_report.terminal_status == TaskStatus.SUCCEEDED
     assert task.completion_report.criterion_results[0].status.value == "passed"
-    assert task.executions[0].status == TaskStatus.RUNNING
-    assert task.executions[0].finished_at is None
+    assert task.executions[0].status == TaskStatus.SUCCEEDED
+    assert task.executions[0].finished_at is not None
     assert runner._route_after_judge(state) == "end"
 
 

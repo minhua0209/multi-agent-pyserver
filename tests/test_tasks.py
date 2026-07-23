@@ -6,9 +6,17 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.core.enums import CriterionResultStatus, CurrentNode, TaskStatus, TaskType
+from app.core.enums import (
+    CriterionResultStatus,
+    CurrentNode,
+    ExecutionTriggerType,
+    SourceType,
+    TaskStatus,
+    TaskType,
+)
 from app.main import create_app
 from app.core.models import (
+    CompletionReport,
     CriterionResult,
     ExecutionResultCreate,
     Task,
@@ -16,10 +24,22 @@ from app.core.models import (
     TaskContract,
     TaskContractInput,
     TaskContractItem,
+    TaskContext,
     TaskDraft,
+    TaskExecution,
     TaskRequestCreate,
+    TaskRound,
+    SubTask,
     utc_now,
 )
+from app.services.artifact_service import ArtifactService
+from app.services.deliverable_materializer import (
+    DeliverableMaterializer,
+    MaterializedDeliverable,
+)
+from app.services.storage import AgentRegistry, InMemoryTaskStore
+from app.services.task_contract_service import TaskContractService
+from app.services.task_service import TaskService
 
 
 def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
@@ -50,6 +70,609 @@ def test_task_request_waits_for_human_confirmation(tmp_path: Path) -> None:
     assert task["executions"] == []
     assert task["active_execution_id"] is None
     assert task["completion_report"] is None
+
+
+def test_contract_normalization_promotes_legacy_requirements_idempotently() -> None:
+    contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Legacy file delivery",
+        deliverable_kind="file",
+        deliverable_format="text",
+        deliverable_filename="legacy.txt",
+        deliverable_requirements=[
+            TaskContractItem(id=f"requirement_{index}", description=f"Requirement {index}")
+            for index in range(1, 7)
+        ],
+        success_criteria=[
+            TaskContractItem(id="criterion_duplicate", description="requirement 1"),
+            TaskContractItem(id="requirement_2", description="Visible criterion 1"),
+            *[
+                TaskContractItem(
+                    id=f"criterion_{index}",
+                    description=f"Visible criterion {index}",
+                )
+                for index in range(2, 7)
+            ],
+        ],
+        requires_human_acceptance=True,
+        confirmed_at=utc_now(),
+    )
+
+    normalized = TaskContractService().normalize_contract(contract)
+
+    assert normalized.deliverable_kind == "file"
+    assert normalized.deliverable_format == "text"
+    assert normalized.deliverable_filename == "legacy.txt"
+    assert normalized.deliverable_requirements == []
+    assert normalized.requires_human_acceptance is False
+    descriptions = [item.description for item in normalized.success_criteria]
+    assert descriptions[:9] == [
+        *[f"Requirement {index}" for index in range(1, 7)],
+        *[f"Visible criterion {index}" for index in range(1, 4)],
+    ]
+    assert descriptions[9].startswith("同时满足以下历史验收标准：")
+    assert all(
+        description in descriptions[9]
+        for description in (
+            "Visible criterion 4",
+            "Visible criterion 5",
+            "Visible criterion 6",
+        )
+    )
+    assert len({item.id for item in normalized.success_criteria}) == 10
+    assert normalized.success_criteria[6].id != "requirement_2"
+    assert TaskContractService().normalize_contract(normalized) == normalized
+
+
+def test_contract_normalization_avoids_aggregate_description_collision() -> None:
+    overflow_descriptions = ["Overflow condition A", "Overflow condition B"]
+    colliding_description = (
+        "同时满足以下历史验收标准："
+        + "；".join(overflow_descriptions)
+    )
+    contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Reviewable delivery",
+        deliverable_requirements=[
+            TaskContractItem(
+                id="requirement_collision",
+                description=colliding_description,
+            ),
+            *[
+                TaskContractItem(
+                    id=f"requirement_{index}",
+                    description=f"Requirement {index}",
+                )
+                for index in range(2, 10)
+            ],
+        ],
+        success_criteria=[
+            TaskContractItem(
+                id=f"criterion_overflow_{index}",
+                description=description,
+            )
+            for index, description in enumerate(overflow_descriptions, start=1)
+        ],
+        confirmed_at=utc_now(),
+    )
+
+    normalized = TaskContractService().normalize_contract(contract)
+    descriptions = [item.description for item in normalized.success_criteria]
+
+    assert len(descriptions) == 10
+    assert len({description.casefold() for description in descriptions}) == 10
+    assert all(
+        description in descriptions[-1]
+        for description in overflow_descriptions
+    )
+    assert TaskContractService().normalize_contract(normalized) == normalized
+
+
+def _legacy_pending_acceptance_task(
+    *,
+    task_id: str,
+    include_requirement_evidence: bool,
+    output: str = "Legacy reviewable output",
+) -> Task:
+    now = utc_now()
+    contract = TaskContract(
+        goal="Prepare legacy delivery",
+        deliverable_goal="Legacy reviewable file",
+        deliverable_kind="file",
+        deliverable_format="text",
+        deliverable_filename="legacy.txt",
+        deliverable_requirements=[
+            TaskContractItem(
+                id="requirement_summary",
+                description="Contains a summary",
+            )
+        ],
+        success_criteria=[
+            TaskContractItem(
+                id="criterion_reviewable",
+                description="The result is reviewable",
+            )
+        ],
+        requires_human_acceptance=True,
+        confirmed_at=now,
+    )
+    criterion_results = [
+        CriterionResult(
+            criterion_id="criterion_reviewable",
+            status=CriterionResultStatus.PASSED,
+            evidence_text=output,
+        )
+    ]
+    if include_requirement_evidence:
+        criterion_results.insert(
+            0,
+            CriterionResult(
+                criterion_id="requirement_summary",
+                status=CriterionResultStatus.PASSED,
+                evidence_text=output,
+            ),
+        )
+    execution_id = f"execution_{task_id}"
+    report = CompletionReport(
+        id=f"completion_{task_id}",
+        execution_id=execution_id,
+        terminal_status=TaskStatus.RUNNING,
+        completion_reason="Awaiting required human acceptance",
+        criterion_results=criterion_results,
+        human_accepted=False,
+        awaiting_human_decision=False,
+        decided_by_type="system",
+        decided_by_id="completion_service",
+        decided_at=now,
+        evidence_summary="human acceptance is required",
+    )
+    context = TaskContext(summary=output)
+    execution = TaskExecution(
+        id=execution_id,
+        task_id=task_id,
+        attempt_no=1,
+        trigger_type=ExecutionTriggerType.INITIAL,
+        trigger_reason="Initial task confirmation",
+        contract_snapshot=contract.model_copy(deep=True),
+        status=TaskStatus.RUNNING,
+        start_node=CurrentNode.DISPATCH_DECISION,
+        current_node=CurrentNode.HUMAN_INTERVENTION,
+        context_snapshot=context.model_copy(deep=True),
+        final_output=output,
+        created_at=now,
+        started_at=now,
+        completion_report=report.model_copy(deep=True),
+    )
+    return Task(
+        id=task_id,
+        request_id=f"request_{task_id}",
+        source_type=SourceType.BUSINESS_SYSTEM,
+        content="Legacy pending acceptance task",
+        task_status=TaskStatus.RUNNING,
+        current_node=CurrentNode.HUMAN_INTERVENTION,
+        title="Legacy pending acceptance task",
+        description="Legacy pending acceptance task",
+        contract=contract,
+        context=context,
+        initial_context=TaskContext(),
+        executions=[execution],
+        active_execution_id=execution_id,
+        completion_report=report,
+        final_output=output,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_task_service_migrates_legacy_pending_acceptance_to_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_OUTPUT_DIR", str(tmp_path / "outputs"))
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_accepted",
+        include_requirement_evidence=True,
+    )
+    store.save(task)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.SUCCEEDED
+    assert migrated.current_node == CurrentNode.COMPLETION_JUDGE
+    assert migrated.contract is not None
+    assert migrated.contract.deliverable_kind == "file"
+    assert migrated.contract.deliverable_requirements == []
+    assert migrated.contract.requires_human_acceptance is False
+    assert [item.id for item in migrated.contract.success_criteria] == [
+        "requirement_summary",
+        "criterion_reviewable",
+    ]
+    assert migrated.executions[0].contract_snapshot is not None
+    assert [
+        item.id
+        for item in migrated.executions[0].contract_snapshot.deliverable_requirements
+    ] == ["requirement_summary"]
+    assert migrated.executions[0].contract_snapshot.requires_human_acceptance is True
+    assert migrated.executions[0].status == TaskStatus.SUCCEEDED
+    assert migrated.executions[0].finished_at is not None
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.terminal_status == TaskStatus.SUCCEEDED
+    assert any(event.type == "criteria_only_migrated" for event in migrated.events)
+
+
+def test_task_service_migration_reuses_file_evidence_without_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "outputs"
+    monkeypatch.setenv("AGENT_OUTPUT_DIR", str(output_root))
+    store = InMemoryTaskStore()
+    stored_output = "Stored legacy final output"
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_file_evidence",
+        include_requirement_evidence=True,
+        output=stored_output,
+    )
+    task.context = TaskContext(
+        summary="Context summary must not replace the stored final output",
+        rounds=[
+            TaskRound(
+                round_index=1,
+                subtasks=[
+                    SubTask(
+                        id="subtask_completed",
+                        title="Completed work",
+                        description="Completed work",
+                        status=TaskStatus.SUCCEEDED,
+                        output="Completed subtask output",
+                    )
+                ],
+            )
+        ],
+    )
+    task.executions[0].context_snapshot = task.context.model_copy(deep=True)
+    delivery_path = output_root / task.id / task.active_execution_id / "legacy.txt"
+    delivery_path.parent.mkdir(parents=True)
+    delivery_path.write_text(stored_output, encoding="utf-8")
+    artifact = ArtifactService().register_task_file_output(
+        task,
+        MaterializedDeliverable(
+            path=delivery_path,
+            content=stored_output,
+            media_type="text/plain",
+            delivery_format="text",
+        ),
+    )
+    assert task.completion_report is not None
+    task.completion_report.artifact_ids = [artifact.id]
+    for result in task.completion_report.criterion_results:
+        result.evidence_artifact_ids = [artifact.id]
+    task.executions[0].artifacts = [artifact.model_copy(deep=True)]
+    task.executions[0].completion_report = task.completion_report.model_copy(deep=True)
+    store.save(task)
+    artifacts_before = [
+        item.model_dump(mode="json")
+        for item in task.artifacts
+    ]
+    execution_artifacts_before = [
+        item.model_dump(mode="json")
+        for item in task.executions[0].artifacts
+    ]
+    files_before = {
+        str(path.relative_to(output_root)): path.read_bytes()
+        for path in output_root.rglob("*")
+        if path.is_file()
+    }
+
+    def fail_side_effect(*_args, **_kwargs):
+        raise AssertionError("startup migration must only reuse stored evidence")
+
+    monkeypatch.setattr(DeliverableMaterializer, "materialize", fail_side_effect)
+    monkeypatch.setattr(
+        DeliverableMaterializer,
+        "read_managed_delivery",
+        fail_side_effect,
+    )
+    monkeypatch.setattr(
+        DeliverableMaterializer,
+        "expected_filename",
+        fail_side_effect,
+    )
+    monkeypatch.setattr(ArtifactService, "register_task_file_output", fail_side_effect)
+    monkeypatch.setattr(ArtifactService, "register_task_output", fail_side_effect)
+    monkeypatch.setattr(ArtifactService, "revalidate", fail_side_effect)
+    monkeypatch.setattr(ArtifactService, "replace_current", fail_side_effect)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.SUCCEEDED
+    assert migrated.final_output == stored_output
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.artifact_ids == [artifact.id]
+    assert all(
+        result.status == CriterionResultStatus.PASSED
+        for result in migrated.completion_report.criterion_results
+    )
+    assert all(
+        result.evidence_artifact_ids == [artifact.id]
+        for result in migrated.completion_report.criterion_results
+    )
+    assert [
+        item.model_dump(mode="json")
+        for item in migrated.artifacts
+    ] == artifacts_before
+    assert [
+        item.model_dump(mode="json")
+        for item in migrated.executions[0].artifacts
+    ] == execution_artifacts_before
+    assert {
+        str(path.relative_to(output_root)): path.read_bytes()
+        for path in output_root.rglob("*")
+        if path.is_file()
+    } == files_before
+
+
+def test_task_service_migration_does_not_register_duplicate_text_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_text_evidence",
+        include_requirement_evidence=True,
+    )
+    assert task.contract is not None
+    task.contract = task.contract.model_copy(
+        update={
+            "deliverable_kind": "text",
+            "deliverable_format": None,
+            "deliverable_filename": "",
+        },
+        deep=True,
+    )
+    task.executions[0].contract_snapshot = task.contract.model_copy(deep=True)
+    artifact = ArtifactService().register_task_output(task, task.final_output)
+    assert artifact is not None
+    assert task.completion_report is not None
+    task.completion_report.artifact_ids = [artifact.id]
+    task.executions[0].artifacts = [artifact.model_copy(deep=True)]
+    task.executions[0].completion_report = task.completion_report.model_copy(deep=True)
+    store.save(task)
+    artifacts_before = [
+        item.model_dump(mode="json")
+        for item in task.artifacts
+    ]
+
+    monkeypatch.setattr(
+        ArtifactService,
+        "register_task_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("startup migration must not register task output")
+        ),
+    )
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.SUCCEEDED
+    assert [
+        item.model_dump(mode="json")
+        for item in migrated.artifacts
+    ] == artifacts_before
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.artifact_ids == [artifact.id]
+
+
+def test_task_service_migration_preserves_whitespace_output_but_treats_it_empty(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryTaskStore()
+    stored_output = "  \n  "
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_whitespace_output",
+        include_requirement_evidence=True,
+        output=stored_output,
+    )
+    store.save(task)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.final_output == stored_output
+    assert migrated.task_status == TaskStatus.RUNNING
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.awaiting_human_decision is True
+    assert "output is empty" in migrated.completion_report.evidence_summary
+
+
+def test_task_service_migration_keeps_overflow_acceptance_content_visible(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_overflow_criteria",
+        include_requirement_evidence=True,
+    )
+    now = utc_now()
+    contract = TaskContract(
+        goal="Prepare legacy delivery",
+        deliverable_goal="Legacy reviewable output",
+        deliverable_requirements=[
+            TaskContractItem(
+                id=f"requirement_{index}",
+                description=f"Requirement {index}",
+            )
+            for index in range(1, 7)
+        ],
+        success_criteria=[
+            TaskContractItem(
+                id=f"criterion_{index}",
+                description=f"Criterion {index}",
+            )
+            for index in range(1, 7)
+        ],
+        requires_human_acceptance=True,
+        confirmed_at=now,
+    )
+    task.contract = contract
+    task.executions[0].contract_snapshot = contract.model_copy(deep=True)
+    assert task.completion_report is not None
+    task.completion_report.criterion_results = [
+        CriterionResult(
+            criterion_id=item.id,
+            status=CriterionResultStatus.PASSED,
+            evidence_text=task.final_output,
+        )
+        for item in [
+            *contract.deliverable_requirements,
+            *contract.success_criteria,
+        ]
+    ]
+    task.executions[0].completion_report = task.completion_report.model_copy(deep=True)
+    store.save(task)
+
+    service = TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.contract is not None
+    assert len(migrated.contract.success_criteria) == 10
+    aggregate = migrated.contract.success_criteria[-1]
+    assert aggregate.description.startswith("同时满足以下历史验收标准：")
+    assert all(
+        description in aggregate.description
+        for description in ("Criterion 4", "Criterion 5", "Criterion 6")
+    )
+    assert migrated.task_status == TaskStatus.RUNNING
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.awaiting_human_decision is True
+    assert aggregate.id in migrated.completion_report.evidence_summary
+
+    accepted = service.submit_result(
+        task.id,
+        ExecutionResultCreate(
+            result_status="succeeded",
+            output="All visible acceptance criteria passed",
+        ),
+    )
+
+    assert accepted.task_status == TaskStatus.SUCCEEDED
+    assert accepted.completion_report is not None
+    assert accepted.completion_report.awaiting_human_decision is False
+    assert len(accepted.completion_report.criterion_results) == 10
+    assert all(
+        result.status == CriterionResultStatus.PASSED
+        for result in accepted.completion_report.criterion_results
+    )
+
+
+def test_task_service_migration_waits_for_missing_promoted_criterion_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_OUTPUT_DIR", str(tmp_path / "outputs"))
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_legacy_missing_evidence",
+        include_requirement_evidence=False,
+    )
+    store.save(task)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.RUNNING
+    assert migrated.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.awaiting_human_decision is True
+    assert "requirement_summary" in migrated.completion_report.evidence_summary
+    assert migrated.executions[0].finished_at is None
+    assert any(event.type == "criteria_only_migrated" for event in migrated.events)
+
+
+def test_task_service_does_not_rejudge_ordinary_human_node_without_report(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_ordinary_human_node",
+        include_requirement_evidence=True,
+    )
+    task.completion_report = None
+    task.executions[0].completion_report = None
+    store.save(task)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.RUNNING
+    assert migrated.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert migrated.completion_report is None
+    assert migrated.executions[0].status == TaskStatus.RUNNING
+    assert migrated.executions[0].finished_at is None
+
+
+def test_task_service_does_not_rejudge_non_system_legacy_report(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_human_decided_legacy_report",
+        include_requirement_evidence=True,
+    )
+    assert task.completion_report is not None
+    task.completion_report.human_accepted = True
+    task.completion_report.decided_by_type = "human"
+    task.completion_report.decided_by_id = "root"
+    task.executions[0].completion_report = task.completion_report.model_copy(
+        deep=True
+    )
+    store.save(task)
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    migrated = store.get(task.id)
+    assert migrated is not None
+    assert migrated.task_status == TaskStatus.RUNNING
+    assert migrated.current_node == CurrentNode.HUMAN_INTERVENTION
+    assert migrated.completion_report is not None
+    assert migrated.completion_report.awaiting_human_decision is False
+    assert migrated.completion_report.decided_by_type == "human"
+    assert migrated.completion_report.human_accepted is True
+    assert migrated.executions[0].finished_at is None
+
+
+def test_task_service_does_not_migrate_matching_report_without_legacy_gate(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _legacy_pending_acceptance_task(
+        task_id="task_matching_report_without_legacy_gate",
+        include_requirement_evidence=True,
+    )
+    assert task.contract is not None
+    task.contract = TaskContractService().normalize_contract(task.contract)
+    task.executions[0].contract_snapshot = task.contract.model_copy(deep=True)
+    store.save(task)
+    before = task.model_dump(mode="json")
+
+    TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+
+    unchanged = store.get(task.id)
+    assert unchanged is not None
+    assert unchanged.model_dump(mode="json") == before
+    assert not any(
+        event.type == "criteria_only_migrated" for event in unchanged.events
+    )
 
 
 def test_legacy_task_defaults_execution_history_without_losing_initial_context() -> None:
@@ -228,9 +851,9 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     contract = confirmed["contract"]
     assert contract["goal"] == "形成客户认可的实施路径"
     assert contract["deliverable_goal"] == "交付一份实施方案文档"
-    assert contract["deliverable_kind"] == "file"
-    assert contract["deliverable_format"] == "markdown"
-    assert contract["deliverable_filename"] == "implementation-plan.md"
+    assert contract["deliverable_kind"] == "text"
+    assert contract["deliverable_format"] is None
+    assert contract["deliverable_filename"] == ""
     assert contract["version"] == 2
     assert contract["deliverable_requirements"] == []
     assert contract["success_criteria"][0] == {
@@ -240,7 +863,7 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     assert contract["success_criteria"][1]["id"]
     assert contract["success_criteria"][2]["id"] == "criterion_reviewable"
     assert contract["success_criteria"][3]["id"]
-    assert contract["requires_human_acceptance"] is True
+    assert contract["requires_human_acceptance"] is False
     assert contract["confirmed_by_user_id"] == user["id"]
     assert contract["confirmed_by_user_name"] == "张三"
     assert contract["confirmed_at"]
@@ -248,6 +871,76 @@ def test_confirm_task_records_structured_contract_from_current_user(tmp_path: Pa
     assert confirmed["executions"][0]["triggered_by_user_id"] == user["id"]
     assert confirmed["executions"][0]["triggered_by_user_name"] == "张三"
     assert confirmed["executions"][0]["contract_snapshot"] == contract
+
+
+def test_confirm_task_normalizes_legacy_delivery_fields_into_visible_criteria(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json"))
+    monkeypatch.setattr(
+        client.app.state.task_service,
+        "start_background_task",
+        lambda *_args, **_kwargs: None,
+    )
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Prepare a reviewable report"},
+    ).json()["tasks"][0]
+
+    response = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "Reviewable report",
+            "description": "Prepare a reviewable report",
+            "contract": {
+                "goal": "Produce an auditable result",
+                "deliverable_goal": "Deliver the report",
+                "deliverable_kind": "file",
+                "deliverable_format": "text",
+                "deliverable_filename": "report.patch",
+                "deliverable_requirements": [
+                    {"description": f"Legacy requirement {index}"}
+                    for index in range(1, 7)
+                ],
+                "success_criteria": [
+                    {"description": "Legacy requirement 1"},
+                    *[
+                        {"description": f"Visible criterion {index}"}
+                        for index in range(1, 7)
+                    ],
+                ],
+                "requires_human_acceptance": True,
+            },
+            "execution_mode": "async",
+        },
+    )
+
+    assert response.status_code == 200
+    contract = response.json()["contract"]
+    persisted_contract = client.app.state.task_service.get_task(created["id"]).contract
+    assert persisted_contract is not None
+    assert contract == persisted_contract.model_dump(mode="json")
+    assert contract["deliverable_kind"] == "text"
+    assert contract["deliverable_format"] is None
+    assert contract["deliverable_filename"] == ""
+    assert contract["deliverable_requirements"] == []
+    descriptions = [item["description"] for item in contract["success_criteria"]]
+    assert descriptions[:9] == [
+        *[f"Legacy requirement {index}" for index in range(1, 7)],
+        *[f"Visible criterion {index}" for index in range(1, 4)],
+    ]
+    assert descriptions[9].startswith("同时满足以下历史验收标准：")
+    assert all(
+        description in descriptions[9]
+        for description in (
+            "Visible criterion 4",
+            "Visible criterion 5",
+            "Visible criterion 6",
+        )
+    )
+    assert contract["requires_human_acceptance"] is False
+    assert response.json()["executions"][0]["contract_snapshot"] == contract
 
 
 def test_confirmed_task_waiting_for_dependencies_uses_initial_execution(tmp_path: Path) -> None:
@@ -821,7 +1514,80 @@ def test_legacy_contract_and_draft_default_to_text_deliverable() -> None:
         assert item.deliverable_filename == ""
 
 
-def test_merge_drafts_uses_first_explicit_file_deliverable(tmp_path: Path) -> None:
+def test_task_confirm_normalizes_task_contract_instance_without_extra_fields() -> None:
+    confirmed_contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Reviewable delivery",
+        deliverable_kind="file",
+        deliverable_format="markdown",
+        deliverable_filename="delivery.md",
+        success_criteria=[TaskContractItem(description="Reviewable")],
+        requires_human_acceptance=True,
+        confirmed_at=utc_now(),
+    )
+
+    payload = TaskConfirm(
+        title="Prepare delivery",
+        description="Prepare a reviewable delivery",
+        contract=confirmed_contract,
+    )
+
+    assert type(payload.contract) is TaskContractInput
+    assert payload.contract.deliverable_kind == "text"
+    assert payload.contract.deliverable_format is None
+    assert payload.contract.deliverable_filename == ""
+    assert payload.contract.requires_human_acceptance is False
+
+
+def test_merge_drafts_normalizes_single_legacy_draft_to_visible_criteria(
+    tmp_path: Path,
+) -> None:
+    service = TestClient(create_app(agent_file=tmp_path / "agents.json")).app.state.task_service
+
+    merged = service._merge_drafts(
+        "Prepare delivery",
+        [
+            {
+                "draft_key": "draft_plan",
+                "title": "Write plan",
+                "description": "Write the plan",
+                "confidence": 0.8,
+                "suggested_assignee_type": "agent",
+                "suggested_agent_id": "agent_writer",
+                "depends_on": ["draft_analysis"],
+                "goal": "Agree on the plan",
+                "deliverable_goal": "Deliver a reviewable plan",
+                "deliverable_kind": "file",
+                "deliverable_format": "text",
+                "deliverable_filename": "report.patch",
+                "deliverable_requirements": ["Legacy requirement", "Shared criterion"],
+                "success_criteria": ["Shared criterion", "Visible criterion"],
+                "requires_human_acceptance": True,
+            }
+        ],
+    )
+
+    assert merged.draft_key == "draft_plan"
+    assert merged.suggested_assignee_type == "agent"
+    assert merged.suggested_agent_id == "agent_writer"
+    assert merged.depends_on == ["draft_analysis"]
+    assert merged.goal == "Agree on the plan"
+    assert merged.deliverable_goal == "Deliver a reviewable plan"
+    assert merged.deliverable_kind == "text"
+    assert merged.deliverable_format is None
+    assert merged.deliverable_filename == ""
+    assert merged.deliverable_requirements == []
+    assert merged.success_criteria == [
+        "Legacy requirement",
+        "Shared criterion",
+        "Visible criterion",
+    ]
+    assert merged.requires_human_acceptance is False
+
+
+def test_merge_drafts_normalizes_multiple_legacy_drafts_to_visible_criteria(
+    tmp_path: Path,
+) -> None:
     service = TestClient(create_app(agent_file=tmp_path / "agents.json")).app.state.task_service
 
     merged = service._merge_drafts(
@@ -831,29 +1597,43 @@ def test_merge_drafts_uses_first_explicit_file_deliverable(tmp_path: Path) -> No
                 "title": "Analyze",
                 "description": "Analyze requirements",
                 "confidence": 0.9,
+                "suggested_assignee_type": "agent",
+                "suggested_agent_id": "agent_analyst",
+                "deliverable_goal": "Deliver analysis",
+                "deliverable_requirements": ["Legacy requirement 1", "Shared criterion"],
+                "success_criteria": ["Visible criterion 1"],
+                "requires_human_acceptance": True,
             },
             {
                 "title": "Write plan",
                 "description": "Write the plan",
                 "confidence": 0.8,
                 "deliverable_kind": "file",
-                "deliverable_format": "markdown",
-                "deliverable_filename": "first-plan.md",
-            },
-            {
-                "title": "Write notes",
-                "description": "Write notes",
-                "confidence": 0.7,
-                "deliverable_kind": "file",
                 "deliverable_format": "text",
-                "deliverable_filename": "later-notes.txt",
+                "deliverable_filename": "report.patch",
+                "deliverable_goal": "Deliver plan",
+                "deliverable_requirements": ["Legacy requirement 2"],
+                "success_criteria": ["Shared criterion", "Visible criterion 2"],
             },
         ],
     )
 
-    assert merged.deliverable_kind == "file"
-    assert merged.deliverable_format == "markdown"
-    assert merged.deliverable_filename == "first-plan.md"
+    assert merged.suggested_assignee_type == "agent"
+    assert merged.suggested_agent_id == "agent_analyst"
+    assert merged.goal == "Prepare delivery"
+    assert merged.deliverable_goal == "Deliver analysis; Deliver plan"
+    assert merged.deliverable_kind == "text"
+    assert merged.deliverable_format is None
+    assert merged.deliverable_filename == ""
+    assert merged.deliverable_requirements == []
+    assert merged.success_criteria == [
+        "Legacy requirement 1",
+        "Shared criterion",
+        "Legacy requirement 2",
+        "Visible criterion 1",
+        "Visible criterion 2",
+    ]
+    assert merged.requires_human_acceptance is False
 
 
 def test_merge_drafts_defaults_to_text_without_explicit_file(tmp_path: Path) -> None:
@@ -2232,7 +3012,7 @@ def test_task_level_result_preserves_non_success_terminal_status(tmp_path: Path,
     assert task["completion_report"]["completion_reason"] == f"External executor reported {result_status}"
 
 
-def test_task_level_blocked_result_waits_for_human_adjudication(tmp_path: Path) -> None:
+def test_task_level_blocked_result_remains_blocked(tmp_path: Path) -> None:
     app = create_app(agent_file=tmp_path / "agents.json")
     client = TestClient(app)
     created = client.post(
@@ -2260,11 +3040,11 @@ def test_task_level_blocked_result_waits_for_human_adjudication(tmp_path: Path) 
     )
 
     assert response.status_code == 200
-    pending = response.json()
-    assert pending["task_status"] == "running"
-    assert pending["current_node"] == "human_intervention"
-    assert pending["completion_report"]["terminal_status"] == "running"
-    assert pending["completion_report"]["awaiting_human_decision"] is True
+    blocked = response.json()
+    assert blocked["task_status"] == "blocked"
+    assert blocked["current_node"] == "completion_judge"
+    assert blocked["completion_report"]["terminal_status"] == "blocked"
+    assert blocked["completion_report"]["awaiting_human_decision"] is False
 
 
 @pytest.mark.parametrize(
@@ -2329,6 +3109,91 @@ def test_human_adjudication_finalizes_automatic_completion_gap(
     assert adjudicated["completion_report"]["terminal_status"] == expected_status
     assert adjudicated["completion_report"]["decided_by_type"] == "human"
     assert adjudicated["executions"][0]["finished_at"] is not None
+    if decision == "succeeded":
+        criterion_result = adjudicated["completion_report"]["criterion_results"][0]
+        assert criterion_result["status"] == "passed"
+        assert criterion_result["evidence_text"] == "管理员确认最终结论"
+        assert "Human adjudication" in criterion_result["reason"]
+
+
+def test_human_adjudication_can_supply_missing_output_on_second_submission(
+    tmp_path: Path,
+) -> None:
+    app = create_app(agent_file=tmp_path / "agents.json")
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Prepare delayed output"},
+    ).json()["tasks"][0]
+    service = app.state.task_service
+    task = service.get_task(created["id"])
+    task.contract = TaskContract(
+        goal="Prepare delayed output",
+        deliverable_goal="Reviewable output",
+        success_criteria=[
+            TaskContractItem(
+                id="criterion_reviewable",
+                description="The output is reviewable",
+            )
+        ],
+        confirmed_at=utc_now(),
+    )
+    task.current_node = CurrentNode.DISPATCH_DECISION
+    actor = app.state.user_registry.get_user("root")
+    execution = service.execution_service.create_initial(
+        task,
+        actor,
+        CurrentNode.DISPATCH_DECISION,
+    )
+    execution.started_at = utc_now()
+    pending_report = service.completion_service.finalize(
+        task,
+        candidate_status=TaskStatus.SUCCEEDED,
+        output="",
+        reason="Output is not available yet",
+        criterion_results=[
+            CriterionResult(
+                criterion_id="criterion_reviewable",
+                status=CriterionResultStatus.PASSED,
+                evidence_text="Criterion is ready but output is missing",
+            )
+        ],
+    )
+    service.store.save(task)
+
+    assert pending_report.awaiting_human_decision is True
+    first = client.post(
+        f"/api/v1/tasks/{task.id}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "",
+            "metadata": {"human_accepted": True},
+        },
+    )
+
+    assert first.status_code == 200
+    still_pending = first.json()
+    assert still_pending["task_status"] == "running"
+    assert still_pending["completion_report"]["awaiting_human_decision"] is True
+    assert still_pending["completion_report"]["decided_by_type"] == "human"
+    assert still_pending["completion_report"]["human_accepted"] is True
+
+    second = client.post(
+        f"/api/v1/tasks/{task.id}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "管理员补齐最终输出",
+            "metadata": {"human_accepted": True},
+        },
+    )
+
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["task_status"] == "succeeded"
+    assert completed["final_output"] == "管理员补齐最终输出"
+    criterion_result = completed["completion_report"]["criterion_results"][0]
+    assert criterion_result["status"] == "passed"
+    assert criterion_result["evidence_text"] == "管理员补齐最终输出"
 
 
 def test_task_result_rejects_duplicate_criterion_ids(tmp_path: Path) -> None:
@@ -2353,7 +3218,7 @@ def test_task_result_rejects_duplicate_criterion_ids(tmp_path: Path) -> None:
     assert response.status_code == 422
 
 
-def test_task_result_human_acceptance_reuses_pending_evidence_and_artifact(
+def test_completed_task_does_not_wait_for_human_acceptance(
     tmp_path: Path,
 ) -> None:
     app = create_app(agent_file=tmp_path / "agents.json")
@@ -2384,7 +3249,7 @@ def test_task_result_human_acceptance_reuses_pending_evidence_and_artifact(
         CurrentNode.DISPATCH_DECISION,
     )
     execution.started_at = utc_now()
-    pending_report = service.completion_service.finalize(
+    report = service.completion_service.finalize(
         task,
         candidate_status=TaskStatus.SUCCEEDED,
         output="Original reviewable delivery",
@@ -2398,11 +3263,12 @@ def test_task_result_human_acceptance_reuses_pending_evidence_and_artifact(
         ],
     )
     service.store.save(task)
-    pending_artifact_ids = [artifact.id for artifact in task.artifacts]
+    artifact_ids = [artifact.id for artifact in task.artifacts]
+    before = task.model_dump(mode="json")
 
-    assert pending_report.terminal_status == TaskStatus.RUNNING
-    assert task.current_node == CurrentNode.HUMAN_INTERVENTION
-    assert execution.finished_at is None
+    assert report.terminal_status == TaskStatus.SUCCEEDED
+    assert task.current_node == CurrentNode.COMPLETION_JUDGE
+    assert execution.finished_at is not None
 
     response = client.post(
         f"/api/v1/tasks/{task.id}/result",
@@ -2421,18 +3287,9 @@ def test_task_result_human_acceptance_reuses_pending_evidence_and_artifact(
         },
     )
 
-    assert response.status_code == 200
-    accepted = response.json()
-    assert accepted["task_status"] == "succeeded"
-    assert accepted["current_node"] == "completion_judge"
-    assert accepted["final_output"] == "Original reviewable delivery"
-    assert accepted["completion_report"]["human_accepted"] is True
-    assert accepted["completion_report"]["criterion_results"] == pending_report.model_dump(
-        mode="json"
-    )["criterion_results"]
-    assert accepted["completion_report"]["artifact_ids"] == pending_artifact_ids
-    assert [artifact["id"] for artifact in accepted["artifacts"]] == pending_artifact_ids
-    assert accepted["executions"][0]["finished_at"] is not None
+    assert response.status_code == 409
+    assert service.get_task(task.id).model_dump(mode="json") == before
+    assert report.artifact_ids == artifact_ids
 
 
 def test_human_acceptance_rejects_non_completing_request(tmp_path: Path) -> None:
@@ -2494,7 +3351,7 @@ def test_human_acceptance_rejects_non_completing_request(tmp_path: Path) -> None
     assert service.get_task(task.id).model_dump(mode="json") == before
 
 
-def test_human_acceptance_is_serialized_with_background_execution(
+def test_background_completion_is_serialized_against_late_result_submission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2537,8 +3394,12 @@ def test_human_acceptance_is_serialized_with_background_execution(
     acceptance_finished = Event()
     background_errors: list[Exception] = []
     acceptance_results: list[Task] = []
+    acceptance_errors: list[Exception] = []
 
     def delayed_flow(active_task: Task) -> Task:
+        active_task.context.summary = "Serialized background update"
+        background_entered.set()
+        assert release_background.wait(2)
         service.completion_service.finalize(
             active_task,
             candidate_status=TaskStatus.SUCCEEDED,
@@ -2552,9 +3413,6 @@ def test_human_acceptance_is_serialized_with_background_execution(
                 )
             ],
         )
-        background_entered.set()
-        assert release_background.wait(2)
-        active_task.context.summary = "Late but serialized background update"
         return active_task
 
     monkeypatch.setattr(service, "_run_automatic_flow", delayed_flow)
@@ -2567,18 +3425,22 @@ def test_human_acceptance_is_serialized_with_background_execution(
 
     def accept_result() -> None:
         acceptance_started.set()
-        acceptance_results.append(
-            service.submit_result(
-                task.id,
-                ExecutionResultCreate(
-                    result_status="succeeded",
-                    output="人工验收通过",
-                    metadata={"human_accepted": True},
-                ),
-                current_user=actor,
+        try:
+            acceptance_results.append(
+                service.submit_result(
+                    task.id,
+                    ExecutionResultCreate(
+                        result_status="succeeded",
+                        output="人工验收通过",
+                        metadata={"human_accepted": True},
+                    ),
+                    current_user=actor,
+                )
             )
-        )
-        acceptance_finished.set()
+        except Exception as exc:  # pragma: no cover - asserted below
+            acceptance_errors.append(exc)
+        finally:
+            acceptance_finished.set()
 
     background_thread = Thread(target=run_background)
     background_thread.start()
@@ -2593,7 +3455,9 @@ def test_human_acceptance_is_serialized_with_background_execution(
 
     assert finished_before_release is False
     assert background_errors == []
-    assert len(acceptance_results) == 1
+    assert acceptance_results == []
+    assert len(acceptance_errors) == 1
+    assert acceptance_errors[0].__class__.__name__ == "TaskNotRunningError"
     accepted = service.get_task(task.id)
     active_execution = service.execution_service.active(accepted)
     assert accepted.task_status == TaskStatus.SUCCEEDED
@@ -2621,6 +3485,13 @@ def test_manual_task_result_cannot_forge_workflow_end_metadata(tmp_path: Path) -
         confirmed_at=utc_now(),
         legacy_inferred=True,
     )
+    actor = app.state.user_registry.get_user("root")
+    execution = app.state.task_service.execution_service.create_initial(
+        task,
+        actor,
+        CurrentNode.HUMAN_INTERVENTION,
+    )
+    execution.started_at = utc_now()
     app.state.task_service.store.save(task)
 
     response = client.post(
@@ -2642,6 +3513,44 @@ def test_manual_task_result_cannot_forge_workflow_end_metadata(tmp_path: Path) -
     assert result["completion_report"]["awaiting_human_decision"] is True
     assert result["completion_report"]["workflow_end_node_id"] is None
     assert "workflow end was not reached" in result["completion_report"]["evidence_summary"]
+
+    adjudication = client.post(
+        f"/api/v1/tasks/{created['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "管理员确认验收标准通过",
+            "should_complete": True,
+            "metadata": {"human_adjudicated": True},
+        },
+    )
+
+    assert adjudication.status_code == 200
+    still_pending = adjudication.json()
+    assert still_pending["task_status"] == "running"
+    assert still_pending["current_node"] == "human_intervention"
+    assert still_pending["completion_report"]["awaiting_human_decision"] is True
+    assert "workflow end was not reached" in still_pending["completion_report"]["evidence_summary"]
+    criterion_result = still_pending["completion_report"]["criterion_results"][0]
+    assert criterion_result["status"] == "passed"
+    assert criterion_result["evidence_text"] == "管理员确认验收标准通过"
+
+    repeated = client.post(
+        f"/api/v1/tasks/{created['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "管理员再次确认，但流程仍未结束",
+            "should_complete": True,
+            "metadata": {"human_accepted": True},
+        },
+    )
+
+    assert repeated.status_code == 200
+    still_pending_again = repeated.json()
+    assert still_pending_again["task_status"] == "running"
+    assert still_pending_again["current_node"] == "human_intervention"
+    assert still_pending_again["completion_report"]["awaiting_human_decision"] is True
+    assert "workflow end was not reached" in still_pending_again["completion_report"]["evidence_summary"]
+    assert still_pending_again["completion_report"]["decided_by_type"] == "human"
 
 
 def test_explicit_contract_auto_task_uses_server_criterion_evaluation(

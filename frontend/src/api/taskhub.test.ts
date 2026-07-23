@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest"
 
 import {
   buildTaskRequestPayload,
@@ -20,6 +20,7 @@ import {
   type RerunSideEffect,
   type SubTask,
   type Task,
+  type TaskConfirmPayload,
   type TaskContract,
   type TaskContractItem,
   type TaskExecution,
@@ -345,7 +346,7 @@ describe("taskhub api client", () => {
     expect(JSON.parse(String(options.body))).toEqual(payload)
   })
 
-  it("sends task contract when confirming a task", async () => {
+  it("sends only criteria contract fields when confirming a task", async () => {
     const fetchMock = vi.fn(async () => mockJsonResponse({ id: "task_001" }))
     vi.stubGlobal("fetch", fetchMock)
     const contract = {
@@ -359,7 +360,23 @@ describe("taskhub api client", () => {
     await confirmTask("task_001", { title: "问题分析", description: "完成问题分析", contract })
 
     const [, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(JSON.parse(String(options.body)).contract).toEqual(contract)
+    expect(JSON.parse(String(options.body))).toEqual({
+      title: "问题分析",
+      description: "完成问题分析",
+      contract: {
+        goal: "解决客户问题",
+        deliverable_goal: "交付问题分析报告",
+        success_criteria: [{ id: "criterion_001", description: "报告通过人工验收" }],
+      },
+    })
+  })
+
+  it("types confirmation contracts as criteria-only inputs", () => {
+    expectTypeOf<NonNullable<TaskConfirmPayload["contract"]>>().toEqualTypeOf<{
+      goal: string
+      deliverable_goal: string
+      success_criteria: TaskContractItem[]
+    }>()
   })
 
   it.each([428, 409])("formats %s object detail as readable error text", async (status) => {

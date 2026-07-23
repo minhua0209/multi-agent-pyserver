@@ -5,7 +5,6 @@ import {
   Input,
   Modal,
   Spin,
-  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -91,38 +90,26 @@ export function TaskConfirmationModal({
     setError("")
   }
 
-  function updateList(
-    taskId: string,
-    field: "deliverableRequirements" | "successCriteria",
-    index: number,
-    value: string,
-  ) {
+  function updateList(taskId: string, index: number, value: string) {
     const draft = drafts[taskId]
     if (!draft) return
-    const next = [...draft[field]]
+    const next = [...draft.successCriteria]
     next[index] = value
-    updateDraft(taskId, { [field]: next })
+    updateDraft(taskId, { successCriteria: next })
   }
 
-  function addListItem(
-    taskId: string,
-    field: "deliverableRequirements" | "successCriteria",
-  ) {
+  function addListItem(taskId: string) {
     const draft = drafts[taskId]
     if (!draft) return
-    if (field === "successCriteria" && draft[field].length >= MAX_ACCEPTANCE_CRITERIA) return
-    updateDraft(taskId, { [field]: [...draft[field], ""] })
+    if (draft.successCriteria.length >= MAX_ACCEPTANCE_CRITERIA) return
+    updateDraft(taskId, { successCriteria: [...draft.successCriteria, ""] })
   }
 
-  function removeListItem(
-    taskId: string,
-    field: "deliverableRequirements" | "successCriteria",
-    index: number,
-  ) {
+  function removeListItem(taskId: string, index: number) {
     const draft = drafts[taskId]
     if (!draft) return
     updateDraft(taskId, {
-      [field]: draft[field].filter((_, itemIndex) => itemIndex !== index),
+      successCriteria: draft.successCriteria.filter((_, itemIndex) => itemIndex !== index),
     })
   }
 
@@ -290,23 +277,10 @@ export function TaskConfirmationModal({
                       placeholder="例如：方案包含实施步骤、风险说明，并可直接评审"
                       values={draft.successCriteria}
                       maxItems={MAX_ACCEPTANCE_CRITERIA}
-                      onAdd={() => addListItem(task.id, "successCriteria")}
-                      onChange={(index, value) => updateList(task.id, "successCriteria", index, value)}
-                      onRemove={(index) => removeListItem(task.id, "successCriteria", index)}
+                      onAdd={() => addListItem(task.id)}
+                      onChange={(index, value) => updateList(task.id, index, value)}
+                      onRemove={(index) => removeListItem(task.id, index)}
                     />
-                    <div className="confirmation-switch-row">
-                      <div>
-                        <strong>需要人工验收</strong>
-                        <span>任务完成后必须由人工确认才能结束</span>
-                      </div>
-                      <Switch
-                        checked={draft.requiresHumanAcceptance}
-                        onChange={(checked) => updateDraft(
-                          task.id,
-                          { requiresHumanAcceptance: checked },
-                        )}
-                      />
-                    </div>
                   </div>
                 </Card>
               )

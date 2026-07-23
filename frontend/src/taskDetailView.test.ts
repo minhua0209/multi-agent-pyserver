@@ -14,7 +14,6 @@ import {
   taskDetailTypeBadge,
   taskExecutionHistory,
   taskFourQuestions,
-  taskHumanAcceptanceText,
   taskInterventionView,
   workflowDefinitionForTask,
   workflowSubtaskForNode,
@@ -289,8 +288,8 @@ describe("task detail view helpers", () => {
     expect(taskFourQuestions(terminalWithoutOutput)[3].text).toBe("未记录结束原因；任务终态为 cancelled")
   })
 
-  it("keeps required human acceptance explicitly unfinished and builds acceptance payload", () => {
-    const pendingAcceptance = {
+  it("uses the completion reason and generic intervention for legacy acceptance contracts", () => {
+    const legacyAcceptance = {
       ...task,
       task_status: "running",
       current_node: "human_intervention",
@@ -307,18 +306,20 @@ describe("task detail view helpers", () => {
       final_output: "原始交付内容",
     } as Task
 
-    expect(taskFourQuestions(pendingAcceptance)[3].text).toBe("等待人工验收，任务尚未结束")
-    expect(taskInterventionView(pendingAcceptance)).toMatchObject({
-      awaitingAcceptance: true,
-      title: "人工验收",
-      submitText: "验收通过",
-      requiresOutput: false,
+    expect(taskFourQuestions(legacyAcceptance)[3].text).toBe("全部自动检查已通过")
+    expect(taskInterventionView(legacyAcceptance)).toEqual({
+      awaitingAdjudication: false,
+      title: "人工介入处理",
+      description: "流程当前无法自动继续。请补充最终处理结论。",
+      inputLabel: "处理结论",
+      placeholder: "填写最终结论、处理结果或后续说明",
+      submitText: "完成任务",
+      requiresOutput: true,
     })
-    expect(buildTaskInterventionResultPayload(pendingAcceptance, "")).toEqual({
+    expect(buildTaskInterventionResultPayload(legacyAcceptance, "补充处理结论")).toEqual({
       result_status: "succeeded",
-      output: "人工验收通过",
+      output: "补充处理结论",
       should_complete: true,
-      metadata: { human_accepted: true },
     })
   })
 
@@ -337,23 +338,23 @@ describe("task detail view helpers", () => {
       final_output: "已有执行结果",
     } as Task
 
-    expect(taskInterventionView(pendingAdjudication)).toMatchObject({
+    const intervention = taskInterventionView(pendingAdjudication)
+    expect(intervention).toMatchObject({
       awaitingAdjudication: true,
       title: "人工结果裁决",
       submitText: "判定成功",
       requiresOutput: true,
     })
+    expect(intervention).not.toHaveProperty("awaitingAcceptance")
     expect(buildTaskInterventionResultPayload(pendingAdjudication, "证据足够", "succeeded")).toEqual({
       result_status: "succeeded",
       output: "证据足够",
       should_complete: true,
-      metadata: { human_adjudicated: true, human_accepted: true },
     })
     expect(buildTaskInterventionResultPayload(pendingAdjudication, "证据不足", "failed")).toEqual({
       result_status: "failed",
       output: "证据不足",
       should_complete: true,
-      metadata: { human_adjudicated: true, human_accepted: false },
     })
   })
 
@@ -539,12 +540,12 @@ describe("task detail view helpers", () => {
             reason: "PDF 交付物缺失",
           },
         ],
-        humanAccepted: false,
         decidedByType: "system",
         decidedById: "task_graph",
         decidedAt: "2026-07-20T09:03:00Z",
       },
     })
+    expect(history[1].report).not.toHaveProperty("humanAccepted")
   })
 
   it.each([
@@ -574,25 +575,6 @@ describe("task detail view helpers", () => {
   it("moves the controlled execution history expansion to the new active execution", () => {
     expect(executionHistoryActiveKeys(["execution_1"], "execution_2")).toEqual(["execution_2"])
     expect(executionHistoryActiveKeys(["execution_1"], "")).toEqual(["execution_1"])
-  })
-
-  it("describes human acceptance without treating an optional missing record as a failure", () => {
-    const report = {
-      terminalStatus: "succeeded",
-      completionReason: "完成",
-      criterionResults: [],
-      deliverableResults: [],
-      artifactIds: [],
-      humanAccepted: false,
-      decidedByType: "system",
-      decidedById: "task_graph",
-      decidedAt: "2026-07-20T10:00:00Z",
-      evidenceSummary: "",
-    }
-
-    expect(taskHumanAcceptanceText(report)).toBe("未记录或无需验收")
-    expect(taskHumanAcceptanceText({ ...report, terminalStatus: "running" })).toBe("待验收")
-    expect(taskHumanAcceptanceText({ ...report, humanAccepted: true })).toBe("已通过")
   })
 
   it("prefers the active execution workflow snapshot and falls back to request metadata", () => {

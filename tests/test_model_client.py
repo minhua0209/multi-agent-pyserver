@@ -294,7 +294,7 @@ def test_model_intent_parses_multiple_tasks(monkeypatch: pytest.MonkeyPatch) -> 
     assert [draft.title for draft in drafts] == ["Create quote", "Review contract"]
 
 
-def test_model_intent_parses_suggested_contract_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_intent_parses_visible_contract_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
     def fake_create(system_prompt: str, user_prompt: str) -> str:
@@ -325,23 +325,78 @@ def test_model_intent_parses_suggested_contract_fields(monkeypatch: pytest.Monke
 
     assert draft.goal == "Agree on the implementation approach"
     assert draft.deliverable_goal == "Deliver a reviewable plan"
-    assert draft.deliverable_kind == "file"
-    assert draft.deliverable_format == "markdown"
-    assert draft.deliverable_filename == "implementation-plan.md"
+    assert draft.deliverable_kind == "text"
+    assert draft.deliverable_format is None
+    assert draft.deliverable_filename == ""
     assert draft.deliverable_requirements == []
     assert draft.success_criteria == [
         "Markdown document",
         "Include milestones",
         "Reviewers can make an approval decision",
     ]
-    assert draft.requires_human_acceptance is True
-    assert '"deliverable_kind": "text|file"' in captured["system_prompt"]
-    assert '"deliverable_format": "markdown|text|null"' in captured["system_prompt"]
-    assert '"deliverable_filename": "..."' in captured["system_prompt"]
-    assert "1到4条统一验收标准" in captured["system_prompt"]
+    assert draft.requires_human_acceptance is False
+    assert '"deliverable_kind"' not in captured["system_prompt"]
+    assert '"deliverable_format"' not in captured["system_prompt"]
+    assert '"deliverable_filename"' not in captured["system_prompt"]
+    assert '"deliverable_requirements"' not in captured["system_prompt"]
+    assert '"requires_human_acceptance"' not in captured["system_prompt"]
+    assert "1到10条统一验收标准" in captured["system_prompt"]
 
 
-def test_model_intent_limits_generated_acceptance_criteria_to_four(
+def test_model_intent_ignores_legacy_delivery_fields_and_merges_acceptance_criteria(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_create(system_prompt: str, user_prompt: str) -> str:
+        captured["system_prompt"] = system_prompt
+        return json.dumps(
+            {
+                "tasks": [
+                    {
+                        "title": "Create implementation plan",
+                        "description": "Prepare an implementation plan for review",
+                        "confidence": 0.92,
+                        "goal": "Agree on the implementation approach",
+                        "deliverable_goal": "Deliver a reviewable plan",
+                        "deliverable_kind": "file",
+                        "deliverable_format": "text",
+                        "deliverable_filename": "report.patch",
+                        "deliverable_requirements": [
+                            f"Legacy requirement {index}" for index in range(1, 7)
+                        ],
+                        "success_criteria": [
+                            "Legacy requirement 1",
+                            *[f"Visible criterion {index}" for index in range(1, 7)],
+                        ],
+                        "requires_human_acceptance": True,
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.core.model_client.default_client.create", fake_create)
+
+    draft = recognize_tasks_with_model("Create an implementation plan", [])[0]
+
+    assert draft.deliverable_kind == "text"
+    assert draft.deliverable_format is None
+    assert draft.deliverable_filename == ""
+    assert draft.deliverable_requirements == []
+    assert draft.success_criteria == [
+        *[f"Legacy requirement {index}" for index in range(1, 7)],
+        *[f"Visible criterion {index}" for index in range(1, 5)],
+    ]
+    assert draft.requires_human_acceptance is False
+    assert '"success_criteria"' in captured["system_prompt"]
+    assert '"deliverable_kind"' not in captured["system_prompt"]
+    assert '"deliverable_format"' not in captured["system_prompt"]
+    assert '"deliverable_filename"' not in captured["system_prompt"]
+    assert '"deliverable_requirements"' not in captured["system_prompt"]
+    assert '"requires_human_acceptance"' not in captured["system_prompt"]
+
+
+def test_model_intent_limits_generated_acceptance_criteria_to_ten(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -352,7 +407,7 @@ def test_model_intent_limits_generated_acceptance_criteria_to_four(
                     {
                         "title": "验收标准限制",
                         "description": "验证模型验收标准数量限制",
-                        "success_criteria": [f"criterion-{index}" for index in range(1, 7)],
+                        "success_criteria": [f"criterion-{index}" for index in range(1, 13)],
                     }
                 ]
             }
@@ -361,12 +416,7 @@ def test_model_intent_limits_generated_acceptance_criteria_to_four(
 
     draft = recognize_tasks_with_model("验证验收标准数量", [])[0]
 
-    assert draft.success_criteria == [
-        "criterion-1",
-        "criterion-2",
-        "criterion-3",
-        "criterion-4",
-    ]
+    assert draft.success_criteria == [f"criterion-{index}" for index in range(1, 11)]
 
 
 @pytest.mark.parametrize(
@@ -374,29 +424,23 @@ def test_model_intent_limits_generated_acceptance_criteria_to_four(
         "raw_kind",
         "raw_format",
         "raw_filename",
-        "expected_kind",
-        "expected_format",
-        "expected_filename",
     ),
     [
-        ("FILE", "markdown", " report.md ", "text", None, ""),
-        (" file ", "text", " report.txt ", "text", None, ""),
-        ("file", "Markdown", " report.md ", "file", None, "report.md"),
-        ("file", None, 123, "file", None, ""),
-        ("file", {}, " report.md ", "file", None, "report.md"),
-        ("text", "markdown", " report.md ", "text", None, ""),
-        (None, "text", " report.txt ", "text", None, ""),
-        ([], "markdown", " report.md ", "text", None, ""),
+        ("FILE", "markdown", " report.md "),
+        (" file ", "text", " report.txt "),
+        ("file", "Markdown", " report.md "),
+        ("file", None, 123),
+        ("file", {}, " report.md "),
+        ("text", "markdown", " report.md "),
+        (None, "text", " report.txt "),
+        ([], "markdown", " report.md "),
     ],
 )
-def test_model_intent_suggested_contract_fields_normalize_invalid_delivery_values(
+def test_model_intent_ignores_suggested_delivery_values(
     monkeypatch: pytest.MonkeyPatch,
     raw_kind: object,
     raw_format: object,
     raw_filename: object,
-    expected_kind: str,
-    expected_format: str | None,
-    expected_filename: str,
 ) -> None:
     monkeypatch.setattr(
         "app.core.model_client.default_client.create",
@@ -418,9 +462,9 @@ def test_model_intent_suggested_contract_fields_normalize_invalid_delivery_value
 
     draft = recognize_tasks_with_model("Create report", [])[0]
 
-    assert draft.deliverable_kind == expected_kind
-    assert draft.deliverable_format == expected_format
-    assert draft.deliverable_filename == expected_filename
+    assert draft.deliverable_kind == "text"
+    assert draft.deliverable_format is None
+    assert draft.deliverable_filename == ""
 
 
 def test_model_intent_accepts_suggested_agent(monkeypatch: pytest.MonkeyPatch) -> None:

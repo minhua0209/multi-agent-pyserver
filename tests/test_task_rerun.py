@@ -563,6 +563,54 @@ def test_task_service_idempotency_replays_before_running_preflight_and_conflicts
         )
 
 
+def test_task_service_rerun_normalizes_new_contract_without_mutating_source_snapshot(
+    tmp_path,
+) -> None:
+    store = InMemoryTaskStore()
+    task = _finished_task()
+    legacy_contract = TaskContract(
+        goal="Prepare delivery",
+        deliverable_goal="Legacy reviewable file",
+        deliverable_kind="file",
+        deliverable_format="text",
+        deliverable_filename="legacy.txt",
+        deliverable_requirements=[
+            TaskContractItem(
+                id="requirement_summary",
+                description="Contains a summary",
+            )
+        ],
+        success_criteria=[
+            TaskContractItem(id="criterion_1", description="Reviewable")
+        ],
+        requires_human_acceptance=True,
+        confirmed_at=utc_now(),
+    )
+    task.contract = legacy_contract.model_copy(deep=True)
+    task.executions[0].contract_snapshot = legacy_contract.model_copy(deep=True)
+    store.save(task)
+    service = TaskService(store, AgentRegistry(tmp_path / "agents.json"))
+    source_snapshot = service.get_task("task_1").executions[0].contract_snapshot
+    assert source_snapshot is not None
+    source_before = source_snapshot.model_copy(deep=True)
+
+    response = service.create_rerun(
+        "task_1",
+        _rerun_payload(execution_mode="async"),
+        _actor(),
+        "normalized-rerun-key",
+    )
+
+    assert response.task.executions[0].contract_snapshot == source_before
+    assert response.execution.contract_snapshot is not None
+    assert response.execution.contract_snapshot.deliverable_requirements == []
+    assert response.execution.contract_snapshot.requires_human_acceptance is False
+    assert [
+        item.id for item in response.execution.contract_snapshot.success_criteria
+    ] == ["requirement_summary", "criterion_1"]
+    assert response.task.contract == response.execution.contract_snapshot
+
+
 def test_task_service_concurrent_same_idempotency_key_creates_one_execution(tmp_path) -> None:
     store = InMemoryTaskStore()
     store.save(_finished_task())

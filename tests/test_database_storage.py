@@ -4,9 +4,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from app.core.config import DEFAULT_DATABASE_URL
-from app.core.enums import CurrentNode, ExecutionTriggerType, SourceType, TaskStatus
+from app.core.enums import (
+    CriterionResultStatus,
+    CurrentNode,
+    ExecutionTriggerType,
+    SourceType,
+    TaskStatus,
+)
 from app.core.models import (
     AgentCreate,
+    CompletionReport,
+    CriterionResult,
     RoundPlan,
     SubTask,
     Task,
@@ -192,11 +200,12 @@ def test_database_task_store_persists_confirmed_contract_across_app_instances(
     reloaded = second_client.get(f"/api/v1/tasks/{created['id']}").json()
 
     assert reloaded["contract"] == confirmed_payload["contract"]
-    assert reloaded["contract"]["deliverable_kind"] == "file"
-    assert reloaded["contract"]["deliverable_format"] == "text"
-    assert reloaded["contract"]["deliverable_filename"] == "delivery.txt"
+    assert reloaded["contract"]["deliverable_kind"] == "text"
+    assert reloaded["contract"]["deliverable_format"] is None
+    assert reloaded["contract"]["deliverable_filename"] == ""
     assert reloaded["contract"]["version"] == 2
     assert reloaded["contract"]["deliverable_requirements"] == []
+    assert reloaded["contract"]["requires_human_acceptance"] is False
     assert [item["description"] for item in reloaded["contract"]["success_criteria"]] == [
         "包含里程碑",
         "可以进入评审",
@@ -208,6 +217,119 @@ def test_database_task_store_persists_confirmed_contract_across_app_instances(
     assert reloaded["executions"][0]["context_snapshot"] == reloaded["context"]
     assert reloaded["executions"][0]["status"] == reloaded["task_status"]
     assert reloaded["executions"][0]["final_output"] == reloaded["final_output"]
+
+
+def test_database_app_start_migrates_legacy_pending_acceptance_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AGENT_OUTPUT_DIR", str(tmp_path / "outputs"))
+    database_url = f"sqlite:///{tmp_path / 'taskhub.db'}"
+    first_app = create_app(database_url=database_url)
+    first_client = TestClient(first_app)
+    created = first_client.post(
+        "/api/v1/tasks/requests",
+        json={"source_type": "business_system", "content": "Legacy pending acceptance"},
+    ).json()["tasks"][0]
+    service = first_app.state.task_service
+    task = service.get_task(created["id"])
+    now = utc_now()
+    task.contract = TaskContract(
+        goal="Prepare legacy delivery",
+        deliverable_goal="Legacy reviewable file",
+        deliverable_kind="file",
+        deliverable_format="text",
+        deliverable_filename="legacy.txt",
+        deliverable_requirements=[
+            TaskContractItem(
+                id="requirement_summary",
+                description="Contains a summary",
+            )
+        ],
+        success_criteria=[
+            TaskContractItem(
+                id="criterion_reviewable",
+                description="The result is reviewable",
+            )
+        ],
+        requires_human_acceptance=True,
+        confirmed_at=now,
+    )
+    task.current_node = CurrentNode.HUMAN_INTERVENTION
+    actor = first_app.state.user_registry.get_user("root")
+    execution = service.execution_service.create_initial(
+        task,
+        actor,
+        CurrentNode.DISPATCH_DECISION,
+    )
+    execution.started_at = now
+    criterion_results = [
+        CriterionResult(
+            criterion_id=criterion_id,
+            status=CriterionResultStatus.PASSED,
+            evidence_text="Legacy reviewable output",
+        )
+        for criterion_id in ("requirement_summary", "criterion_reviewable")
+    ]
+    report = CompletionReport(
+        id=new_id("completion"),
+        execution_id=execution.id,
+        terminal_status=TaskStatus.RUNNING,
+        completion_reason="Awaiting required human acceptance",
+        criterion_results=criterion_results,
+        human_accepted=False,
+        awaiting_human_decision=False,
+        decided_by_type="system",
+        decided_by_id="completion_service",
+        decided_at=now,
+        evidence_summary="human acceptance is required",
+    )
+    task.task_status = TaskStatus.RUNNING
+    task.final_output = "Legacy reviewable output"
+    task.completion_report = report
+    execution.status = TaskStatus.RUNNING
+    execution.current_node = CurrentNode.HUMAN_INTERVENTION
+    execution.contract_snapshot = task.contract.model_copy(deep=True)
+    execution.context_snapshot = task.context.model_copy(deep=True)
+    execution.final_output = task.final_output
+    execution.completion_report = report.model_copy(deep=True)
+    service.store.save(task)
+
+    second_client = TestClient(create_app(database_url=database_url))
+    migrated = second_client.get(f"/api/v1/tasks/{task.id}").json()
+
+    assert migrated["task_status"] == "succeeded"
+    assert migrated["contract"]["deliverable_kind"] == "file"
+    assert migrated["contract"]["deliverable_requirements"] == []
+    assert migrated["contract"]["requires_human_acceptance"] is False
+    assert [item["id"] for item in migrated["contract"]["success_criteria"]] == [
+        "requirement_summary",
+        "criterion_reviewable",
+    ]
+    assert [
+        item["id"]
+        for item in migrated["executions"][0]["contract_snapshot"][
+            "deliverable_requirements"
+        ]
+    ] == ["requirement_summary"]
+    assert (
+        migrated["executions"][0]["contract_snapshot"][
+            "requires_human_acceptance"
+        ]
+        is True
+    )
+    assert migrated["executions"][0]["finished_at"] is not None
+    assert migrated["completion_report"]["terminal_status"] == "succeeded"
+    assert [event["type"] for event in migrated["events"]].count(
+        "criteria_only_migrated"
+    ) == 1
+
+    third_client = TestClient(create_app(database_url=database_url))
+    reloaded = third_client.get(f"/api/v1/tasks/{task.id}").json()
+
+    assert [event["type"] for event in reloaded["events"]].count(
+        "criteria_only_migrated"
+    ) == 1
 
 
 def test_database_task_store_uses_mysql_safe_task_type_migration(tmp_path: Path, monkeypatch) -> None:
@@ -311,6 +433,9 @@ def test_create_app_uses_database_url_from_environment(monkeypatch) -> None:
     class FakeDatabaseTaskStore:
         def __init__(self, database_url):
             captured_urls.append(("task", database_url))
+
+        def list(self):
+            return []
 
     class FakeDatabaseWorkflowRegistry:
         def __init__(self, database_url):

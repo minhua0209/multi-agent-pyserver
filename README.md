@@ -65,13 +65,39 @@ Relative `AGENT_OUTPUT_DIR` values resolve from the project root. Managed files
 are written to `<root>/<task_id>/<execution_id>/<filename>`. Markdown (`.md`)
 and plain text (`.txt`) are supported.
 
-After file delivery is confirmed, completion requires a managed `FILE` Artifact
-for the current execution whose path is inside the output root and whose file is
-non-empty. Its extension and MIME type must match the confirmed format, and its
-checksum must match both the file and stored body snapshot. The system writes
-the final body deterministically and atomically; the model returns the document
-body directly and does not depend on `file_write`. Each rerun uses a separate
-execution directory.
+Legacy file-delivery contract fields and managed `FILE` artifacts remain
+supported as compatibility metadata and completion evidence. Artifact paths,
+content, and checksums are still validated, and invalid or unsafe artifacts are
+filtered from selected evidence. These checks do not independently block task
+completion.
+
+Legacy `deliverable_requirements` are promoted, in their original order, into
+the visible success criteria. Descriptions are deduplicated case-insensitively,
+and criterion IDs are made unique. If more than ten distinct conditions remain,
+the first nine stay separate and every remaining condition is included in one
+visible aggregate criterion as item ten; no acceptance condition is silently
+dropped. On service startup, persisted top-level contracts are normalized and
+old system-generated pending-acceptance reports are reevaluated from their
+stored output, criterion evidence, artifact IDs and validation states, and
+workflow-end evidence. This startup reevaluation reuses stored evidence: it
+does not materialize or write delivery files, register task-output artifacts,
+or revalidate, replace, or invalidate artifacts. It only updates the normalized
+top-level contract and the completion status, report, execution projection, and
+migration event. Historical execution contract snapshots remain unchanged for
+auditability; new reruns use the normalized contract. Missing promoted-
+criterion evidence becomes an explicit human-adjudication gap instead of being
+silently ignored.
+
+The startup migration has no cross-process coordination. During a deployment
+that may contain legacy tasks, start one service instance until its startup
+migration completes, then scale out additional instances.
+
+A successful result is determined by the visible success criteria plus
+execution integrity: non-empty output, no blocking subtasks, a confirmed
+contract, and (for manual workflows) reaching an end node. Explicit failed,
+blocked, partial, and cancelled results remain terminal. The system can still
+write legacy managed-file bodies deterministically and atomically, and each
+rerun uses a separate execution directory.
 
 `MODEL_MAX_OUTPUT_TOKENS` sets the maximum output-token budget requested from
 the model. The current example value is `1024000`.
