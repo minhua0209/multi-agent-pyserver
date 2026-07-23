@@ -13,6 +13,7 @@ from app.core.enums import (
 )
 from app.core.model_client import AgentModelExecutionError
 from app.core.models import (
+    Agent,
     AgentCreate,
     SubTask,
     Task,
@@ -28,6 +29,7 @@ from app.main import create_app
 from app.services.completion_service import CompletionService
 from app.services.storage import AgentRegistry
 from app.workflows.template_runner import WorkflowTemplateRunner
+from scripts.seed_bugfix_workflow import BUGFIX_AGENT_SEEDS, BUGFIX_WORKFLOW_CREATE
 
 
 def _running_workflow_task(task_id: str) -> Task:
@@ -1750,3 +1752,169 @@ def test_workflow_completion_ignores_independent_human_acceptance_metadata(
     )
 
     assert response.status_code == 409
+
+
+def _bugfix_demo_client(tmp_path: Path) -> tuple[TestClient, dict]:
+    now = utc_now()
+    agents = [
+        Agent(
+            id=str(seed["id"]),
+            created_at=now,
+            **AgentCreate.model_validate(seed).model_dump(),
+        )
+        for seed in BUGFIX_AGENT_SEEDS
+    ]
+    agent_file = tmp_path / "agents.json"
+    agent_file.write_text(
+        json.dumps(
+            [agent.model_dump(mode="json") for agent in agents],
+            ensure_ascii=False,
+        )
+    )
+    client = TestClient(
+        create_app(
+            agent_file=agent_file,
+            workflow_file=tmp_path / "workflows.json",
+        )
+    )
+    response = client.post(
+        "/api/v1/workflows",
+        json=BUGFIX_WORKFLOW_CREATE.model_dump(mode="json", by_alias=True),
+    )
+    assert response.status_code == 201
+    return client, response.json()
+
+
+def _workflow_subtasks(task: dict) -> list[dict]:
+    return [
+        subtask
+        for round_item in task["context"]["rounds"]
+        for subtask in round_item["subtasks"]
+    ]
+
+
+def _running_human_subtask(task: dict, title: str) -> dict:
+    return next(
+        subtask
+        for subtask in _workflow_subtasks(task)
+        if subtask["title"] == title and subtask["status"] == "running"
+    )
+
+
+def _run_bugfix_demo_to_qa(tmp_path: Path, monkeypatch) -> tuple[TestClient, str, dict]:
+    client, workflow = _bugfix_demo_client(tmp_path)
+    monkeypatch.setattr(
+        "app.workflows.task_graph.execute_subtask_with_tools_model",
+        lambda _task, subtask, _agent, _tool_results: (
+            [],
+            f"{subtask.title}完成：Mock 结论通过。",
+        ),
+    )
+    created = client.post(
+        "/api/v1/tasks/requests",
+        json={
+            "source_type": "business_system",
+            "title": "登录状态失效 Bug 修复",
+            "content": "模拟完成登录状态失效问题的分析、修复、测试和发布。",
+            "metadata": {
+                "execution_mode": "workflow_template",
+                "workflow_id": workflow["id"],
+            },
+        },
+    ).json()["tasks"][0]
+    paused_for_fix = client.post(
+        f"/api/v1/tasks/{created['id']}/confirm",
+        json={
+            "title": "登录状态失效 Bug 修复",
+            "description": "模拟完成登录状态失效问题的分析、修复、测试和发布。",
+        },
+    ).json()
+    fix_subtask = _running_human_subtask(paused_for_fix, "人工模拟修复")
+    paused_for_qa = client.post(
+        f"/api/v1/subtasks/{fix_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "模拟修复完成：调整登录态刷新逻辑，自测通过。",
+            "should_complete": False,
+            "metadata": {},
+        },
+    ).json()
+    return client, created["id"], paused_for_qa
+
+
+def test_bugfix_demo_workflow_runs_two_human_gates_and_completes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, task_id, paused_for_qa = _run_bugfix_demo_to_qa(tmp_path, monkeypatch)
+
+    parallel_round = next(
+        round_item
+        for round_item in paused_for_qa["context"]["rounds"]
+        if {subtask["title"] for subtask in round_item["subtasks"]}
+        == {"代码评审", "回归测试"}
+    )
+    assert parallel_round["execution_mode"] == "parallel"
+    assert paused_for_qa["current_node"] == "human_execution"
+
+    qa_subtask = _running_human_subtask(paused_for_qa, "QA 人工门禁")
+    completed = client.post(
+        f"/api/v1/subtasks/{qa_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "QA 审核通过，可以发布。",
+            "should_complete": False,
+            "metadata": {"decision": "approved"},
+        },
+    ).json()
+
+    completed_titles = [
+        subtask["title"]
+        for subtask in _workflow_subtasks(completed)
+        if subtask["status"] == "succeeded"
+    ]
+    assert completed["task_status"] == "succeeded"
+    assert completed["completion_report"]["workflow_end_node_id"] == "end"
+    assert completed_titles == [
+        "缺陷复现与影响评估",
+        "人工模拟修复",
+        "代码评审",
+        "回归测试",
+        "QA 人工门禁",
+        "上线前检查",
+        "Mock 发布执行",
+        "发布后观察",
+    ]
+    assert completed["id"] == task_id
+
+
+def test_bugfix_demo_workflow_blocks_release_when_qa_rejects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, _task_id, paused_for_qa = _run_bugfix_demo_to_qa(tmp_path, monkeypatch)
+    qa_subtask = _running_human_subtask(paused_for_qa, "QA 人工门禁")
+
+    blocked = client.post(
+        f"/api/v1/subtasks/{qa_subtask['id']}/result",
+        json={
+            "result_status": "succeeded",
+            "output": "QA 驳回：回归测试证据不足。",
+            "should_complete": False,
+            "metadata": {"decision": "rejected"},
+        },
+    ).json()
+
+    completed_titles = {
+        subtask["title"]
+        for subtask in _workflow_subtasks(blocked)
+        if subtask["status"] == "succeeded"
+    }
+    assert blocked["task_status"] == "blocked"
+    assert blocked["current_node"] == "completion_judge"
+    assert blocked["completion_report"]["terminal_status"] == "blocked"
+    assert blocked["completion_report"]["workflow_end_node_id"] is None
+    assert "没有可继续执行的节点" in blocked["final_output"]
+    assert completed_titles.isdisjoint(
+        {"上线前检查", "Mock 发布执行", "发布后观察"}
+    )

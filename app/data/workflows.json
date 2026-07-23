@@ -1,0 +1,163 @@
+[
+  {
+    "name": "Bug 修复演示闭环",
+    "description": "模拟完成缺陷分析、人工修复、代码评审、回归测试、QA 门禁、上线检查、发布和发布后观察。QA 仅在明确通过时进入发布阶段。",
+    "definition": {
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "title": "开始",
+          "description": "",
+          "agent_id": null,
+          "config": {}
+        },
+        {
+          "id": "defect_analysis",
+          "type": "agent",
+          "title": "缺陷复现与影响评估",
+          "description": "模拟确认复现结果，并输出严重级别、影响模块、建议归属和风险。",
+          "agent_id": "agent_defect_analysis",
+          "config": {}
+        },
+        {
+          "id": "bug_fix_human",
+          "type": "human",
+          "title": "人工模拟修复",
+          "description": "根据缺陷分析模拟完成修复并给出自测结果。",
+          "agent_id": null,
+          "config": {
+            "assignee_user_id": "root",
+            "assignee_user_name": "管理员",
+            "assignee_role": "bug_fix_owner",
+            "handoff_instruction": "请根据缺陷复现与影响评估结果模拟完成 Bug 修复，并说明根因、修改内容、影响范围和自测结果。"
+          }
+        },
+        {
+          "id": "code_review",
+          "type": "agent",
+          "title": "代码评审",
+          "description": "模拟评审修复方案，输出质量问题、风险和上线阻塞项。",
+          "agent_id": "agent_code_review",
+          "config": {}
+        },
+        {
+          "id": "regression_test",
+          "type": "agent",
+          "title": "回归测试",
+          "description": "模拟执行目标用例和回归用例，输出数量、失败项和结论。",
+          "agent_id": "agent_automation_testing",
+          "config": {}
+        },
+        {
+          "id": "qa_gate_human",
+          "type": "human",
+          "title": "QA 人工门禁",
+          "description": "结合代码评审和回归测试结果决定是否允许发布。",
+          "agent_id": null,
+          "config": {
+            "assignee_user_id": "root",
+            "assignee_user_name": "管理员",
+            "assignee_role": "qa_reviewer",
+            "required_metadata": [
+              "decision"
+            ],
+            "handoff_instruction": "请结合代码评审和回归测试结果进行 QA 审核。通过时提交 decision=approved；驳回时提交 decision=rejected；信息不足时提交 decision=need_more_info。"
+          }
+        },
+        {
+          "id": "deployment_check",
+          "type": "agent",
+          "title": "上线前检查",
+          "description": "模拟检查版本、配置、依赖、灰度、回滚和监控准备。",
+          "agent_id": "agent_deployment_check",
+          "config": {}
+        },
+        {
+          "id": "mock_release",
+          "type": "agent",
+          "title": "Mock 发布执行",
+          "description": "模拟生成发布版本、批次、时间和发布状态。",
+          "agent_id": "agent_mock_release_execution",
+          "config": {}
+        },
+        {
+          "id": "post_release_observation",
+          "type": "agent",
+          "title": "发布后观察",
+          "description": "模拟观察核心指标、告警情况和发布结论。",
+          "agent_id": "agent_monitoring_alerting",
+          "config": {}
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "title": "完成",
+          "description": "",
+          "agent_id": null,
+          "config": {}
+        }
+      ],
+      "edges": [
+        {
+          "from": "start",
+          "to": "defect_analysis",
+          "condition": {}
+        },
+        {
+          "from": "defect_analysis",
+          "to": "bug_fix_human",
+          "condition": {}
+        },
+        {
+          "from": "bug_fix_human",
+          "to": "code_review",
+          "condition": {}
+        },
+        {
+          "from": "bug_fix_human",
+          "to": "regression_test",
+          "condition": {}
+        },
+        {
+          "from": "code_review",
+          "to": "qa_gate_human",
+          "condition": {}
+        },
+        {
+          "from": "regression_test",
+          "to": "qa_gate_human",
+          "condition": {}
+        },
+        {
+          "from": "qa_gate_human",
+          "to": "deployment_check",
+          "condition": {
+            "field": "decision",
+            "operator": "eq",
+            "value": "approved"
+          }
+        },
+        {
+          "from": "deployment_check",
+          "to": "mock_release",
+          "condition": {}
+        },
+        {
+          "from": "mock_release",
+          "to": "post_release_observation",
+          "condition": {}
+        },
+        {
+          "from": "post_release_observation",
+          "to": "end",
+          "condition": {}
+        }
+      ]
+    },
+    "id": "workflow_bugfix_demo",
+    "status": "active",
+    "created_at": "2026-07-23T08:27:32.079220Z",
+    "updated_at": "2026-07-23T08:27:32.079220Z"
+  }
+]

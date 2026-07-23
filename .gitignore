@@ -8,8 +8,6 @@ __pycache__/
 .mypy_cache/
 .idea/
 *.egg-info/
-app/data/agents.json
-app/data/workflows.json
 app/data/task_attachments.json
 app/data/task_attachments/
 frontend/node_modules/

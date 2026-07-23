@@ -1,0 +1,287 @@
+[
+  {
+    "name": "缺陷定位 Agent",
+    "description": "分析缺陷复现步骤、影响范围、可能根因和修复优先级。",
+    "agent_type": "processing",
+    "capabilities": [
+      "defect_analysis",
+      "root_cause_analysis"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "当前上下文"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "defect.analysis",
+        "fix.priority"
+      ],
+      "required": [
+        "结论",
+        "风险",
+        "下一步建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是缺陷定位 Agent，负责软件交付流程中的测试阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "测试",
+      "icon": "Bug",
+      "seed_version": "2026-07-16-lifecycle-agents"
+    },
+    "id": "agent_defect_analysis",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  },
+  {
+    "name": "代码评审 Agent",
+    "description": "检查实现质量、边界条件、可维护性、安全风险和缺失测试。",
+    "agent_type": "processing",
+    "capabilities": [
+      "code_review",
+      "quality_gate"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "当前上下文"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "review.findings",
+        "quality.risks"
+      ],
+      "required": [
+        "结论",
+        "风险",
+        "下一步建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是代码评审 Agent，负责软件交付流程中的研发阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "研发",
+      "icon": "GitPullRequest",
+      "seed_version": "2026-07-16-lifecycle-agents"
+    },
+    "id": "agent_code_review",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  },
+  {
+    "name": "自动化测试 Agent",
+    "description": "规划接口、前端或回归自动化测试范围，输出测试脚本建议。",
+    "agent_type": "processing",
+    "capabilities": [
+      "automation_testing",
+      "regression_testing"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "当前上下文"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "automation.plan",
+        "regression.scope"
+      ],
+      "required": [
+        "结论",
+        "风险",
+        "下一步建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是自动化测试 Agent，负责软件交付流程中的测试阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "测试",
+      "icon": "Bot",
+      "seed_version": "2026-07-16-lifecycle-agents"
+    },
+    "id": "agent_automation_testing",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  },
+  {
+    "name": "上线检查 Agent",
+    "description": "检查配置、版本、数据库变更、灰度策略、监控和验收项。",
+    "agent_type": "processing",
+    "capabilities": [
+      "deployment_check",
+      "go_live_checklist"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "当前上下文"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "deployment.checklist",
+        "go_live.risks"
+      ],
+      "required": [
+        "结论",
+        "风险",
+        "下一步建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是上线检查 Agent，负责软件交付流程中的上线阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "上线",
+      "icon": "Rocket",
+      "seed_version": "2026-07-16-lifecycle-agents"
+    },
+    "id": "agent_deployment_check",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  },
+  {
+    "name": "监控告警 Agent",
+    "description": "设计核心指标、告警阈值、通知策略和故障升级路径。",
+    "agent_type": "processing",
+    "capabilities": [
+      "monitoring_alerting",
+      "slo_tracking"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "当前上下文"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "monitoring.plan",
+        "alert.rules"
+      ],
+      "required": [
+        "结论",
+        "风险",
+        "下一步建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是监控告警 Agent，负责软件交付流程中的运维阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "运维",
+      "icon": "Activity",
+      "seed_version": "2026-07-16-lifecycle-agents"
+    },
+    "id": "agent_monitoring_alerting",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  },
+  {
+    "name": "Mock 发布执行 Agent",
+    "description": "根据上线检查结果模拟发布版本、批次、时间和发布状态。",
+    "agent_type": "processing",
+    "capabilities": [
+      "release_execution",
+      "mock_release"
+    ],
+    "input_schema": {
+      "context_inputs": [
+        "task.content",
+        "context.summary",
+        "subtask.output"
+      ],
+      "required": [
+        "任务目标",
+        "上线检查结果"
+      ]
+    },
+    "output_schema": {
+      "context_outputs": [
+        "release.version",
+        "release.batch",
+        "release.status"
+      ],
+      "required": [
+        "发布版本",
+        "发布批次",
+        "发布时间",
+        "发布状态",
+        "观察建议"
+      ]
+    },
+    "execution_config": {
+      "system_prompt": "你是 Mock 发布执行 Agent。请根据上线检查结果生成结构化的模拟发布记录，包含发布版本、发布批次、发布时间、发布状态和观察建议。只生成 Mock 结果，不调用真实发布接口。",
+      "model_name": "",
+      "temperature": null,
+      "timeout_seconds": 90,
+      "max_retries": 1,
+      "max_tool_calls": 0
+    },
+    "tools": [],
+    "metadata": {
+      "stage": "上线",
+      "icon": "Rocket",
+      "seed_version": "2026-07-23-bugfix-workflow"
+    },
+    "id": "agent_mock_release_execution",
+    "created_at": "2026-07-23T08:27:32.079220Z"
+  }
+]
