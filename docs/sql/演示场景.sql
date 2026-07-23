@@ -1,8 +1,16 @@
--- 客户交流活动方案审核演示场景
+-- TaskHub 演示场景数据
 -- Target database: MySQL 8.x
+-- Scenarios:
+--   1. 客户交流活动方案审核演示场景
+--   2. Bug 修复演示闭环场景
+--   两个场景使用独立事务，可按需单独执行。
 -- Prerequisites:
 --   1. 已执行任务持久化和用户管理结构迁移。
 --   2. agents 表包含 agent_type、metadata_json 字段。
+
+-- ===========================================================================
+-- 客户交流活动方案审核演示场景
+-- ===========================================================================
 -- Purpose:
 --   导入 5 个 Mock Agent 节点、1 个人工节点、1 个审核用户和 1 个流程模板。
 --   脚本使用固定 ID，可重复执行；再次执行会覆盖本场景的节点和模板配置。
@@ -568,3 +576,560 @@ COMMIT;
 -- DELETE FROM schema_migrations WHERE version = '2026-07-23-event-plan-approval-demo';
 -- COMMIT;
 -- 王大锤用户可能被其他业务使用，回滚默认不删除 users 表中的用户记录。
+
+
+-- ===========================================================================
+-- Bug 修复演示闭环场景
+-- ===========================================================================
+-- Source:
+--   2026-07-23 通过 http://localhost:5173/ 对应的 8000 API 实际创建。
+-- Purpose:
+--   导入 6 个 Bug 修复流程 Agent 和 1 个流程模板。
+--   使用实际数据库 ID，可重复执行；不会删除或覆盖其他场景数据。
+
+START TRANSACTION;
+
+-- ---------------------------------------------------------------------------
+-- 5. Bug 修复流程 Agent
+-- ---------------------------------------------------------------------------
+
+-- 5.1 缺陷定位 Agent
+SET @bugfix_agent_id = 'agent_3f92caaf5f0e';
+SET @bugfix_agent_name = '缺陷定位 Agent';
+SET @bugfix_agent_description = '分析缺陷复现步骤、影响范围、可能根因和修复优先级。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.374115';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.374115Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('defect_analysis', 'root_cause_analysis');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '当前上下文')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('defect.analysis', 'fix.priority'),
+  'required', JSON_ARRAY('结论', '风险', '下一步建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是缺陷定位 Agent，负责软件交付流程中的测试阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '测试',
+  'icon', 'Bug',
+  'seed_version', '2026-07-16-lifecycle-agents'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id,
+  'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description,
+  'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- 5.2 代码评审 Agent
+SET @bugfix_agent_id = 'agent_8b67aa644064';
+SET @bugfix_agent_name = '代码评审 Agent';
+SET @bugfix_agent_description = '检查实现质量、边界条件、可维护性、安全风险和缺失测试。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.406131';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.406131Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('code_review', 'quality_gate');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '当前上下文')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('review.findings', 'quality.risks'),
+  'required', JSON_ARRAY('结论', '风险', '下一步建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是代码评审 Agent，负责软件交付流程中的研发阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '研发',
+  'icon', 'GitPullRequest',
+  'seed_version', '2026-07-16-lifecycle-agents'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id, 'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description, 'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- 5.3 自动化测试 Agent
+SET @bugfix_agent_id = 'agent_9d58adcb55da';
+SET @bugfix_agent_name = '自动化测试 Agent';
+SET @bugfix_agent_description = '规划接口、前端或回归自动化测试范围，输出测试脚本建议。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.409160';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.409160Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('automation_testing', 'regression_testing');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '当前上下文')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('automation.plan', 'regression.scope'),
+  'required', JSON_ARRAY('结论', '风险', '下一步建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是自动化测试 Agent，负责软件交付流程中的测试阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '测试',
+  'icon', 'Bot',
+  'seed_version', '2026-07-16-lifecycle-agents'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id, 'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description, 'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- 5.4 上线检查 Agent
+SET @bugfix_agent_id = 'agent_9563cb1d3162';
+SET @bugfix_agent_name = '上线检查 Agent';
+SET @bugfix_agent_description = '检查配置、版本、数据库变更、灰度策略、监控和验收项。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.411781';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.411781Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('deployment_check', 'go_live_checklist');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '当前上下文')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('deployment.checklist', 'go_live.risks'),
+  'required', JSON_ARRAY('结论', '风险', '下一步建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是上线检查 Agent，负责软件交付流程中的上线阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '上线',
+  'icon', 'Rocket',
+  'seed_version', '2026-07-16-lifecycle-agents'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id, 'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description, 'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- 5.5 监控告警 Agent
+SET @bugfix_agent_id = 'agent_902551798295';
+SET @bugfix_agent_name = '监控告警 Agent';
+SET @bugfix_agent_description = '设计核心指标、告警阈值、通知策略和故障升级路径。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.415792';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.415792Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('monitoring_alerting', 'slo_tracking');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '当前上下文')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('monitoring.plan', 'alert.rules'),
+  'required', JSON_ARRAY('结论', '风险', '下一步建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是监控告警 Agent，负责软件交付流程中的运维阶段。请基于任务上下文输出结构化结论、风险点和下一步建议。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '运维',
+  'icon', 'Activity',
+  'seed_version', '2026-07-16-lifecycle-agents'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id, 'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description, 'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- 5.6 Mock 发布执行 Agent
+SET @bugfix_agent_id = 'agent_35da98fc1c98';
+SET @bugfix_agent_name = 'Mock 发布执行 Agent';
+SET @bugfix_agent_description = '根据上线检查结果模拟发布版本、批次、时间和发布状态。';
+SET @bugfix_agent_created_at = '2026-07-23 08:50:05.417698';
+SET @bugfix_agent_created_at_iso = '2026-07-23T08:50:05.417698Z';
+SET @bugfix_agent_capabilities = JSON_ARRAY('release_execution', 'mock_release');
+SET @bugfix_agent_input_schema = JSON_OBJECT(
+  'context_inputs', JSON_ARRAY('task.content', 'context.summary', 'subtask.output'),
+  'required', JSON_ARRAY('任务目标', '上线检查结果')
+);
+SET @bugfix_agent_output_schema = JSON_OBJECT(
+  'context_outputs', JSON_ARRAY('release.version', 'release.batch', 'release.status'),
+  'required', JSON_ARRAY('发布版本', '发布批次', '发布时间', '发布状态', '观察建议')
+);
+SET @bugfix_agent_execution_config = JSON_OBJECT(
+  'system_prompt', '你是 Mock 发布执行 Agent。请根据上线检查结果生成结构化的模拟发布记录，包含发布版本、发布批次、发布时间、发布状态和观察建议。只生成 Mock 结果，不调用真实发布接口。',
+  'model_name', '',
+  'temperature', NULL,
+  'timeout_seconds', 90,
+  'max_retries', 1,
+  'max_tool_calls', 0
+);
+SET @bugfix_agent_tools = JSON_ARRAY();
+SET @bugfix_agent_metadata = JSON_OBJECT(
+  'stage', '上线',
+  'icon', 'Rocket',
+  'seed_version', '2026-07-23-bugfix-workflow'
+);
+SET @bugfix_agent_payload = JSON_OBJECT(
+  'id', @bugfix_agent_id, 'name', @bugfix_agent_name,
+  'description', @bugfix_agent_description, 'agent_type', 'processing',
+  'capabilities', JSON_EXTRACT(@bugfix_agent_capabilities, '$'),
+  'input_schema', JSON_EXTRACT(@bugfix_agent_input_schema, '$'),
+  'output_schema', JSON_EXTRACT(@bugfix_agent_output_schema, '$'),
+  'execution_config', JSON_EXTRACT(@bugfix_agent_execution_config, '$'),
+  'tools', JSON_EXTRACT(@bugfix_agent_tools, '$'),
+  'metadata', JSON_EXTRACT(@bugfix_agent_metadata, '$'),
+  'created_at', @bugfix_agent_created_at_iso
+);
+
+INSERT INTO agents (
+  id, payload, name, description, agent_type, capabilities_json,
+  input_schema_json, output_schema_json, execution_config_json,
+  tools_json, metadata_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_agent_id, @bugfix_agent_payload, @bugfix_agent_name,
+  @bugfix_agent_description, 'processing', @bugfix_agent_capabilities,
+  @bugfix_agent_input_schema, @bugfix_agent_output_schema,
+  @bugfix_agent_execution_config, @bugfix_agent_tools,
+  @bugfix_agent_metadata, 'active', @bugfix_agent_created_at,
+  @bugfix_agent_created_at
+)
+ON DUPLICATE KEY UPDATE
+  payload = VALUES(payload), name = VALUES(name), description = VALUES(description),
+  agent_type = VALUES(agent_type), capabilities_json = VALUES(capabilities_json),
+  input_schema_json = VALUES(input_schema_json), output_schema_json = VALUES(output_schema_json),
+  execution_config_json = VALUES(execution_config_json), tools_json = VALUES(tools_json),
+  metadata_json = VALUES(metadata_json), status = 'active', updated_at = CURRENT_TIMESTAMP(6);
+
+-- ---------------------------------------------------------------------------
+-- 6. Bug 修复流程模板
+-- ---------------------------------------------------------------------------
+
+SET @bugfix_workflow_id = 'workflow_577b5254b9ac';
+SET @bugfix_workflow_name = 'Bug 修复演示闭环';
+SET @bugfix_workflow_description = '模拟完成缺陷分析、人工修复、代码评审、回归测试、QA 门禁、上线检查、发布和发布后观察。QA 仅在明确通过时进入发布阶段。';
+SET @bugfix_workflow_created_at = '2026-07-23 08:50:05.422328';
+SET @bugfix_workflow_updated_at = '2026-07-23 08:53:11.650523';
+SET @bugfix_workflow_definition = JSON_OBJECT(
+  'nodes', JSON_ARRAY(
+    JSON_OBJECT(
+      'id', 'start',
+      'type', 'start',
+      'title', '开始',
+      'description', '',
+      'agent_id', NULL,
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'defect_analysis',
+      'type', 'agent',
+      'title', '缺陷复现与影响评估',
+      'description', '模拟确认复现结果，并输出严重级别、影响模块、建议归属和风险。',
+      'agent_id', 'agent_3f92caaf5f0e',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'bug_fix_human',
+      'type', 'human',
+      'title', '人工模拟修复',
+      'description', '根据缺陷分析模拟完成修复并给出自测结果。',
+      'agent_id', NULL,
+      'config', JSON_OBJECT(
+        'assignee_user_id', 'root',
+        'assignee_user_name', '管理员',
+        'assignee_role', 'bug_fix_owner',
+        'handoff_instruction', '请根据缺陷复现与影响评估结果模拟完成 Bug 修复，并说明根因、修改内容、影响范围和自测结果。'
+      )
+    ),
+    JSON_OBJECT(
+      'id', 'code_review',
+      'type', 'agent',
+      'title', '代码评审',
+      'description', '模拟评审修复方案，输出质量问题、风险和上线阻塞项。',
+      'agent_id', 'agent_8b67aa644064',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'regression_test',
+      'type', 'agent',
+      'title', '回归测试',
+      'description', '模拟执行目标用例和回归用例，输出数量、失败项和结论。',
+      'agent_id', 'agent_9d58adcb55da',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'qa_gate_human',
+      'type', 'human',
+      'title', 'QA 人工门禁',
+      'description', '结合代码评审和回归测试结果决定是否允许发布。',
+      'agent_id', NULL,
+      'config', JSON_OBJECT(
+        'assignee_user_id', 'root',
+        'assignee_user_name', '管理员',
+        'assignee_role', 'qa_reviewer',
+        'required_metadata', JSON_ARRAY('decision'),
+        'handoff_instruction', '请结合代码评审和回归测试结果进行 QA 审核。通过时提交 decision=approved；驳回时提交 decision=rejected；信息不足时提交 decision=need_more_info。'
+      )
+    ),
+    JSON_OBJECT(
+      'id', 'deployment_check',
+      'type', 'agent',
+      'title', '上线前检查',
+      'description', '模拟检查版本、配置、依赖、灰度、回滚和监控准备。',
+      'agent_id', 'agent_9563cb1d3162',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'mock_release',
+      'type', 'agent',
+      'title', 'Mock 发布执行',
+      'description', '模拟生成发布版本、批次、时间和发布状态。',
+      'agent_id', 'agent_35da98fc1c98',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'post_release_observation',
+      'type', 'agent',
+      'title', '发布后观察',
+      'description', '模拟观察核心指标、告警情况和发布结论。',
+      'agent_id', 'agent_902551798295',
+      'config', JSON_OBJECT()
+    ),
+    JSON_OBJECT(
+      'id', 'end',
+      'type', 'end',
+      'title', '完成',
+      'description', '',
+      'agent_id', NULL,
+      'config', JSON_OBJECT()
+    )
+  ),
+  'edges', JSON_ARRAY(
+    JSON_OBJECT('from', 'start', 'to', 'defect_analysis', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'defect_analysis', 'to', 'bug_fix_human', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'bug_fix_human', 'to', 'code_review', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'bug_fix_human', 'to', 'regression_test', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'code_review', 'to', 'qa_gate_human', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'regression_test', 'to', 'qa_gate_human', 'condition', JSON_OBJECT()),
+    JSON_OBJECT(
+      'from', 'qa_gate_human',
+      'to', 'deployment_check',
+      'condition', JSON_OBJECT('field', 'decision', 'operator', 'eq', 'value', 'approved')
+    ),
+    JSON_OBJECT('from', 'deployment_check', 'to', 'mock_release', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'mock_release', 'to', 'post_release_observation', 'condition', JSON_OBJECT()),
+    JSON_OBJECT('from', 'post_release_observation', 'to', 'end', 'condition', JSON_OBJECT())
+  )
+);
+
+INSERT INTO workflow_templates (
+  id, name, description, definition_json, status, created_at, updated_at
+)
+VALUES (
+  @bugfix_workflow_id,
+  @bugfix_workflow_name,
+  @bugfix_workflow_description,
+  @bugfix_workflow_definition,
+  'active',
+  @bugfix_workflow_created_at,
+  @bugfix_workflow_updated_at
+)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  description = VALUES(description),
+  definition_json = VALUES(definition_json),
+  status = 'active',
+  updated_at = CURRENT_TIMESTAMP(6);
+
+COMMIT;
+
+-- 验证查询：
+-- SELECT id, name, agent_type, status FROM agents WHERE id IN (
+--   'agent_3f92caaf5f0e',
+--   'agent_8b67aa644064',
+--   'agent_9d58adcb55da',
+--   'agent_9563cb1d3162',
+--   'agent_902551798295',
+--   'agent_35da98fc1c98'
+-- );
+-- SELECT
+--   id,
+--   name,
+--   status,
+--   JSON_LENGTH(definition_json, '$.nodes') AS node_count,
+--   JSON_LENGTH(definition_json, '$.edges') AS edge_count
+-- FROM workflow_templates
+-- WHERE id = 'workflow_577b5254b9ac';
+
+-- 可选回滚（仅在确认这些 ID 未被任务快照或其他模板引用后执行）：
+-- START TRANSACTION;
+-- DELETE FROM workflow_templates WHERE id = 'workflow_577b5254b9ac';
+-- DELETE FROM agents WHERE id IN (
+--   'agent_3f92caaf5f0e',
+--   'agent_8b67aa644064',
+--   'agent_9d58adcb55da',
+--   'agent_9563cb1d3162',
+--   'agent_902551798295',
+--   'agent_35da98fc1c98'
+-- );
+-- COMMIT;
