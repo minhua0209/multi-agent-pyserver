@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8")
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8")
+const workflowBuilderSource = readFileSync(new URL("./WorkflowBuilderPage.tsx", import.meta.url), "utf8")
 const mainSource = readFileSync(new URL("./main.tsx", import.meta.url), "utf8")
 const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8")
 
@@ -76,6 +77,80 @@ describe("task detail responsive styles", () => {
     expect(cssRule(".task-detail-title .ant-btn > span:not(.ant-btn-icon)", mobileStyles)).toMatch(
       /display:\s*none/,
     )
+  })
+})
+
+
+describe("task confirmation and workflow resource cards", () => {
+  it("navigates to the task list after a task draft is confirmed", () => {
+    expect(appSource).toContain('setToast("任务已确认，系统正在异步执行")')
+    expect(appSource).toContain('void navigateTo("tasks")')
+  })
+
+  it("keeps the add-to-canvas action visible on workflow resource cards", () => {
+    expect(cssRule(".workflow-agent-card")).toMatch(/min-height:\s*168px/)
+    expect(cssRule(".workflow-card-actions")).toMatch(/align-self:\s*end/)
+    expect(cssRule(".workflow-card-actions")).toMatch(/margin-top:\s*auto/)
+  })
+})
+
+
+describe("task creator and node creation form", () => {
+  it("shows the task creator as compact title metadata", () => {
+    expect(appSource).toContain('className="task-detail-header-actions"')
+    expect(appSource).toContain('className="task-detail-creator"')
+    expect(appSource).toContain('fourQuestions.filter((question) => question.key !== "creator")')
+    expect(cssRule(".task-four-questions")).toMatch(/grid-template-columns:\s*repeat\(3,/)
+    expect(cssRule(".task-detail-header-actions")).toMatch(/background:\s*var\(--surface-muted\)/)
+  })
+
+  it("does not prefill the workflow node name or description", () => {
+    expect(appSource).not.toContain('useState("报告写入节点")')
+    expect(appSource).not.toContain('useState("向指定目录写入文章或者报告总结")')
+    expect(appSource).toContain('placeholder="请输入节点名称"')
+  })
+})
+
+
+describe("workflow governance actions", () => {
+  it("exposes workflow template management in the admin navigation", () => {
+    expect(appSource).toContain('{ id: "workflows", text: "流程模板管理"')
+    expect(appSource).toContain('title="流程模板管理"')
+  })
+
+  it("supports deleting workflow templates and registered nodes", () => {
+    expect(workflowBuilderSource).toContain("deleteWorkflow(workflow.id)")
+    expect(workflowBuilderSource).toContain('className="workflow-template-delete-button"')
+    expect(appSource).toContain("deleteAgent(agent.id)")
+    expect(appSource).toContain('className="registered-node-delete-button"')
+  })
+
+  it("shows workflow node names and purposes without capability tags", () => {
+    expect(workflowBuilderSource).toContain("节点作用")
+    expect(workflowBuilderSource).toContain('className="workflow-agent-purpose"')
+    expect(workflowBuilderSource).not.toContain("(agent.capabilities || []).slice(0, 4)")
+  })
+
+  it("shows the user id as the user code and shortens creator metadata", () => {
+    expect(appSource).toContain('title: "用户编码"')
+    expect(appSource).toContain('dataIndex: "id"')
+    expect(appSource).not.toContain('创建者：{creatorQuestion?.text || "未知"}')
+  })
+
+  it("groups navigation by overview, task center and management", () => {
+    expect(appSource).toContain('{ label: "总览"')
+    expect(appSource).toContain('label: "任务中心"')
+    expect(appSource).toContain('label: "管理"')
+    expect(appSource).not.toContain('label: "发布与确认"')
+    expect(appSource).not.toContain('label: "管理治理"')
+  })
+
+  it("uses viewport sizing only on the workflow management page", () => {
+    expect(appSource).toContain('className="workflow-management-page"')
+    expect(cssRule(".workflow-management-page")).toMatch(/height:\s*calc\(100vh - 112px\)/)
+    expect(lastCssDeclaration(cssRules(".workflow-management-page .workflow-canvas-panel"), "display")).toBe("flex")
+    expect(lastCssDeclaration(cssRules(".workflow-management-page .workflow-canvas"), "max-height")).toBe("none")
+    expect(lastCssDeclaration(cssRules(".workflow-management-page .workflow-save-summary"), "grid-column")).toBe("auto")
   })
 })
 

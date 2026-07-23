@@ -20,12 +20,17 @@ describe("page refresh policy", () => {
     expect(refreshTargetsForPage("agents", true)).toEqual(["agents", "assignableUsers"])
   })
 
+  it("refreshes nodes, users and templates when entering workflow management", () => {
+    expect(refreshTargetsForPage("workflows", true)).toEqual(["agents", "assignableUsers", "workflows"])
+  })
+
   it("refreshes users and assignable users when entering user management", () => {
     expect(refreshTargetsForPage("users", true)).toEqual(["users", "assignableUsers"])
   })
 
   it("blocks non-admin users from admin-only pages", () => {
     expect(canNavigateToPage("agents", false)).toBe(false)
+    expect(canNavigateToPage("workflows", false)).toBe(false)
     expect(refreshTargetsForPage("agents", false)).toEqual([])
   })
 })

@@ -89,6 +89,50 @@ def test_create_agent_persists_to_local_json_file(tmp_path: Path) -> None:
     assert "Quote Agent" in data_file.read_text()
 
 
+def test_delete_agent_removes_it_from_registry(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Temporary Agent", "description": "Can be deleted", "capabilities": ["temporary"]},
+    ).json()
+
+    response = client.delete(f"/api/v1/agents/{agent['id']}")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/agents").json() == []
+
+
+def test_delete_agent_is_blocked_when_workflow_references_it(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    agent = client.post(
+        "/api/v1/agents",
+        json={"name": "Referenced Agent", "description": "Used by workflow", "capabilities": ["workflow"]},
+    ).json()
+    client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Referenced Workflow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "work", "type": "agent", "agent_id": agent["id"]},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "end"},
+                ],
+            },
+        },
+    )
+
+    response = client.delete(f"/api/v1/agents/{agent['id']}")
+
+    assert response.status_code == 409
+    assert "Referenced Workflow" in response.json()["detail"]
+    assert client.get("/api/v1/agents").json()[0]["id"] == agent["id"]
+
+
 def test_create_agent_accepts_tool_definitions(tmp_path: Path) -> None:
     data_file = tmp_path / "agents.json"
     client = TestClient(create_app(agent_file=data_file))

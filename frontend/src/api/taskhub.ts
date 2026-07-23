@@ -671,6 +671,12 @@ export function createAgent(payload: AgentCreatePayload) {
   })
 }
 
+export function deleteAgent(agentId: string) {
+  return request<void>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
+  })
+}
+
 export function listWorkflows() {
   return request<WorkflowTemplate[]>("/api/v1/workflows")
 }
@@ -686,6 +692,12 @@ export function updateWorkflow(workflowId: string, payload: WorkflowCreatePayloa
   return request<WorkflowTemplate>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  })
+}
+
+export function deleteWorkflow(workflowId: string) {
+  return request<void>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`, {
+    method: "DELETE",
   })
 }
 

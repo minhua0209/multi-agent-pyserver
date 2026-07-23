@@ -1316,6 +1316,25 @@ tr.selected td {
   flex: 0 0 auto;
 }
 
+.task-detail-header-actions {
+  flex: 0 0 auto;
+  max-width: 62%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.task-detail-header-actions::-webkit-scrollbar {
+  display: none;
+}
+
 .task-detail-title .ant-tag {
   flex: 0 0 auto;
   margin-inline-end: 0;
@@ -1349,8 +1368,16 @@ tr.selected td {
 .task-four-questions {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.task-detail-creator {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .task-four-question {
@@ -3206,7 +3233,7 @@ tr.selected td {
 }
 
 .registered-node-card {
-  min-height: 154px;
+  min-height: 168px;
   border: 1px solid rgb(199 210 254 / 0.74);
   border-radius: var(--radius);
   background:
@@ -3309,6 +3336,69 @@ tr.selected td {
 
 .registered-node-tags {
   align-content: flex-end;
+}
+
+.registered-node-delete-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding-inline: 0;
+  border: 1px solid transparent;
+  background: var(--surface-elevated);
+}
+
+.registered-node-delete-button:hover,
+.registered-node-delete-button:focus-visible {
+  border-color: var(--danger);
+  background: var(--danger-soft) !important;
+}
+
+.registered-node-head {
+  padding-right: 28px;
+}
+
+.workflow-management-page {
+  height: calc(100vh - 112px);
+  min-height: 640px;
+  max-width: none;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.workflow-management-page .page-header {
+  margin-bottom: 12px;
+}
+
+.workflow-management-page .workflow-layout,
+.workflow-management-page .workflow-canvas-panel {
+  min-height: 0;
+  height: 100%;
+}
+
+.workflow-management-page .workflow-canvas-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.workflow-management-page .workflow-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
+.workflow-management-page .workflow-canvas-header,
+.workflow-management-page .workflow-save-summary {
+  flex: 0 0 auto;
+}
+
+.workflow-management-page .workflow-save-summary {
+  grid-column: auto;
 }
 
 .registered-node-tags .ant-tag {
@@ -3615,7 +3705,7 @@ tr.selected td {
   gap: 8px;
   align-content: start;
   min-width: 0;
-  min-height: 146px;
+  min-height: 168px;
   overflow: hidden;
 }
 
@@ -3648,7 +3738,19 @@ button.workflow-agent-card:focus-visible {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
+}
+
+.workflow-agent-purpose {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.workflow-agent-purpose > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .workflow-agent-head,
@@ -3661,10 +3763,9 @@ button.workflow-agent-card:focus-visible {
 }
 
 .workflow-agent-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   min-width: 0;
-  align-items: start;
+  align-items: center;
   gap: 8px;
 }
 
@@ -3682,12 +3783,30 @@ button.workflow-agent-card:focus-visible {
 
 .workflow-card-actions {
   flex-wrap: wrap;
+  align-self: end;
+  margin-top: auto;
 }
 
 .workflow-template-card {
   min-height: 142px;
   grid-template-rows: auto minmax(38px, auto) auto;
   gap: 10px;
+}
+
+.workflow-template-card-shell {
+  position: relative;
+  min-width: 0;
+}
+
+.workflow-template-card-shell .workflow-template-card {
+  padding-right: 42px;
+}
+
+.workflow-template-delete-button {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 2;
 }
 
 .workflow-template-card p {

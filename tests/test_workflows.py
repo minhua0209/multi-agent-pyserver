@@ -14,11 +14,13 @@ from app.core.enums import (
 from app.core.model_client import AgentModelExecutionError
 from app.core.models import (
     AgentCreate,
+    SubTask,
     Task,
     TaskContract,
     TaskContractItem,
     TaskExecution,
     WorkflowDefinition,
+    WorkflowEdge,
     WorkflowTemplate,
     utc_now,
 )
@@ -154,6 +156,29 @@ def test_create_and_update_workflow_template_persists_definition(tmp_path: Path)
     reloaded = client.get(f"/api/v1/workflows/{workflow['id']}").json()
     assert reloaded["name"] == "Quote Approval Updated"
     assert reloaded["definition"]["nodes"][1]["id"] == "approve_quote"
+
+
+def test_delete_workflow_template_removes_it_from_registry(tmp_path: Path) -> None:
+    client = TestClient(create_app(agent_file=tmp_path / "agents.json", workflow_file=tmp_path / "workflows.json"))
+    workflow = client.post(
+        "/api/v1/workflows",
+        json={
+            "name": "Disposable Workflow",
+            "definition": {
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [{"from": "start", "to": "end"}],
+            },
+        },
+    ).json()
+
+    response = client.delete(f"/api/v1/workflows/{workflow['id']}")
+
+    assert response.status_code == 204
+    assert client.get("/api/v1/workflows").json() == []
+    assert client.delete(f"/api/v1/workflows/{workflow['id']}").status_code == 404
 
 
 def test_workflow_confirmation_snapshots_initial_context(tmp_path: Path, monkeypatch) -> None:
@@ -1023,6 +1048,77 @@ def test_workflow_template_async_human_result_reaches_end_node_after_condition(
     assert resumed.task_status.value == "succeeded"
     assert resumed.current_node.value == "completion_judge"
     assert resumed.completion_report.workflow_end_node_id == "end"
+
+
+def test_workflow_mixed_branch_merge_accepts_completed_unconditional_path() -> None:
+    condition_subtask = SubTask(
+        id="condition-subtask",
+        logical_key="price_condition",
+        title="Price condition",
+        description="Choose order path",
+        assignee_type="condition",
+        status=TaskStatus.SUCCEEDED,
+        result_metadata={"decision": "large_order"},
+    )
+    review_subtask = SubTask(
+        id="review-subtask",
+        logical_key="large_order_review",
+        title="Large order review",
+        description="Review large order",
+        assignee_type="human",
+        status=TaskStatus.SUCCEEDED,
+    )
+    edges = [
+        WorkflowEdge.model_validate(
+            {
+                "from": "price_condition",
+                "to": "merge",
+                "condition": {"type": "decision", "value": "small_order"},
+            }
+        ),
+        WorkflowEdge.model_validate(
+            {"from": "large_order_review", "to": "merge", "condition": {}}
+        ),
+    ]
+
+    assert WorkflowTemplateRunner._dependencies_ready(
+        edges,
+        {"price_condition", "large_order_review"},
+        {
+            "price_condition": condition_subtask,
+            "large_order_review": review_subtask,
+        },
+    )
+
+
+def test_workflow_mixed_branch_merge_waits_when_no_path_has_completed() -> None:
+    condition_subtask = SubTask(
+        id="condition-subtask",
+        logical_key="price_condition",
+        title="Price condition",
+        description="Choose order path",
+        assignee_type="condition",
+        status=TaskStatus.SUCCEEDED,
+        result_metadata={"decision": "large_order"},
+    )
+    edges = [
+        WorkflowEdge.model_validate(
+            {
+                "from": "price_condition",
+                "to": "merge",
+                "condition": {"type": "decision", "value": "small_order"},
+            }
+        ),
+        WorkflowEdge.model_validate(
+            {"from": "large_order_review", "to": "merge", "condition": {}}
+        ),
+    ]
+
+    assert not WorkflowTemplateRunner._dependencies_ready(
+        edges,
+        {"price_condition"},
+        {"price_condition": condition_subtask},
+    )
 
 
 def test_workflow_template_condition_node_uses_intelligent_context(tmp_path: Path, monkeypatch) -> None:

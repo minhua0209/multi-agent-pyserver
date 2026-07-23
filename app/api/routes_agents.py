@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
+from app.api.auth import current_user, require_admin
 from app.api.serialization import public_agent, sanitize_task
 from app.core.models import (
     AgentCreate,
@@ -69,6 +70,23 @@ def create_human_node(payload: HumanNodeCreate, request: Request) -> SimpleAgent
 @router.get("", response_model=list[PublicAgent])
 def list_agents(request: Request) -> list[PublicAgent]:
     return [public_agent(agent) for agent in request.app.state.agent_registry.list_agents()]
+
+
+@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent(agent_id: str, request: Request) -> None:
+    require_admin(current_user(request))
+    referenced_by = [
+        workflow.name
+        for workflow in request.app.state.workflow_registry.list_workflows()
+        if any(node.agent_id == agent_id for node in workflow.definition.nodes)
+    ]
+    if referenced_by:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"该节点仍被流程模板引用：{'、'.join(referenced_by)}",
+        )
+    if not request.app.state.agent_registry.delete_agent(agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
 
 
 @router.post("/{agent_id}/poll", response_model=list[Task])

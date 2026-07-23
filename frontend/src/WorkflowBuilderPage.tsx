@@ -28,10 +28,11 @@ import {
   useEdgesState,
   useNodesState,
 } from "@xyflow/react"
+import { Button, Popconfirm, Tooltip } from "antd"
 import "@xyflow/react/dist/style.css"
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 
-import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow, updateWorkflow } from "./api/taskhub"
+import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow, deleteWorkflow, updateWorkflow } from "./api/taskhub"
 import { removeWorkflowNode } from "./workflowCanvas"
 import { capabilityLabel } from "./workflowLabels"
 import {
@@ -58,8 +59,13 @@ interface WorkflowBuilderPageProps {
   users?: UserOption[]
   workflows: WorkflowTemplate[]
   onWorkflowSaved: (workflow: WorkflowTemplate) => void
+  onWorkflowDeleted?: (workflowId: string) => void
   setToast: (value: string) => void
   modal?: boolean
+  title?: string
+  description?: string
+  initialResourcePanel?: "agents" | "templates"
+  className?: string
 }
 
 function processingAgents(agents: Agent[]) {
@@ -144,8 +150,13 @@ export function WorkflowBuilderPage({
   users = [],
   workflows,
   onWorkflowSaved,
+  onWorkflowDeleted,
   setToast,
   modal = false,
+  title = workflowBuilderCopy.title,
+  description = workflowBuilderCopy.description,
+  initialResourcePanel = "agents",
+  className = "",
 }: WorkflowBuilderPageProps) {
   const availableAgents = useMemo(() => processingAgents(agents), [agents])
   const agentNameById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
@@ -160,10 +171,11 @@ export function WorkflowBuilderPage({
   const [activeNodeId, setActiveNodeId] = useState("start")
   const [hoveredNodeId, setHoveredNodeId] = useState("")
   const [editingNodeId, setEditingNodeId] = useState("")
-  const [activeResourcePanel, setActiveResourcePanel] = useState<"agents" | "templates">("agents")
+  const [activeResourcePanel, setActiveResourcePanel] = useState<"agents" | "templates">(initialResourcePanel)
   const [resourcePanelCollapsed, setResourcePanelCollapsed] = useState(false)
   const [activeTemplateId, setActiveTemplateId] = useState("")
   const [saving, setSaving] = useState(false)
+  const [deletingWorkflowId, setDeletingWorkflowId] = useState("")
   const [message, setMessage] = useState("")
   const [editingEdgeId, setEditingEdgeId] = useState("")
   const [edgeDecisionDraft, setEdgeDecisionDraft] = useState("")
@@ -439,11 +451,26 @@ export function WorkflowBuilderPage({
     }
   }
 
+  async function removeWorkflowTemplate(workflow: WorkflowTemplate) {
+    setDeletingWorkflowId(workflow.id)
+    setMessage("")
+    try {
+      await deleteWorkflow(workflow.id)
+      onWorkflowDeleted?.(workflow.id)
+      if (activeTemplateId === workflow.id) loadEmptyCanvas()
+      setToast(`${workflow.name} 已删除`)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "流程模板删除失败")
+    } finally {
+      setDeletingWorkflowId("")
+    }
+  }
+
   return (
-    <div className={modal ? "workflow-page workflow-page-modal" : "page active workflow-page"}>
+    <div className={`${modal ? "workflow-page workflow-page-modal" : "page active workflow-page"} ${className}`.trim()}>
       <PageTitle
-        title={workflowBuilderCopy.title}
-        description={workflowBuilderCopy.description}
+        title={title}
+        description={description}
       >
         <button className="btn btn-primary" type="button" onClick={saveWorkflow} disabled={saving || !workflowName.trim()}>
           <Save size={16} />
@@ -554,15 +581,16 @@ export function WorkflowBuilderPage({
                             <div className="workflow-agent-head">
                               <span className="workflow-agent-name">
                                 <span className="workflow-icon success"><Bot size={16} /></span>
-                                <span>{agent.name}</span>
-                              </span>
-                              <span className={isOnCanvas ? "tag workflow-agent-status-tag active" : "tag workflow-agent-status-tag"}>
-                                {isOnCanvas ? "已在画布" : agent.agent_type || "processing"}
+                                <Tooltip title={agent.name}>
+                                  <span>{agent.name}</span>
+                                </Tooltip>
                               </span>
                             </div>
-                            <p>{agent.description || "暂无描述"}</p>
-                            <div className="tag-row">
-                              {(agent.capabilities || []).slice(0, 4).map((capability) => <span className="tag" key={capability}>{capabilityLabel(capability)}</span>)}
+                            <div className="workflow-agent-purpose">
+                              <span>节点作用</span>
+                              <Tooltip title={agent.description || "暂无节点作用说明"} placement="topLeft">
+                                <p>{agent.description || "暂无节点作用说明"}</p>
+                              </Tooltip>
                             </div>
                             <div className="workflow-card-actions">
                               <button className="btn btn-small" type="button" onClick={() => addAgentNode(agent)}>
@@ -592,25 +620,47 @@ export function WorkflowBuilderPage({
                       {workflows.map((workflow) => {
                         const card = workflowTemplateCardView(workflow)
                         return (
-                          <button
-                            className={activeTemplateId === workflow.id ? "workflow-agent-card workflow-template-card active" : "workflow-agent-card workflow-template-card"}
-                            key={workflow.id}
-                            type="button"
-                            onClick={() => loadWorkflowTemplate(workflow)}
-                          >
-                            <div className="workflow-agent-head">
-                              <span className="workflow-agent-name">
-                                <span className="workflow-icon violet"><GitBranch size={16} /></span>
-                                <span>{card.title}</span>
-                              </span>
-                              <span className="tag workflow-agent-status-tag active">{card.statusLabel}</span>
-                            </div>
-                            <p>{card.description}</p>
-                            <div className="tag-row">
-                              <span className="tag">{card.nodeCountLabel}</span>
-                              <span className="tag">{card.edgeCountLabel}</span>
-                            </div>
-                          </button>
+                          <div className="workflow-template-card-shell" key={workflow.id}>
+                            <button
+                              className={activeTemplateId === workflow.id ? "workflow-agent-card workflow-template-card active" : "workflow-agent-card workflow-template-card"}
+                              type="button"
+                              onClick={() => loadWorkflowTemplate(workflow)}
+                            >
+                              <div className="workflow-agent-head">
+                                <span className="workflow-agent-name">
+                                  <span className="workflow-icon violet"><GitBranch size={16} /></span>
+                                  <span>{card.title}</span>
+                                </span>
+                                <span className="tag workflow-agent-status-tag active">{card.statusLabel}</span>
+                              </div>
+                              <p>{card.description}</p>
+                              <div className="tag-row">
+                                <span className="tag">{card.nodeCountLabel}</span>
+                                <span className="tag">{card.edgeCountLabel}</span>
+                              </div>
+                            </button>
+                            {onWorkflowDeleted && (
+                              <Popconfirm
+                                title="删除流程模板"
+                                description={`确认删除“${workflow.name}”？历史任务不受影响。`}
+                                okText="删除"
+                                cancelText="取消"
+                                okButtonProps={{ danger: true }}
+                                onConfirm={() => void removeWorkflowTemplate(workflow)}
+                              >
+                                <Tooltip title="删除流程模板">
+                                  <Button
+                                    className="workflow-template-delete-button"
+                                    size="small"
+                                    danger
+                                    aria-label={`删除流程模板 ${workflow.name}`}
+                                    icon={<Trash2 size={14} />}
+                                    loading={deletingWorkflowId === workflow.id}
+                                  />
+                                </Tooltip>
+                              </Popconfirm>
+                            )}
+                          </div>
                         )
                       })}
                     </div>

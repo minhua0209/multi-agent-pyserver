@@ -340,7 +340,7 @@ def test_model_intent_parses_visible_contract_fields(monkeypatch: pytest.MonkeyP
     assert '"deliverable_filename"' not in captured["system_prompt"]
     assert '"deliverable_requirements"' not in captured["system_prompt"]
     assert '"requires_human_acceptance"' not in captured["system_prompt"]
-    assert "1到10条统一验收标准" in captured["system_prompt"]
+    assert "1到4条统一验收标准" in captured["system_prompt"]
 
 
 def test_model_intent_ignores_legacy_delivery_fields_and_merges_acceptance_criteria(
@@ -384,8 +384,7 @@ def test_model_intent_ignores_legacy_delivery_fields_and_merges_acceptance_crite
     assert draft.deliverable_filename == ""
     assert draft.deliverable_requirements == []
     assert draft.success_criteria == [
-        *[f"Legacy requirement {index}" for index in range(1, 7)],
-        *[f"Visible criterion {index}" for index in range(1, 5)],
+        *[f"Legacy requirement {index}" for index in range(1, 5)],
     ]
     assert draft.requires_human_acceptance is False
     assert '"success_criteria"' in captured["system_prompt"]
@@ -396,7 +395,7 @@ def test_model_intent_ignores_legacy_delivery_fields_and_merges_acceptance_crite
     assert '"requires_human_acceptance"' not in captured["system_prompt"]
 
 
-def test_model_intent_limits_generated_acceptance_criteria_to_ten(
+def test_model_intent_limits_generated_acceptance_criteria_to_four(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -416,7 +415,7 @@ def test_model_intent_limits_generated_acceptance_criteria_to_ten(
 
     draft = recognize_tasks_with_model("验证验收标准数量", [])[0]
 
-    assert draft.success_criteria == [f"criterion-{index}" for index in range(1, 11)]
+    assert draft.success_criteria == [f"criterion-{index}" for index in range(1, 5)]
 
 
 @pytest.mark.parametrize(

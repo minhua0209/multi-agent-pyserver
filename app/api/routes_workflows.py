@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.api.auth import current_user, require_admin
 from app.core.models import WorkflowCreate, WorkflowTemplate
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -29,3 +30,10 @@ def update_workflow(workflow_id: str, payload: WorkflowCreate, request: Request)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return workflow
+
+
+@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_workflow(workflow_id: str, request: Request) -> None:
+    require_admin(current_user(request))
+    if not request.app.state.workflow_registry.delete_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")

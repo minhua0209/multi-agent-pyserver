@@ -53,6 +53,20 @@ class AgentRegistry:
         )
         return agent
 
+    def delete_agent(self, agent_id: str) -> bool:
+        agents = self.list_agents()
+        next_agents = [agent for agent in agents if agent.id != agent_id]
+        if len(next_agents) == len(agents):
+            return False
+        self.file_path.write_text(
+            json.dumps(
+                [item.model_dump(mode="json") for item in next_agents],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return True
+
 
 class WorkflowRegistry:
     def __init__(self, file_path: Path) -> None:
@@ -97,6 +111,14 @@ class WorkflowRegistry:
                 self._write(workflows)
                 return updated
         return None
+
+    def delete_workflow(self, workflow_id: str) -> bool:
+        workflows = self.list_workflows()
+        next_workflows = [workflow for workflow in workflows if workflow.id != workflow_id]
+        if len(next_workflows) == len(workflows):
+            return False
+        self._write(next_workflows)
+        return True
 
     def _write(self, workflows: list[WorkflowTemplate]) -> None:
         self.file_path.write_text(
@@ -504,6 +526,13 @@ class DatabaseAgentRegistry:
                 )
             )
         return agent
+
+    def delete_agent(self, agent_id: str) -> bool:
+        if not any(agent.id == agent_id for agent in self.list_agents()):
+            return False
+        with self.engine.begin() as connection:
+            connection.execute(delete(agents_table).where(agents_table.c.id == agent_id))
+        return True
 
 
 class DatabaseUserRegistry:
@@ -932,6 +961,13 @@ class DatabaseWorkflowRegistry:
                 .values(**self._workflow_values(workflow))
             )
         return workflow
+
+    def delete_workflow(self, workflow_id: str) -> bool:
+        if self.get_workflow(workflow_id) is None:
+            return False
+        with self.engine.begin() as connection:
+            connection.execute(delete(workflow_templates_table).where(workflow_templates_table.c.id == workflow_id))
+        return True
 
     @staticmethod
     def _workflow_values(workflow: WorkflowTemplate) -> dict:

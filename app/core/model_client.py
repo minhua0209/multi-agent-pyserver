@@ -166,7 +166,7 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
         "如果任务之间存在明确先后关系，必须拆成多个任务，并使用 draft_key 和 depends_on 表达依赖关系；"
         "depends_on 填前置任务的 draft_key。没有依赖则为空数组。"
         "如果没有合适 agent，处理方选择 human。"
-        "每个任务只生成1到10条统一验收标准，写入 success_criteria。"
+        "每个任务只生成1到4条统一验收标准，写入 success_criteria。"
         "验收标准必须能由建议处理 agent 的能力、工具输出或人工确认结果证明；"
         "如果当前没有文件写入、代码提交、邮件发送等能力，不得生成对应要求。"
         "只返回 JSON，不要返回 Markdown。"
@@ -234,7 +234,7 @@ def recognize_tasks_with_model(content: str, agents: list[Agent] | None = None) 
                             *_string_list(item.get("deliverable_requirements")),
                             *_string_list(item.get("success_criteria")),
                         ]
-                    )[:10],
+                    )[:4],
                     requires_human_acceptance=False,
                     suggested_assignee_type=_normalize_assignee_type(item.get("suggested_assignee_type")),
                     suggested_agent_id=_valid_agent_id(item.get("suggested_agent_id"), agents),

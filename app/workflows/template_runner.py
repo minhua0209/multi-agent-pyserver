@@ -303,8 +303,14 @@ class WorkflowTemplateRunner:
         if conditional_edges:
             return any(
                 edge.from_node in completed_node_ids
-                and WorkflowTemplateRunner._condition_matches(edge.condition, completed_subtasks.get(edge.from_node))
-                for edge in conditional_edges
+                and (
+                    not edge.condition
+                    or WorkflowTemplateRunner._condition_matches(
+                        edge.condition,
+                        completed_subtasks.get(edge.from_node),
+                    )
+                )
+                for edge in edges
             )
         return all(edge.from_node in completed_node_ids for edge in edges)
 

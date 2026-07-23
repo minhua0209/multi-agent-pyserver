@@ -78,6 +78,7 @@ import {
   createSimpleAgent,
   createTaskRequest,
   createUser,
+  deleteAgent,
   deleteUser,
   getCurrentUser,
   getTask,
@@ -154,19 +155,20 @@ import { WorkflowBuilderPage } from "./WorkflowBuilderPage"
 import { WorkflowReactFlowNode } from "./workflowReactFlow"
 
 const navGroups = [
-  { label: "工作总览", items: [{ id: "overview", text: "协同总览", icon: Activity }] },
+  { label: "总览", items: [{ id: "overview", text: "协同总览", icon: Activity }] },
   {
-    label: "发布与确认",
+    label: "任务中心",
     items: [
       { id: "publish", text: "任务发布", icon: Send },
       { id: "confirmation", text: "人工确认", icon: ClipboardCheck },
+      { id: "tasks", text: "任务列表", icon: ListChecks },
     ],
   },
-  { label: "任务中心", items: [{ id: "tasks", text: "任务列表", icon: ListChecks }] },
   {
-    label: "管理治理",
+    label: "管理",
     items: [
       { id: "agents", text: "流程节点管理", icon: Bot, adminOnly: true },
+      { id: "workflows", text: "流程模板管理", icon: GitBranch, adminOnly: true },
       { id: "users", text: "用户管理", icon: Users, adminOnly: true },
     ],
   },
@@ -269,6 +271,7 @@ export default function App() {
   const [page, setPage] = useState<PageId>("overview")
   const [tasks, setTasks] = useState<Task[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
+  const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [assignableUsers, setAssignableUsers] = useState<UserOption[]>([])
   const [currentUser, setCurrentUser] = useState<User | null>(null)
@@ -312,21 +315,23 @@ export default function App() {
     setError("")
     try {
       const nextCurrentUser = await getCurrentUser()
-      const [nextTasks, nextAgents, nextHumanSubtasks, nextAssignableUsers] = await Promise.all([
+      const [nextTasks, nextAgents, nextHumanSubtasks, nextAssignableUsers, nextWorkflows] = await Promise.all([
         listTasks(),
         listAgents(),
         listHumanSubtasks(),
         listAssignableUsers(),
+        nextCurrentUser.role === "admin" ? listWorkflows() : Promise.resolve([]),
       ])
       const nextUsers = nextCurrentUser.role === "admin" ? await listUsers() : []
       setCurrentUser(nextCurrentUser)
       setTasks(nextTasks || [])
       setAgents(nextAgents || [])
       setAssignableUsers(nextAssignableUsers || [])
+      setWorkflows(nextWorkflows || [])
       setUsers(nextUsers || [])
       setHumanSubtasks(nextHumanSubtasks || [])
       if (!selectedTaskId && nextTasks?.[0]) setSelectedTaskId(nextTasks[0].id)
-      if (nextCurrentUser.role !== "admin" && ["agents", "users"].includes(page)) {
+      if (nextCurrentUser.role !== "admin" && ["agents", "workflows", "users"].includes(page)) {
         setPage("overview")
       }
     } catch (err) {
@@ -344,11 +349,12 @@ export default function App() {
     setError("")
     try {
       const targetSet = new Set(targets)
-      const [nextTasks, nextHumanSubtasks, nextAgents, nextAssignableUsers, nextUsers] = await Promise.all([
+      const [nextTasks, nextHumanSubtasks, nextAgents, nextAssignableUsers, nextWorkflows, nextUsers] = await Promise.all([
         targetSet.has("tasks") ? listTasks() : Promise.resolve(null),
         targetSet.has("humanSubtasks") ? listHumanSubtasks() : Promise.resolve(null),
         targetSet.has("agents") ? listAgents() : Promise.resolve(null),
         targetSet.has("assignableUsers") ? listAssignableUsers() : Promise.resolve(null),
+        targetSet.has("workflows") ? listWorkflows() : Promise.resolve(null),
         targetSet.has("users") ? listUsers() : Promise.resolve(null),
       ])
 
@@ -359,6 +365,7 @@ export default function App() {
       if (nextHumanSubtasks) setHumanSubtasks(nextHumanSubtasks || [])
       if (nextAgents) setAgents(nextAgents || [])
       if (nextAssignableUsers) setAssignableUsers(nextAssignableUsers || [])
+      if (nextWorkflows) setWorkflows(nextWorkflows || [])
       if (nextUsers) setUsers(nextUsers || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : "页面数据刷新失败")
@@ -511,6 +518,7 @@ export default function App() {
             setTasks((current) => mergeTasks(current, confirmed))
             setSelectedTaskId(confirmed[0]?.id || selectedTaskId)
             setToast("任务已确认，系统正在异步执行")
+            void navigateTo("tasks")
           }} onCancelled={(cancelledIds) => {
             setTasks((current) => current.filter((task) => !cancelledIds.includes(task.id)))
             if (cancelledIds.includes(selectedTaskId)) setSelectedTaskId("")
@@ -525,6 +533,15 @@ export default function App() {
             setPage("confirmation")
           }} />}
           {page === "agents" && isAdmin && <AgentsPage agents={agents} users={assignableUsers} setAgents={setAgents} setToast={setToast} />}
+          {page === "workflows" && isAdmin && (
+            <WorkflowManagementPage
+              agents={agents}
+              users={assignableUsers}
+              workflows={workflows}
+              setWorkflows={setWorkflows}
+              setToast={setToast}
+            />
+          )}
           {page === "users" && isAdmin && <UsersPage users={users} setUsers={setUsers} setToast={setToast} />}
           </Layout.Content>
         </Layout>
@@ -963,7 +980,7 @@ function PublishPage({
         )}
         onTaskUpdated={(confirmed) => {
           onConfirmed([confirmed])
-          setMessage("任务已确认，系统正在异步执行")
+          setMessage("")
         }}
         onTasksCancelled={(taskIds) => {
           onCancelled(taskIds)
@@ -1273,6 +1290,8 @@ function TaskDetailModal({
   const typeBadge = taskDetailTypeBadge(task)
   const summaryBlocks = taskDetailSummaryBlocks(task)
   const fourQuestions = taskFourQuestions(task)
+  const creatorQuestion = fourQuestions.find((question) => question.key === "creator")
+  const coreQuestions = fourQuestions.filter((question) => question.key !== "creator")
   const workflowDefinition = workflowDefinitionForTask(task)
   const rounds = task.context?.rounds || []
 
@@ -1283,20 +1302,25 @@ function TaskDetailModal({
           <Tooltip title={taskTitle(task)}>
             <Typography.Text strong ellipsis>{taskTitle(task)}</Typography.Text>
           </Tooltip>
-          <Tag color={typeBadge.color}>{typeBadge.text}</Tag>
-          <Tag color={taskStatusColor(taskStatus(task))}>{taskStatusText(taskStatus(task))}</Tag>
-          {isTaskAwaitingConfirmation(task) && (
-            <Button
-              size="small"
-              type="primary"
-              aria-label="继续确认任务"
-              icon={<ClipboardCheck size={15} />}
-              onClick={onContinueConfirmation}
-            >
-              继续确认
-            </Button>
-          )}
-          <TaskRerunControl key={task.id} task={task} onTaskUpdated={onTaskUpdated} />
+          <div className="task-detail-header-actions">
+            <Tag color={typeBadge.color}>{typeBadge.text}</Tag>
+            <Tag color={taskStatusColor(taskStatus(task))}>{taskStatusText(taskStatus(task))}</Tag>
+            <Tag className="task-detail-creator" icon={<UserCheck size={13} />}>
+              {creatorQuestion?.text || "未知"}
+            </Tag>
+            {isTaskAwaitingConfirmation(task) && (
+              <Button
+                size="small"
+                type="primary"
+                aria-label="继续确认任务"
+                icon={<ClipboardCheck size={15} />}
+                onClick={onContinueConfirmation}
+              >
+                继续确认
+              </Button>
+            )}
+            <TaskRerunControl key={task.id} task={task} onTaskUpdated={onTaskUpdated} />
+          </div>
         </div>
       }
       open
@@ -1316,7 +1340,7 @@ function TaskDetailModal({
       className="task-detail-modal"
     >
         <div className="task-detail-body">
-          <TaskFourQuestionGrid questions={fourQuestions} />
+          <TaskFourQuestionGrid questions={coreQuestions} />
           <div className="task-detail-summary">
             {loading && <AntAlert type="info" showIcon title="正在加载最新详情" />}
             {error && <AntAlert type="error" showIcon title={error} />}
@@ -2291,11 +2315,12 @@ function AgentsPage({
   setToast: (value: string) => void
 }) {
   const [nodeType, setNodeType] = useState("processing")
-  const [description, setDescription] = useState("向指定目录写入文章或者报告总结")
+  const [description, setDescription] = useState("")
   const [humanAssigneeUserId, setHumanAssigneeUserId] = useState("")
-  const [name, setName] = useState("报告写入节点")
+  const [name, setName] = useState("")
   const [result, setResult] = useState<{ status: string; message: string; agent?: Agent | null; guidance?: string[] } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [deletingAgentId, setDeletingAgentId] = useState("")
   const [agentPage, setAgentPage] = useState(1)
   const selectedHumanAssignee = users.find((user) => user.id === humanAssigneeUserId)
   const agentPageSize = 20
@@ -2350,6 +2375,23 @@ function AgentsPage({
     }
   }
 
+  async function removeAgent(agent: Agent) {
+    setDeletingAgentId(agent.id)
+    setResult(null)
+    try {
+      await deleteAgent(agent.id)
+      setAgents((current) => current.filter((item) => item.id !== agent.id))
+      setToast(`${agent.name} 已删除`)
+    } catch (err) {
+      setResult({
+        status: "delete_failed",
+        message: err instanceof Error ? err.message : "流程节点删除失败",
+      })
+    } finally {
+      setDeletingAgentId("")
+    }
+  }
+
   return (
     <div className="page active">
       <PageHeader title="流程节点管理" description="创建和维护流程画布可用的 Agent 节点和人工节点。" />
@@ -2369,7 +2411,7 @@ function AgentsPage({
           </label>
           <label className="field">
             <span>节点名称</span>
-            <Input value={name} onChange={(event) => setName(event.target.value)} />
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入节点名称" />
           </label>
           {nodeType === "human" ? (
             <label className="field">
@@ -2409,9 +2451,9 @@ function AgentsPage({
           {result && (
             <AntAlert
               className="agent-result"
-              type={result.agent ? "success" : "warning"}
+              type={result.agent ? "success" : result.status === "delete_failed" ? "error" : "warning"}
               showIcon
-              title={result.agent ? "节点已创建" : "节点未创建"}
+              title={result.agent ? "节点已创建" : result.status === "delete_failed" ? "节点删除失败" : "节点未创建"}
               description={
                 <>
                   {result.agent ? `${result.agent.name} 已作为${nodeTypeLabel(result.agent.agent_type)}保存` : result.message}
@@ -2437,6 +2479,26 @@ function AgentsPage({
 
                 return (
                   <article className={`registered-node-card ${agent.agent_type || "processing"}`} key={agent.id}>
+                    <Popconfirm
+                      title="删除流程节点"
+                      description={`确认删除“${agent.name}”？被流程模板引用的节点不能删除。`}
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => void removeAgent(agent)}
+                    >
+                      <Tooltip title="删除流程节点">
+                        <Button
+                          className="registered-node-delete-button"
+                          size="small"
+                          type="text"
+                          danger
+                          aria-label={`删除流程节点 ${agent.name}`}
+                          icon={<Trash2 size={14} />}
+                          loading={deletingAgentId === agent.id}
+                        />
+                      </Tooltip>
+                    </Popconfirm>
                     <div className="registered-node-head">
                       <span className={`registered-node-icon ${agent.agent_type || "processing"}`}>{nodeTypeIcon(agent.agent_type)}</span>
                       <div className="registered-node-title-block">
@@ -2480,6 +2542,39 @@ function AgentsPage({
         </Panel>
       </div>
     </div>
+  )
+}
+
+function WorkflowManagementPage({
+  agents,
+  users,
+  workflows,
+  setWorkflows,
+  setToast,
+}: {
+  agents: Agent[]
+  users: UserOption[]
+  workflows: WorkflowTemplate[]
+  setWorkflows: (workflows: WorkflowTemplate[] | ((current: WorkflowTemplate[]) => WorkflowTemplate[])) => void
+  setToast: (value: string) => void
+}) {
+  return (
+    <WorkflowBuilderPage
+      agents={agents}
+      users={users}
+      workflows={workflows}
+      onWorkflowSaved={(saved) => {
+        setWorkflows((current) => [saved, ...current.filter((workflow) => workflow.id !== saved.id)])
+      }}
+      onWorkflowDeleted={(workflowId) => {
+        setWorkflows((current) => current.filter((workflow) => workflow.id !== workflowId))
+      }}
+      setToast={setToast}
+      title="流程模板管理"
+      description="新建、编辑和删除流程模板，配置节点、人工确认、条件分支和上下文流转。"
+      initialResourcePanel="templates"
+      className="workflow-management-page"
+    />
   )
 }
 
@@ -2560,6 +2655,13 @@ function UsersPage({
 
   const columns: ColumnsType<User> = [
     { title: "姓名", dataIndex: "name", ellipsis: true },
+    {
+      title: "用户编码",
+      dataIndex: "id",
+      width: 190,
+      ellipsis: true,
+      render: (value: string) => <Tooltip title={value}><span>{value}</span></Tooltip>,
+    },
     { title: "手机号", dataIndex: "phone", ellipsis: true, render: (value: string) => value || "-" },
     { title: "邮箱", dataIndex: "email", ellipsis: true, render: (value: string) => value || "-" },
     { title: "角色", dataIndex: "role", width: 110, render: (value: string) => <Tag color={value === "admin" ? "gold" : "blue"}>{roleLabel(value)}</Tag> },
