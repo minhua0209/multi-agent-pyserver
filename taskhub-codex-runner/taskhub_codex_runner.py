@@ -201,6 +201,10 @@ class RunnerState:
     def pop_pending_manual(self, subtask_id: str) -> dict[str, Any] | None:
         return self.remove_pending_manual(subtask_id)
 
+    def pending_manual_ids(self) -> set[str]:
+        with self.lock:
+            return set(self.pending_manual)
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             return {
@@ -289,6 +293,7 @@ class TaskHubCodexRunner:
         self.validate_current_user()
         self.state.set_last_poll()
         subtasks = self.taskhub.poll_human_subtasks(self.config.user_id)
+        self.reconcile_remote_human_subtasks(subtasks)
         candidates = [item for item in subtasks if item.get("id") not in self.local_claimed]
         if not candidates:
             self.log("no delegated human subtasks")
@@ -319,6 +324,18 @@ class TaskHubCodexRunner:
                 daemon=True,
             ).start()
         return True
+
+    def reconcile_remote_human_subtasks(self, subtasks: list[dict[str, Any]]) -> None:
+        remote_ids = {str(item.get("id")) for item in subtasks if item.get("id")}
+        stale_ids = self.state.pending_manual_ids() - remote_ids
+        for subtask_id in stale_ids:
+            self.state.remove_pending_manual(subtask_id)
+            self.state.add_event(
+                "resolved_externally",
+                f"{subtask_id} was completed outside the local runner console",
+            )
+            self.log(f"removed externally resolved human subtask: {subtask_id}")
+        self.local_claimed.intersection_update(remote_ids)
 
     def _handle_subtask(self, subtask: dict[str, Any]) -> bool:
         subtask_id = str(subtask["id"])

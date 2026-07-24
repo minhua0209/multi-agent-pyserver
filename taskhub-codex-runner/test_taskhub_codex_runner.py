@@ -334,6 +334,26 @@ class TaskHubCodexRunnerTests(unittest.TestCase):
         self.assertEqual(removed["subtask"]["id"], "sub_1")
         self.assertEqual(state.snapshot()["pending_manual_count"], 0)
 
+    def test_poll_removes_human_subtask_completed_outside_runner_console(self) -> None:
+        task_runner = runner.TaskHubCodexRunner(
+            make_runner_config(once=False, auto_submit=False, ui=True)
+        )
+        task_runner.taskhub.get_current_user = Mock(return_value={"id": "root"})  # type: ignore[method-assign]
+        task_runner.taskhub.poll_human_subtasks = Mock(return_value=[])  # type: ignore[method-assign]
+        task_runner.state.add_pending_manual(
+            "sub_external",
+            {"id": "sub_external", "title": "已在协同中心处理"},
+            {"output": "等待人工确认"},
+        )
+        task_runner.local_claimed.add("sub_external")
+
+        self.assertFalse(task_runner.poll_once())
+
+        snapshot = task_runner.state.snapshot()
+        self.assertEqual(snapshot["pending_manual_count"], 0)
+        self.assertNotIn("sub_external", task_runner.local_claimed)
+        self.assertEqual(snapshot["events"][-1]["type"], "resolved_externally")
+
     def test_auto_submit_disabled_queues_approved_codex_result_in_web_console(self) -> None:
         task_runner = runner.TaskHubCodexRunner(
             make_runner_config(auto_submit=False, ui=True)

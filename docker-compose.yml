@@ -23,3 +23,17 @@ services:
       ENABLE_SYSTEM_MOCK_FALLBACK: "${ENABLE_SYSTEM_MOCK_FALLBACK:-false}"
       TASK_PLANNER_TYPE: "${TASK_PLANNER_TYPE:-llm}"
     restart: unless-stopped
+
+  taskhub-frontend:
+    build:
+      context: ./frontend
+      args:
+        NODE_BASE_IMAGE: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/node:22-alpine
+        NGINX_BASE_IMAGE: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine
+    image: taskhub-frontend:latest
+    container_name: taskhub-frontend
+    depends_on:
+      - multi-agent-pyserver
+    ports:
+      - "5174:80"
+    restart: unless-stopped
