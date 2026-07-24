@@ -34,7 +34,6 @@ import { ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 
 import { Agent, UserOption, WorkflowEdge, WorkflowNode, WorkflowTemplate, createWorkflow, deleteWorkflow, updateWorkflow } from "./api/taskhub"
 import { removeWorkflowNode } from "./workflowCanvas"
-import { capabilityLabel } from "./workflowLabels"
 import {
   WorkflowReactFlowEdge,
   WorkflowReactFlowNode,
@@ -70,14 +69,6 @@ interface WorkflowBuilderPageProps {
 
 function processingAgents(agents: Agent[]) {
   return agents.filter((agent) => agent.agent_type !== "condition")
-}
-
-function agentMatchesCapability(agent: Agent, capability: string) {
-  if (capability === "all") return true
-  const search = capability.toLowerCase()
-  return [agent.name, agent.description, ...(agent.capabilities || [])]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(search))
 }
 
 function withAgentNames(nodes: WorkflowReactFlowNode[], agentNameById: Map<string, string>) {
@@ -162,7 +153,6 @@ export function WorkflowBuilderPage({
   const agentNameById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
   const [workflowName, setWorkflowName] = useState("")
   const [workflowDescription, setWorkflowDescription] = useState("")
-  const [capabilityFilter, setCapabilityFilter] = useState("all")
   const initialDefinition = useMemo(() => emptyWorkflowDefinition(), [])
   const initialFlow = useMemo(() => workflowToReactFlow(initialDefinition, compactStarterNodePositions), [initialDefinition])
   const [canvasNodes, setCanvasNodes] = useState<WorkflowNode[]>(initialDefinition.nodes)
@@ -180,17 +170,10 @@ export function WorkflowBuilderPage({
   const [editingEdgeId, setEditingEdgeId] = useState("")
   const [edgeDecisionDraft, setEdgeDecisionDraft] = useState("")
 
-  const capabilityOptions = useMemo(() => {
-    const capabilities = new Set<string>()
-    availableAgents.forEach((agent) => (agent.capabilities || []).forEach((capability) => capabilities.add(capability)))
-    return ["all", ...Array.from(capabilities).slice(0, 12)]
-  }, [availableAgents])
-
   const definition = useMemo(() => reactFlowToWorkflow(canvasNodes, flowEdges), [canvasNodes, flowEdges])
   const activeNode = definition.nodes.find((node) => node.id === activeNodeId) || definition.nodes[0] || null
   const editingEdge = flowEdges.find((edge) => edge.id === editingEdgeId) || null
   const canDeleteActiveNode = Boolean(activeNode && activeNode.id !== "start" && activeNode.id !== "end")
-  const filteredAgents = availableAgents.filter((agent) => agentMatchesCapability(agent, capabilityFilter))
   const edgeDecisionOptions = decisionOptionsForEdge(canvasNodes, editingEdge)
   const handleNodeConfigChange = useCallback((nodeId: string, patch: Record<string, unknown>) => {
     const normalizedPatch = normalizeNodePatch(patch, users)
@@ -561,20 +544,10 @@ export function WorkflowBuilderPage({
                         <span>{availableAgents.length} 个</span>
                       </div>
                       <p className="muted drawer-summary">{availableAgents.length} 个可选节点</p>
-                      <label className="field">
-                        <span>筛选能力</span>
-                        <select className="input" value={capabilityFilter} onChange={(event) => setCapabilityFilter(event.target.value)}>
-                          {capabilityOptions.map((capability) => (
-                            <option key={capability} value={capability}>
-                              {capabilityLabel(capability)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
                     </div>
                     <div className="workflow-agent-list">
-                      {!filteredAgents.length && <EmptyPanel text="暂无可选节点，可先到流程节点管理创建" />}
-                      {filteredAgents.map((agent) => {
+                      {!availableAgents.length && <EmptyPanel text="暂无可选节点，可先到流程节点管理创建" />}
+                      {availableAgents.map((agent) => {
                         const isOnCanvas = canvasNodes.some((node) => node.agent_id === agent.id)
                         return (
                           <div className={isOnCanvas ? "workflow-agent-card active" : "workflow-agent-card"} key={agent.id}>

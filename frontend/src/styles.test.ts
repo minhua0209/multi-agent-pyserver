@@ -131,6 +131,13 @@ describe("workflow governance actions", () => {
     expect(workflowBuilderSource).not.toContain("(agent.capabilities || []).slice(0, 4)")
   })
 
+  it("shows all workflow nodes without a capability filter", () => {
+    expect(workflowBuilderSource).not.toContain("筛选能力")
+    expect(workflowBuilderSource).not.toContain("capabilityFilter")
+    expect(workflowBuilderSource).not.toContain("agentMatchesCapability")
+    expect(workflowBuilderSource).toContain("{availableAgents.map((agent) => {")
+  })
+
   it("shows the user id as the user code and shortens creator metadata", () => {
     expect(appSource).toContain('title: "用户编码"')
     expect(appSource).toContain('dataIndex: "id"')
